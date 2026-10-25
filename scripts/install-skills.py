@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_MANIFEST = ROOT / "skills/packs.json"
+HOST_NATIVE_AUTHORIZATION = ROOT / "skills/host-native-approvals/lnx-preserve-host-native-v1.json"
 PROFILE_MAP = {"lnx":"default","pulse":"pulse","algua":"algua","meabeclick":"meabeclick","meabeclickux":"meabeclickux","meabeclickeng":"meabeclickeng","meabeclickgrowth":"meabeclickgrowth"}
 PROFILES = set(PROFILE_MAP)
 NIXKIT_REPOSITORY = "https://github.com/its-nix/kit.git"
@@ -41,6 +42,22 @@ EXPECTED_ASSIGNMENTS = {
  "meabeclickux":["baseline-evidence","ux-design-review"], "meabeclickeng":["baseline-evidence","engineering-delivery"],
  "meabeclickgrowth":["baseline-evidence","public-research"],
 }
+EXPECTED_HOST_NATIVE_SATISFACTION = {
+ "lnx":[
+  {"skill":"nix-idea-to-mvp","path":"product-development/nix-idea-to-mvp","tree_sha256":"d0594a11fc1ae3e7b852e23f0ea8be40c3273feea903c25a8300e68a2b86db9e"},
+  {"skill":"writing-plans","path":"software-development/writing-plans","tree_sha256":"f39910eddd93faa946cffdba88121fbc62bef710ac9087d1221b64a8d7b3da04"},
+  {"skill":"subagent-driven-development","path":"software-development/subagent-driven-development","tree_sha256":"e6f083d602c635d8de51ccd5dd0d202cf41e385705cc7a61ead83d05fd17b54f"},
+ ],
+ "pulse":[], "algua":[], "meabeclick":[], "meabeclickux":[], "meabeclickeng":[], "meabeclickgrowth":[],
+}
+EXPECTED_HOST_NATIVE_AUTHORIZATION = {
+ "schema_version":1,
+ "kind":"corrective_host_native_preservation_authorization",
+ "profile":"lnx",
+ "approved_by":"Lior",
+ "evidence":{"platform":"telegram","chat_id":"6926015052","quote":"preserve and amend"},
+ "artifacts":EXPECTED_HOST_NATIVE_SATISFACTION["lnx"],
+}
 LEGACY_NIXKIT_SKILLS = {"using-superpowers","brainstorming","writing-plans","executing-plans","systematic-debugging","test-driven-development","verification-before-completion","requesting-code-review","receiving-code-review","using-git-worktrees","finishing-a-development-branch","subagent-driven-development","dispatching-parallel-agents","diagnosing-superpowers","setup-matt-pocock-skills","grill-with-docs","grilling","domain-modeling","to-spec","to-tickets","codebase-design","research","handoff","caveman","ponytail","frontend-design","web-design-guidelines","agent-browser","remotion-best-practices","auto-editor","auto-editor-effects","auto-editor-export","auto-editor-transcribe","obsidian-markdown","qmd","gws-shared","gws-drive","gws-docs","gws-drive-upload","gws-docs-write","find-docs"}
 NIXKIT_SKILLS = LEGACY_NIXKIT_SKILLS | {"lnx-grilling","lnx-grill-me","lnx-domain-modeling","lnx-grill-with-docs","lnx-to-spec","lnx-writing-for-agents","nix-idea-to-mvp","watch","performance","rtl-design","analytics","customer-research","todoist-cli","technical-project-management","web-accessibility","social-media-content-calendar"}
 PACK_PROPOSALS = {("lnx","product-development"):"lnx-product-development-92338765"}
@@ -56,6 +73,7 @@ PRODUCT_APPROVAL_EVIDENCE = {"kind":"approval","platform":"discord","author_id":
 HISTORICAL_APPROVAL_MANIFESTS = {
  "b7d9ba7ce3551e428b6f009c744ad3b71f821338": ("3f64702b483666b22468407d4e5c601911c6730f3f2bc182eacbfa2ca446feaa", ["caveman"]),
  "999cc615cd45c11b5ba10f9d02ff837171c68584": ("f143b7a554795331980742ebea23b39e61e13d8bbbd15321b653c28ab1082a30", ["caveman","watch"]),
+ "80acfdec871514d5cd3c0d16d36dfb54001768b8": ("d155b871cfafeba7838ca26ad85bd6988a7cf8fefccf367113d4bb3c9202fe70", ["caveman","watch","todoist-cli"]),
 }
 HARD_GATES = {"relevance","provenance","reliability","safety_privacy","license","hermes_compatibility","non_duplication"}
 SCORE_LIMITS = {"role_value":30,"evidence_quality":20,"security_provenance":20,"hermes_compatibility":15,"maintenance":10,"documentation_license":5}
@@ -69,6 +87,10 @@ MAX_TEXT = 4_096
 MAX_URL = 2_048
 MAX_EVIDENCE_URLS = 100
 MAX_RISKS = 50
+HOST_NATIVE_DESCRIPTOR_TRAVERSAL = (
+ hasattr(os,"O_NOFOLLOW") and hasattr(os,"O_DIRECTORY") and os.open in os.supports_dir_fd
+ and os.stat in os.supports_dir_fd and os.scandir in os.supports_fd
+)
 
 class Refusal(RuntimeError): pass
 
@@ -173,9 +195,10 @@ def _source_catalog(path:Path)->dict[str,tuple[str,str,str|None]]:
  return catalog
 
 def _canonical_manifest(manifest:dict)->None:
- if set(manifest)!={"schema_version","nixkit","packs","profiles","proposed_pack_additions","approved_pack_additions","approved_additions","task_only","excluded","governance"} or manifest.get("schema_version")!=1: raise Refusal("canonical pack manifest has invalid fields")
+ if set(manifest)!={"schema_version","nixkit","packs","profiles","host_native_satisfaction","proposed_pack_additions","approved_pack_additions","approved_additions","task_only","excluded","governance"} or manifest.get("schema_version")!=1: raise Refusal("canonical pack manifest has invalid fields")
  if manifest.get("nixkit")!={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256,"node_runtime":NODE_RUNTIME}: raise Refusal("canonical manifest does not match compile-time NixKit pins")
  if manifest.get("packs")!=EXPECTED_PACKS or manifest.get("profiles")!=EXPECTED_ASSIGNMENTS: raise Refusal("canonical manifest does not match the exact seven-profile pack topology")
+ if manifest.get("host_native_satisfaction")!=EXPECTED_HOST_NATIVE_SATISFACTION: raise Refusal("canonical manifest does not match compile-time host-native satisfaction bindings")
  additions=manifest.get("approved_additions")
  if not isinstance(additions,dict) or set(additions)!=set(PROFILE_MAP) or any(not isinstance(v,list) or len(v)!=len(set(v)) or any(not isinstance(x,str) or not SKILL.fullmatch(x) for x in v) for v in additions.values()): raise Refusal("canonical manifest has invalid approved additions topology")
  proposed=manifest.get("proposed_pack_additions"); approved=manifest.get("approved_pack_additions")
@@ -363,7 +386,106 @@ def _frontmatter_name(path:Path)->str:
  if len(matches)!=1 or not SKILL.fullmatch(matches[0]): raise Refusal(f"installed skill frontmatter must contain exactly one validated name: {path}")
  return matches[0]
 
-def _preflight_duplicate_names(profile_home:Path,selected:set[str])->None:
+def _skill_tree_digest(root:Path)->str:
+ """Hash one non-symlink tree in per-directory byte order, depth first."""
+ if not HOST_NATIVE_DESCRIPTOR_TRAVERSAL:
+  raise Refusal("descriptor-relative non-following host-native traversal is unavailable")
+ digest=hashlib.sha256(b"hermes-host-native-skill-tree-v1\0")
+ seen:set[str]=set()
+ def identity(info:os.stat_result)->tuple[int,int,int,int,int]:
+  return info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode),stat.S_IMODE(info.st_mode),info.st_size
+ def changed(display:Path)->Refusal:
+  return Refusal(f"host-native skill entry changed while being hashed: {display}")
+ def add(relative:str,kind:bytes,mode:int,size:int=0)->None:
+  if relative in seen: raise Refusal(f"host-native skill tree contains a duplicate path: {relative}")
+  seen.add(relative)
+  try: encoded=relative.encode("utf-8","strict")
+  except UnicodeEncodeError as exc: raise Refusal(f"host-native skill tree path is not UTF-8: {relative!r}") from exc
+  if relative!="." and (relative.startswith("/") or any(part in {"",".",".."} for part in relative.split("/"))): raise Refusal(f"host-native skill tree has an invalid relative path: {relative}")
+  digest.update(kind); digest.update(mode.to_bytes(2,"big")); digest.update(len(encoded).to_bytes(8,"big")); digest.update(encoded)
+  if kind==b"f": digest.update(size.to_bytes(8,"big"))
+ try: root_info=root.lstat()
+ except OSError as exc: raise Refusal(f"cannot inspect host-native skill tree {root}: {exc}") from exc
+ if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode): raise Refusal(f"host-native skill tree must be a real directory: {root}")
+ root_fd=-1
+ try:
+  root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+  opened_root=os.fstat(root_fd)
+  if identity(opened_root)!=identity(root_info) or not stat.S_ISDIR(opened_root.st_mode): raise changed(root)
+  add(".",b"d",stat.S_IMODE(opened_root.st_mode))
+  def walk(directory_fd:int,directory:Path,prefix:str="")->None:
+   try:
+    with os.scandir(directory_fd) as scanned: entries=sorted(scanned,key=lambda entry:os.fsencode(entry.name))
+   except OSError as exc: raise Refusal(f"cannot enumerate host-native skill tree {directory}: {exc}") from exc
+   for entry in entries:
+    relative=f"{prefix}/{entry.name}" if prefix else entry.name; display=directory/entry.name
+    try: before=entry.stat(follow_symlinks=False)
+    except OSError as exc: raise Refusal(f"cannot inspect host-native skill entry {display}: {exc}") from exc
+    mode=stat.S_IMODE(before.st_mode)
+    if stat.S_ISDIR(before.st_mode):
+     child_fd=-1
+     try:
+      child_fd=os.open(entry.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory_fd)
+      opened=os.fstat(child_fd)
+      if identity(opened)!=identity(before) or not stat.S_ISDIR(opened.st_mode): raise changed(display)
+      add(relative,b"d",mode); walk(child_fd,display,relative)
+      after=os.stat(entry.name,dir_fd=directory_fd,follow_symlinks=False)
+      if identity(os.fstat(child_fd))!=identity(opened) or identity(after)!=identity(opened): raise changed(display)
+     except Refusal: raise
+     except OSError as exc: raise Refusal(f"cannot traverse host-native skill directory {display}: {exc}") from exc
+     finally:
+      if child_fd>=0: os.close(child_fd)
+    elif stat.S_ISREG(before.st_mode):
+     descriptor=-1
+     try:
+      descriptor=os.open(entry.name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory_fd)
+      opened=os.fstat(descriptor)
+      if identity(opened)!=identity(before) or not stat.S_ISREG(opened.st_mode): raise changed(display)
+      add(relative,b"f",mode,opened.st_size)
+      remaining=opened.st_size
+      while remaining:
+       chunk=os.read(descriptor,min(1024*1024,remaining))
+       if not chunk: raise changed(display)
+       digest.update(chunk); remaining-=len(chunk)
+      if os.read(descriptor,1): raise changed(display)
+      after=os.stat(entry.name,dir_fd=directory_fd,follow_symlinks=False)
+      if identity(os.fstat(descriptor))!=identity(opened) or identity(after)!=identity(opened): raise changed(display)
+     except Refusal: raise
+     except OSError as exc: raise Refusal(f"cannot hash host-native skill file {display}: {exc}") from exc
+     finally:
+      if descriptor>=0: os.close(descriptor)
+    else: raise Refusal(f"host-native skill tree contains a symlink or special entry: {display}")
+  walk(root_fd,root)
+  if identity(os.fstat(root_fd))!=identity(opened_root) or identity(root.lstat())!=identity(opened_root): raise changed(root)
+ except Refusal: raise
+ except OSError as exc: raise Refusal(f"cannot hash host-native skill tree {root}: {exc}") from exc
+ finally:
+  if root_fd>=0: os.close(root_fd)
+ return digest.hexdigest()
+
+def _validate_host_native_authorization(value:dict,declarations:dict)->None:
+ if value!=EXPECTED_HOST_NATIVE_AUTHORIZATION: raise Refusal("host-native preservation authorization is not the exact compile-time record")
+ if value["artifacts"]!=declarations.get("lnx"): raise Refusal("host-native preservation authorization does not exactly bind the manifest artifacts")
+
+def _validate_host_native_satisfaction(profile:str,profile_home:Path,declarations:dict)->dict[str,Path]:
+ records=declarations.get(profile)
+ if not isinstance(records,list): raise Refusal("host-native satisfaction declarations must be exact profile lists")
+ satisfied:dict[str,Path]={}; used_paths:set[str]=set()
+ for record in records:
+  if not isinstance(record,dict) or set(record)!={"skill","path","tree_sha256"}: raise Refusal("host-native satisfaction record has invalid fields")
+  skill=record.get("skill"); relative=record.get("path"); expected=record.get("tree_sha256")
+  if not isinstance(skill,str) or not SKILL.fullmatch(skill) or not isinstance(relative,str) or not SKILL_PATH.fullmatch(relative) or not isinstance(expected,str) or not re.fullmatch(r"[a-f0-9]{64}",expected): raise Refusal("host-native satisfaction record is malformed")
+  if skill in satisfied or relative in used_paths: raise Refusal("host-native satisfaction declarations contain duplicate skills or paths")
+  root=profile_home/"skills"/relative
+  _check_no_symlink(root)
+  if _skill_tree_digest(root)!=expected: raise Refusal(f"host-native skill tree digest mismatch: {skill} at {relative}")
+  manifest_path=root/"SKILL.md"
+  if _frontmatter_name(manifest_path)!=skill: raise Refusal(f"host-native skill frontmatter name does not match declaration: {skill}")
+  if _skill_tree_digest(root)!=expected: raise Refusal(f"host-native skill tree changed during validation: {skill} at {relative}")
+  satisfied[skill]=manifest_path; used_paths.add(relative)
+ return satisfied
+
+def _preflight_duplicate_names(profile_home:Path,selected:set[str],host_native:dict[str,Path]|None=None)->None:
  skill_root=profile_home/"skills"
  if skill_root.is_symlink(): raise Refusal("profile skills path must be a real non-symlink directory")
  if not skill_root.exists(): return
@@ -386,11 +508,17 @@ def _preflight_duplicate_names(profile_home:Path,selected:set[str])->None:
   if len(found)>1 or any(path!=canonical for path in found):
    locations=", ".join(str(path) for path in found)
    raise Refusal(f"selected skill name {name} already exists outside its sole canonical destination: {locations}")
+ for name,expected in sorted((host_native or {}).items()):
+  found=inventory.get(name,[])
+  if found!=[expected]:
+   locations=", ".join(str(path) for path in found)
+   raise Refusal(f"host-native skill name {name} must exist exactly once at its declared path: {locations}")
 
 def main()->int:
  parser=argparse.ArgumentParser(description=__doc__); parser.add_argument("--profile",required=True,choices=sorted(PROFILE_MAP)); parser.add_argument("--nixkit",type=Path,default=Path.home()/"src/nixkit"); parser.add_argument("--skill",action="append",default=[]); parser.add_argument("--approval",type=Path,action="append",default=[]); parser.add_argument("--apply",action="store_true"); args=parser.parse_args()
  try:
   manifest=_load_json(CANONICAL_MANIFEST,"canonical pack manifest"); _canonical_manifest(manifest)
+  host_native_authorization=_load_json(HOST_NATIVE_AUTHORIZATION,"host-native preservation authorization"); _validate_host_native_authorization(host_native_authorization,manifest["host_native_satisfaction"])
   checkout=args.nixkit.expanduser().absolute()
   if checkout.is_symlink() or not checkout.is_dir(): raise Refusal("NixKit checkout must be an existing non-symlink directory")
   if _run(["git","rev-parse","HEAD"],checkout)!=NIXKIT_COMMIT: raise Refusal(f"NixKit HEAD does not match pinned commit {NIXKIT_COMMIT}")
@@ -424,18 +552,28 @@ def main()->int:
   elif args.approval or declared: raise Refusal("declared additions require matching --skill values and approval")
   if args.apply:
    if _run(["git","status","--porcelain","--untracked-files=all"],ROOT): raise Refusal("Nix OS repository must be clean, including untracked files, for apply")
-   for relative in (Path("skills/packs.json"),Path("scripts/install-skills.py")): _tracked_clean(relative)
+   for relative in (Path("skills/packs.json"),Path("scripts/install-skills.py"),Path("skills/host-native-approvals/lnx-preserve-host-native-v1.json")): _tracked_clean(relative)
   hermes_home=Path(os.environ.get("HERMES_HOME",str(Path.home()/".hermes"))).expanduser().absolute(); profile_home=hermes_home if PROFILE_MAP[args.profile]=="default" else hermes_home/"profiles"/PROFILE_MAP[args.profile]; _check_no_symlink(profile_home)
-  _preflight_duplicate_names(profile_home,baseline|additions)
+  host_native=_validate_host_native_satisfaction(args.profile,profile_home,manifest["host_native_satisfaction"])
+  effective=baseline|additions
+  if not set(host_native)<=effective: raise Refusal("host-native satisfaction may cover only effective profile skills")
+  install_targets=effective-set(host_native)
+  _preflight_duplicate_names(profile_home,install_targets,host_native)
   command=[npx,"--yes",f"node@{NODE_RUNTIME}",str(installer),"--apply","--skills","--agent","hermes","--prefix",str(profile_home)]
-  for skill in sorted(baseline|additions): command.extend(["--skill",skill])
-  print(("APPLY" if args.apply else "PREVIEW")+f" profile={args.profile} home={profile_home}"); print("command:"," ".join(json.dumps(v) for v in command))
+  for skill in sorted(install_targets): command.extend(["--skill",skill])
+  print(("APPLY" if args.apply else "PREVIEW")+f" profile={args.profile} home={profile_home}")
+  if host_native: print("host-native:"," ".join(sorted(host_native)))
+  print("command:"," ".join(json.dumps(v) for v in command))
   if not args.apply:return 0
   _verify_installer(checkout)
   for relative,tree in NIXKIT_LOCAL_TREES.items(): _verify_local_tree(checkout,relative,tree)
-  profile_home.mkdir(parents=True,exist_ok=True); result=subprocess.run(command,cwd=checkout,check=False)
+  _preflight_duplicate_names(profile_home,install_targets,host_native)
+  profile_home.mkdir(parents=True,exist_ok=True)
+  if _validate_host_native_satisfaction(args.profile,profile_home,manifest["host_native_satisfaction"])!=host_native: raise Refusal("host-native satisfaction changed immediately before installation")
+  result=subprocess.run(command,cwd=checkout,check=False)
+  if _validate_host_native_satisfaction(args.profile,profile_home,manifest["host_native_satisfaction"])!=host_native: raise Refusal("host-native satisfaction changed during installation")
   if result.returncode: raise Refusal(f"NixKit refused installation (exit {result.returncode}); existing conflicts were preserved")
-  print(f"Installed or preserved {len(baseline|additions)} audited skill(s) for {args.profile}."); return 0
+  print(f"Installed or preserved {len(install_targets)} NixKit skill(s) and validated {len(host_native)} host-native skill(s) for {args.profile}."); return 0
  except Refusal as exc: print(f"Refusing: {exc}",file=sys.stderr); return 2
 
 if __name__=="__main__": raise SystemExit(main())

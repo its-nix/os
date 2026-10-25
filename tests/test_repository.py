@@ -24,6 +24,7 @@ REQUIRED = {
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
     "skills/packs.json",
+    "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
     "skills/approval.schema.json",
     "skills/proposals/lnx-watch-a9cb5b57.json",
@@ -101,6 +102,36 @@ class RepositoryContractTests(unittest.TestCase):
                 receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
                 errors = verifier.validate_repository(copy)
                 self.assertTrue(any("verified Discord message ID/timestamp" in error for error in errors), errors)
+
+    def test_verifier_rejects_host_native_satisfaction_drift(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "repo"
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            packs_path = copy / "skills/packs.json"
+            packs = json.loads(packs_path.read_text(encoding="utf-8"))
+            packs["host_native_satisfaction"]["lnx"][0]["tree_sha256"] = "0" * 64
+            packs_path.write_text(json.dumps(packs), encoding="utf-8")
+            errors = verifier.validate_repository(copy)
+            self.assertTrue(any("host-native satisfaction" in error for error in errors), errors)
+
+    def test_verifier_requires_exact_host_native_corrective_authorization(self):
+        verifier = load_verifier()
+        mutations = {
+            "quote": lambda value: value["evidence"].update(quote="preserve"),
+            "chat": lambda value: value["evidence"].update(chat_id="6926015053"),
+            "invented timestamp": lambda value: value["evidence"].update(timestamp="2026-10-25T00:00:00+02:00"),
+            "artifact": lambda value: value["artifacts"][0].update(tree_sha256="0" * 64),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                copy = Path(tmp) / "repo"
+                shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+                path = copy / "skills/host-native-approvals/lnx-preserve-host-native-v1.json"
+                authorization = json.loads(path.read_text(encoding="utf-8"))
+                mutate(authorization); path.write_text(json.dumps(authorization), encoding="utf-8")
+                errors = verifier.validate_repository(copy)
+                self.assertTrue(any("exact compile-time Telegram corrective authorization" in error for error in errors), errors)
 
     def test_verifier_rejects_complete_proposal_record_sabotage(self):
         verifier = load_verifier()
