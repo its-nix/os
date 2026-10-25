@@ -56,6 +56,31 @@
     "meabeclickeng": ["baseline-evidence", "engineering-delivery"],
     "meabeclickgrowth": ["baseline-evidence", "public-research"]
   },
+  "host_native_satisfaction": {
+    "lnx": [
+      {
+        "skill": "nix-idea-to-mvp",
+        "path": "product-development/nix-idea-to-mvp",
+        "tree_sha256": "d0594a11fc1ae3e7b852e23f0ea8be40c3273feea903c25a8300e68a2b86db9e"
+      },
+      {
+        "skill": "writing-plans",
+        "path": "software-development/writing-plans",
+        "tree_sha256": "f39910eddd93faa946cffdba88121fbc62bef710ac9087d1221b64a8d7b3da04"
+      },
+      {
+        "skill": "subagent-driven-development",
+        "path": "software-development/subagent-driven-development",
+        "tree_sha256": "e6f083d602c635d8de51ccd5dd0d202cf41e385705cc7a61ead83d05fd17b54f"
+      }
+    ],
+    "pulse": [],
+    "algua": [],
+    "meabeclick": [],
+    "meabeclickux": [],
+    "meabeclickeng": [],
+    "meabeclickgrowth": []
+  },
   "proposed_pack_additions": {
     "lnx": [],
     "pulse": [],

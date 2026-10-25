@@ -26,6 +26,7 @@ REQUIRED_FILES = {
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
     "skills/packs.json",
+    "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
     "skills/approval.schema.json",
     "skills/proposals/lnx-watch-a9cb5b57.json",
@@ -109,6 +110,22 @@ EXPECTED_PACK_ASSIGNMENTS = {
     "meabeclickux": ["baseline-evidence", "ux-design-review"],
     "meabeclickeng": ["baseline-evidence", "engineering-delivery"],
     "meabeclickgrowth": ["baseline-evidence", "public-research"],
+}
+EXPECTED_HOST_NATIVE_SATISFACTION = {
+    "lnx": [
+        {"skill": "nix-idea-to-mvp", "path": "product-development/nix-idea-to-mvp", "tree_sha256": "d0594a11fc1ae3e7b852e23f0ea8be40c3273feea903c25a8300e68a2b86db9e"},
+        {"skill": "writing-plans", "path": "software-development/writing-plans", "tree_sha256": "f39910eddd93faa946cffdba88121fbc62bef710ac9087d1221b64a8d7b3da04"},
+        {"skill": "subagent-driven-development", "path": "software-development/subagent-driven-development", "tree_sha256": "e6f083d602c635d8de51ccd5dd0d202cf41e385705cc7a61ead83d05fd17b54f"},
+    ],
+    "pulse": [], "algua": [], "meabeclick": [], "meabeclickux": [], "meabeclickeng": [], "meabeclickgrowth": [],
+}
+EXPECTED_HOST_NATIVE_AUTHORIZATION = {
+    "schema_version": 1,
+    "kind": "corrective_host_native_preservation_authorization",
+    "profile": "lnx",
+    "approved_by": "Lior",
+    "evidence": {"platform": "telegram", "chat_id": "6926015052", "quote": "preserve and amend"},
+    "artifacts": EXPECTED_HOST_NATIVE_SATISFACTION["lnx"],
 }
 EXPECTED_APPROVED_ADDITIONS = {
     "lnx": ["caveman", "watch", "todoist-cli"],
@@ -467,6 +484,14 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         errors.append("persistent skill packs must match the conservative audited matrix")
     if packs.get("profiles") != EXPECTED_PACK_ASSIGNMENTS:
         errors.append("profile pack assignments must match all seven explicit role mappings")
+    if packs.get("host_native_satisfaction") != EXPECTED_HOST_NATIVE_SATISFACTION:
+        errors.append("host-native satisfaction must exactly bind the three reviewed LNX paths and tree digests")
+    authorization = _load_json_object(
+        root / "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
+        "host-native preservation authorization", errors,
+    )
+    if authorization != EXPECTED_HOST_NATIVE_AUTHORIZATION or authorization.get("artifacts") != packs.get("host_native_satisfaction", {}).get("lnx"):
+        errors.append("host-native subtraction requires the exact compile-time Telegram corrective authorization and artifact bindings")
     approved_additions = packs.get("approved_additions")
     if approved_additions != EXPECTED_APPROVED_ADDITIONS:
         errors.append("approved additions must match the exact reviewed profile-specific set")

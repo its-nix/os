@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -227,6 +228,7 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual(manifest["nixkit"]["node_runtime"], installer.NODE_RUNTIME)
         self.assertEqual(manifest["packs"], installer.EXPECTED_PACKS)
         self.assertEqual(manifest["profiles"], installer.EXPECTED_ASSIGNMENTS)
+        self.assertEqual(manifest["host_native_satisfaction"], installer.EXPECTED_HOST_NATIVE_SATISFACTION)
         self.assertEqual(PROFILES, set(installer.PROFILE_MAP))
 
     def test_policy_has_hard_gates_and_threshold(self):
@@ -280,6 +282,8 @@ class SkillInstallerTests(unittest.TestCase):
             #!/usr/bin/env python3
             import json, os, pathlib, sys
             pathlib.Path(os.environ["NIXKIT_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+            if os.environ.get("NIXKIT_MUTATE"):
+                pathlib.Path(os.environ["NIXKIT_MUTATE"]).write_bytes(b"mutated during NixKit")
         """), encoding="utf-8")
         fake.chmod(0o755)
         subprocess.run(["git", "init", "-q"], cwd=kit, check=True)
@@ -297,6 +301,20 @@ class SkillInstallerTests(unittest.TestCase):
         (fixture_root / "skills").mkdir()
         script = fixture_root / "scripts/install-skills.py"
         source = self.script.read_text(encoding="utf-8")
+        host_native_fixture = (
+            ("nix-idea-to-mvp", "product-development/nix-idea-to-mvp"),
+            ("writing-plans", "software-development/writing-plans"),
+            ("subagent-driven-development", "software-development/subagent-driven-development"),
+        )
+        digest_runtime = load_module(f"skill_installer_fixture_digest_{id(base)}", self.script)
+        for name, relative in host_native_fixture:
+            root = hermes_home / "skills" / relative
+            root.mkdir(parents=True)
+            (root / "SKILL.md").write_text(f"---\nname: {name}\n---\nfixture\n", encoding="utf-8")
+            record = next(item for item in packs["host_native_satisfaction"]["lnx"] if item["skill"] == name)
+            fixture_digest = digest_runtime._skill_tree_digest(root)
+            source = source.replace(record["tree_sha256"], fixture_digest)
+            record["tree_sha256"] = fixture_digest
         source = source.replace("f5377ca3219daf4f33f6e8525f9438318dabcd2f", commit)
         source = source.replace("110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83", packs["nixkit"]["sources_sha256"])
         source = source.replace("92338765a1cc942b2a20dda3f1e220d6be0225e1", commit)
@@ -310,6 +328,11 @@ class SkillInstallerTests(unittest.TestCase):
         proposal_manifest["proposed_pack_additions"]["lnx"] = ["product-development"]
         proposal_manifest["approved_pack_additions"]["lnx"] = []
         manifest.write_text(json.dumps(proposal_manifest), encoding="utf-8")
+        authorization_path = fixture_root / "skills/host-native-approvals/lnx-preserve-host-native-v1.json"
+        authorization_path.parent.mkdir(parents=True)
+        authorization = json.loads((ROOT / "skills/host-native-approvals/lnx-preserve-host-native-v1.json").read_text(encoding="utf-8"))
+        authorization["artifacts"] = json.loads(json.dumps(packs["host_native_satisfaction"]["lnx"]))
+        authorization_path.write_text(json.dumps(authorization), encoding="utf-8")
         proposal = json.loads((ROOT / "skills/pack-proposals/lnx-product-development-92338765.json").read_text(encoding="utf-8"))
         proposal["nixkit"]["commit"] = commit
         proposal["nixkit"]["sources_sha256"] = packs["nixkit"]["sources_sha256"]
@@ -355,7 +378,7 @@ class SkillInstallerTests(unittest.TestCase):
             self.assertIn(json.dumps(str(base / "bin/npx")) + ' "--yes" "node@24.22.1"', preview.stdout)
             self.assertIn(json.dumps(str(kit / "install.mjs")), preview.stdout)
             self.assertFalse((base / "calls.json").exists())
-            self.assertFalse(hermes_home.exists())
+            self.assertFalse((hermes_home / "profiles/pulse").exists())
             applied = subprocess.run(command + ["--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, applied.returncode, applied.stderr)
             repeated = subprocess.run(command + ["--apply"], cwd=fixture_root, env=env, text=True, capture_output=True)
@@ -387,7 +410,7 @@ class SkillInstallerTests(unittest.TestCase):
                     self.assertEqual(2, result.returncode, result.stdout + result.stderr)
                     self.assertIn("install.mjs bytes do not match", result.stderr)
                 self.assertFalse((base / "calls.json").exists(), "npx must not run for hidden installer mutations")
-                self.assertFalse(hermes_home.exists(), "refused installer must not create profile state")
+                self.assertFalse((hermes_home / "profiles/pulse").exists(), "refused installer must not create profile state")
 
     def test_rejects_dirty_checkout_symlink_home_and_unapproved_addition(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -399,7 +422,8 @@ class SkillInstallerTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("clean", result.stderr)
             (kit / "dirty").unlink()
-            hermes_home.parent.mkdir(parents=True)
+            shutil.rmtree(hermes_home)
+            hermes_home.parent.mkdir(parents=True, exist_ok=True)
             hermes_home.symlink_to(base / "elsewhere", target_is_directory=True)
             result = subprocess.run(command + ["--profile", "lnx"], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, result.returncode)
@@ -422,7 +446,7 @@ class SkillInstallerTests(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertIn("file set differs from Git tree", result.stderr)
             self.assertFalse((base / "calls.json").exists(), "NixKit must not run after exact-tree refusal")
-            self.assertFalse(hermes_home.exists(), "refused payload must not be copied into a profile")
+            self.assertFalse((hermes_home / "profiles/pulse").exists(), "refused payload must not be copied into a profile")
 
     def test_pack_cannot_be_folded_into_baseline(self):
         installer = load_module("skill_installer_pack_baseline", self.script)
@@ -458,7 +482,7 @@ class SkillInstallerTests(unittest.TestCase):
             valid = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, valid.returncode, valid.stderr)
             for skill in manifest["packs"]["product-development"]:
-                self.assertIn(f'"{skill}"', valid.stdout)
+                self.assertIn(skill, valid.stdout)
 
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             correct_hash = receipt["proposal_file_sha256"]
@@ -494,6 +518,183 @@ class SkillInstallerTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "restore exact approval"], cwd=fixture_root, check=True)
             restored = subprocess.run(command, cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, restored.returncode, restored.stderr)
+
+    def test_lnx_command_omits_only_exact_host_native_satisfaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            result = subprocess.run(
+                ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx"],
+                cwd=fixture_root, env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            command_line = next(line for line in result.stdout.splitlines() if line.startswith("command: "))
+            command_skills = re.findall(r'--skill" "([a-z0-9-]+)', command_line)
+            effective = {
+                skill
+                for pack in manifest["profiles"]["lnx"] + manifest["approved_pack_additions"]["lnx"]
+                for skill in manifest["packs"][pack]
+            }
+            host_native = {item["skill"] for item in manifest["host_native_satisfaction"]["lnx"]}
+            self.assertEqual(sorted(effective - host_native), command_skills)
+            self.assertIn("host-native: nix-idea-to-mvp subagent-driven-development writing-plans", result.stdout)
+
+    def test_host_native_subtraction_requires_exact_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            authorization_path = fixture_root / "skills/host-native-approvals/lnx-preserve-host-native-v1.json"
+            authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+            authorization["evidence"]["quote"] = "preserve"
+            authorization_path.write_text(json.dumps(authorization), encoding="utf-8")
+            result = subprocess.run(
+                ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx"],
+                cwd=fixture_root, env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("exact compile-time record", result.stderr)
+            self.assertNotIn("host-native:", result.stdout)
+
+    def test_apply_refuses_host_native_drift_caused_by_nixkit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
+            target = hermes_home / "skills/product-development/nix-idea-to-mvp/SKILL.md"
+            env["NIXKIT_MUTATE"] = str(target)
+            result = subprocess.run(
+                ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx", "--apply"],
+                cwd=fixture_root, env=env, text=True, capture_output=True,
+            )
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            self.assertTrue((base / "calls.json").is_file(), "NixKit must run before the post-run check")
+            self.assertIn("host-native skill tree digest mismatch", result.stderr)
+
+    def test_host_native_digest_binds_paths_types_modes_and_bytes(self):
+        installer = load_module("skill_installer_host_native_digest", self.script)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skill"
+            nested = root / "references"
+            nested.mkdir(parents=True)
+            manifest = root / "SKILL.md"
+            manifest.write_text("---\nname: writing-plans\n---\nbody\n", encoding="utf-8")
+            support = nested / "guide.txt"
+            support.write_bytes(b"guide\n")
+            root.chmod(0o750); nested.chmod(0o710); manifest.chmod(0o640); support.chmod(0o600)
+            original = installer._skill_tree_digest(root)
+            self.assertEqual(original, installer._skill_tree_digest(root))
+
+            mutations = (
+                lambda: support.write_bytes(b"Guide\n"),
+                lambda: support.chmod(0o640),
+                lambda: nested.chmod(0o750),
+                lambda: support.rename(nested / "renamed.txt"),
+            )
+            for mutate in mutations:
+                with self.subTest(mutation=mutate):
+                    copy = Path(tmp) / f"copy-{len(list(Path(tmp).iterdir()))}"
+                    shutil.copytree(root, copy, copy_function=shutil.copy2)
+                    copied_support = copy / "references/guide.txt"
+                    copied_nested = copy / "references"
+                    support, nested = copied_support, copied_nested
+                    mutate()
+                    self.assertNotEqual(original, installer._skill_tree_digest(copy))
+
+    def test_host_native_digest_fixed_depth_first_per_directory_vector(self):
+        installer = load_module("skill_installer_host_native_vector", self.script)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "tree"
+            (root / "a").mkdir(parents=True)
+            (root / "a/z.txt").write_bytes(b"z\n")
+            (root / "b.txt").write_bytes(b"b\n")
+            root.chmod(0o750); (root / "a").chmod(0o710)
+            (root / "a/z.txt").chmod(0o600); (root / "b.txt").chmod(0o640)
+            actual = installer._skill_tree_digest(root)
+            self.assertEqual(
+                "d2e57af397e9f2b1da79e602cd343ff6b21b801f840d2e347029c7f31762a83b",
+                actual,
+            )
+            self.assertNotEqual(
+                "23d7e91470eb9376dbb0d4177bd76e5dc9b4644b1fb9c848f9a507226f4631f8",
+                actual,
+                "the v1 vector is depth-first per directory, not globally path-sorted",
+            )
+
+    def test_host_native_digest_rejects_file_and_directory_replacement_races(self):
+        installer = load_module("skill_installer_host_native_races", self.script)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "tree"; root.mkdir()
+            payload = root / "payload"; payload.write_bytes(b"original")
+            real_open = installer.os.open
+            swapped = False
+            def swap_before_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                if path == "payload" and kwargs.get("dir_fd") is not None and not swapped:
+                    replacement = root / "replacement"
+                    replacement.write_bytes(b"attacker")
+                    replacement.chmod(payload.stat().st_mode & 0o777)
+                    replacement.replace(payload); swapped = True
+                return real_open(path, flags, *args, **kwargs)
+            with mock.patch.object(installer.os, "open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(installer.Refusal, "changed while being hashed"):
+                    installer._skill_tree_digest(root)
+
+            payload.write_bytes(b"original"); swapped = False
+            real_read = installer.os.read
+            def swap_after_open(fd, size):
+                nonlocal swapped
+                data = real_read(fd, size)
+                if data == b"original" and not swapped:
+                    replacement = root / "replacement-after"
+                    replacement.write_bytes(b"attacker")
+                    replacement.chmod(payload.stat().st_mode & 0o777)
+                    replacement.replace(payload); swapped = True
+                return data
+            with mock.patch.object(installer.os, "read", side_effect=swap_after_open):
+                with self.assertRaisesRegex(installer.Refusal, "changed while being hashed"):
+                    installer._skill_tree_digest(root)
+
+            payload.unlink(); child = root / "child"; child.mkdir(); (child / "x").write_bytes(b"x")
+            swapped = False
+            def swap_directory_before_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                if path == "child" and kwargs.get("dir_fd") is not None and not swapped:
+                    child.rename(root / "old-child"); child.mkdir(); (child / "x").write_bytes(b"x"); swapped = True
+                return real_open(path, flags, *args, **kwargs)
+            with mock.patch.object(installer.os, "open", side_effect=swap_directory_before_open):
+                with self.assertRaisesRegex(installer.Refusal, "changed while being hashed"):
+                    installer._skill_tree_digest(root)
+
+    def test_host_native_rejects_symlinks_specials_bad_frontmatter_duplicates_and_traversal(self):
+        installer = load_module("skill_installer_host_native_refusals", self.script)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); profile = base / "profile"; root = profile / "skills/category/example"
+            root.mkdir(parents=True)
+            manifest = root / "SKILL.md"; manifest.write_text("---\nname: example\n---\n", encoding="utf-8")
+            digest = installer._skill_tree_digest(root)
+            valid = {name: [] for name in installer.PROFILES}
+            valid["lnx"] = [{"skill": "example", "path": "category/example", "tree_sha256": digest}]
+            self.assertEqual({"example": manifest}, installer._validate_host_native_satisfaction("lnx", profile, valid))
+
+            wrong_name = json.loads(json.dumps(valid)); manifest.write_text("---\nname: other\n---\n", encoding="utf-8")
+            wrong_name["lnx"][0]["tree_sha256"] = installer._skill_tree_digest(root)
+            with self.assertRaisesRegex(installer.Refusal, "frontmatter name"):
+                installer._validate_host_native_satisfaction("lnx", profile, wrong_name)
+            manifest.write_text("---\nname: example\n---\n", encoding="utf-8")
+
+            duplicate = json.loads(json.dumps(valid)); duplicate["lnx"].append(dict(duplicate["lnx"][0]))
+            with self.assertRaises(installer.Refusal): installer._validate_host_native_satisfaction("lnx", profile, duplicate)
+            traversal = json.loads(json.dumps(valid)); traversal["lnx"][0]["path"] = "../example"
+            with self.assertRaisesRegex(installer.Refusal, "malformed"):
+                installer._validate_host_native_satisfaction("lnx", profile, traversal)
+
+            link = root / "link"; link.symlink_to(manifest)
+            with self.assertRaisesRegex(installer.Refusal, "symlink or special"):
+                installer._skill_tree_digest(root)
+            link.unlink()
+            fifo = root / "pipe"; os.mkfifo(fifo)
+            with self.assertRaisesRegex(installer.Refusal, "symlink or special"):
+                installer._skill_tree_digest(root)
 
     def test_pack_approval_rejects_wrong_discord_author(self):
         installer = load_module("skill_installer_wrong_approval_author", self.script)
@@ -586,7 +787,7 @@ class SkillInstallerTests(unittest.TestCase):
             base = Path(tmp)
             home, hermes_home, kit, manifest_path, script, fixture_root, env = self._fixture(base)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["approved_additions"]["lnx"] = ["caveman", "watch"]
+            manifest["approved_additions"]["lnx"] = ["caveman", "watch", "todoist-cli"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             kit_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=kit, text=True).strip()
 
@@ -610,6 +811,7 @@ class SkillInstallerTests(unittest.TestCase):
             records = {
                 "lnx-caveman": proposal("lnx-caveman", "lnx", "caveman", "example/source", "b" * 40, "skills/caveman"),
                 "lnx-watch": proposal("lnx-watch", "lnx", "watch", "its-nix/kit", kit_commit, "skills/watch"),
+                "lnx-todoist": proposal("lnx-todoist", "lnx", "todoist-cli", "example/source", "b" * 40, "skills/todoist-cli"),
                 "pulse-watch": proposal("pulse-watch", "pulse", "watch", "its-nix/kit", kit_commit, "skills/watch"),
                 "lnx-cross-skill": proposal("lnx-cross-skill", "lnx", "caveman", "example/source", "b" * 40, "skills/caveman"),
             }
@@ -626,6 +828,7 @@ class SkillInstallerTests(unittest.TestCase):
             receipt_records = {
                 "lnx-caveman": receipt("lnx-caveman", "lnx", ["caveman"]),
                 "lnx-watch": receipt("lnx-watch", "lnx", ["watch"]),
+                "lnx-todoist": receipt("lnx-todoist", "lnx", ["todoist-cli"]),
                 "pulse-watch": receipt("pulse-watch", "pulse", ["watch"]),
                 "lnx-cross-skill": receipt("lnx-cross-skill", "lnx", ["watch"]),
             }
@@ -634,19 +837,21 @@ class SkillInstallerTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
             subprocess.run(["git", "commit", "-qm", "record separate approvals"], cwd=fixture_root, check=True)
 
-            base_command = ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx", "--skill", "caveman", "--skill", "watch"]
+            base_command = ["python3", str(script), "--nixkit", str(kit), "--profile", "lnx", "--skill", "caveman", "--skill", "watch", "--skill", "todoist-cli"]
             caveman = str(approvals / "lnx-caveman.json")
             watch = str(approvals / "lnx-watch.json")
-            success = subprocess.run(base_command + ["--approval", caveman, "--approval", watch], cwd=fixture_root, env=env, text=True, capture_output=True)
+            todoist = str(approvals / "lnx-todoist.json")
+            success = subprocess.run(base_command + ["--approval", caveman, "--approval", watch, "--approval", todoist], cwd=fixture_root, env=env, text=True, capture_output=True)
             self.assertEqual(0, success.returncode, success.stderr)
             self.assertIn("caveman", success.stdout)
             self.assertIn("watch", success.stdout)
+            self.assertIn('"--skill" "todoist-cli"', success.stdout)
 
             cases = {
                 "missing": (["--approval", caveman], "exactly cover"),
-                "duplicate-overlap": (["--approval", caveman, "--approval", caveman, "--approval", watch], "disjoint"),
-                "cross-profile": (["--approval", caveman, "--approval", str(approvals / "pulse-watch.json")], "misbound"),
-                "cross-skill": (["--approval", caveman, "--approval", str(approvals / "lnx-cross-skill.json")], "identity/status/skills"),
+                "duplicate-overlap": (["--approval", caveman, "--approval", caveman, "--approval", watch, "--approval", todoist], "disjoint"),
+                "cross-profile": (["--approval", caveman, "--approval", str(approvals / "pulse-watch.json"), "--approval", todoist], "misbound"),
+                "cross-skill": (["--approval", caveman, "--approval", str(approvals / "lnx-cross-skill.json"), "--approval", todoist], "identity/status/skills"),
             }
             for label, (arguments, message) in cases.items():
                 with self.subTest(label=label):
