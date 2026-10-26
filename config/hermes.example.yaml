@@ -4,7 +4,8 @@ agent:
   tool_use_enforcement: true
   verify_on_stop: true
 approvals:
-  mode: smart
+  mode: manual
+  cron_mode: deny
 security:
   redact_secrets: true
 kanban:
@@ -12,7 +13,11 @@ kanban:
   max_in_progress: 2
 delegation:
   max_concurrent_children: 3
+  max_iterations: 50
   max_spawn_depth: 2
+display:
+  tool_progress: all
+  background_process_notifications: all
 memory:
   write_approval: true
 terminal:
