@@ -989,6 +989,14 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(7, len(scouts))
         self.assertEqual({"default", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"}, {job["hermes_profile"] for job in scouts})
         self.assertTrue(all(job["delivery"] == "local" for job in scouts))
+        expected_models = {
+            "default": "gpt-6-luna", "pulse": "gpt-6-luna",
+            "algua": "gpt-6.1-sol", "meabeclick": "gpt-6-luna",
+            "meabeclickux": "gpt-6-luna", "meabeclickeng": "gpt-6.1-sol",
+            "meabeclickgrowth": "gpt-6-luna",
+        }
+        self.assertTrue(all(job["provider"] == "openai-codex" for job in data["jobs"]))
+        self.assertTrue(all(job["model"] == expected_models[job["hermes_profile"]] for job in data["jobs"]))
         self.assertEqual(["telegram:6926015052"], [job["delivery_enabled"] for job in aggregators])
         self.assertTrue(aggregators[0]["continuity"])
 
@@ -1280,6 +1288,7 @@ class ScoutSetupTests(unittest.TestCase):
         actual = {
             "id": "fixture", "name": desired["name"], "schedule": {"kind": "cron", "value": desired["schedule"]},
             "prompt": self.setup._prompt(desired), "deliver": ["local"], "continuity": False, "script": None,
+            "provider": desired["provider"], "model": desired["model"],
         }
         self.assertTrue(self.setup._is_exact(actual, desired))  # documented legacy missing-enabled shape
         for field, value in (("enabled", True), ("state", "scheduled"), ("status", "active")):
@@ -1313,7 +1322,7 @@ class ScoutSetupTests(unittest.TestCase):
                 if cmd[:2]==['cron','create']:
                     count_path=pathlib.Path(os.environ['FAKE_COUNT']); count=int(count_path.read_text())+1 if count_path.exists() else 1; count_path.write_text(str(count))
                     def value(flag, default=None): return cmd[cmd.index(flag)+1] if flag in cmd else default
-                    job={'id':f'{count:012x}', 'name':value('--name'), 'schedule':{'kind':'cron','value':cmd[2]}, 'prompt':cmd[3], 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
+                    job={'id':f'{count:012x}', 'name':value('--name'), 'schedule':{'kind':'cron','value':cmd[2]}, 'prompt':cmd[3], 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script'), 'provider':value('--provider'), 'model':value('--model')}
                     if count==2:
                         job['enabled']=False
                         jobs.append({'id':'cccccccccccc', **{key:value for key,value in job.items() if key!='id'}, 'enabled':True})
@@ -1321,7 +1330,11 @@ class ScoutSetupTests(unittest.TestCase):
                 if cmd[:2]==['cron','remove']:
                     identifier=cmd[2]; jobs=[job for job in jobs if job.get('id')!=identifier]; f.write_text(json.dumps(jobs)); raise SystemExit(0)
                 if cmd[:2]==['cron','edit']:
-                    identifier=cmd[2]; job=next(job for job in jobs if job.get('id')==identifier); job['deliver']=[cmd[cmd.index('--deliver')+1]]; f.write_text(json.dumps(jobs)); raise SystemExit(0)
+                    identifier=cmd[2]; job=next(job for job in jobs if job.get('id')==identifier)
+                    if '--deliver' in cmd: job['deliver']=[cmd[cmd.index('--deliver')+1]]
+                    if '--provider' in cmd: job['provider']=cmd[cmd.index('--provider')+1]
+                    if '--model' in cmd: job['model']=cmd[cmd.index('--model')+1]
+                    f.write_text(json.dumps(jobs)); raise SystemExit(0)
                 raise SystemExit('unexpected '+repr(cmd))
             """), encoding="utf-8")
             fake.chmod(0o755)
@@ -1376,10 +1389,14 @@ class ScoutSetupTests(unittest.TestCase):
                 elif cmd[:2]==['cron','create']:
                     schedule,prompt=cmd[2],cmd[3]
                     def value(flag, default=None): return cmd[cmd.index(flag)+1] if flag in cmd else default
-                    j={'id':uuid.uuid4().hex[:12], 'name':value('--name'), 'schedule':{'kind':'cron','value':schedule}, 'schedule_display':schedule, 'prompt':prompt, 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script')}
+                    j={'id':uuid.uuid4().hex[:12], 'name':value('--name'), 'schedule':{'kind':'cron','value':schedule}, 'schedule_display':schedule, 'prompt':prompt, 'deliver':[value('--deliver','local')], 'continuity':'--continuity' in cmd, 'script':value('--script'), 'provider':value('--provider'), 'model':value('--model')}
                     jobs.append(j); f.write_text(json.dumps(jobs)); print(f"Created job: {j['id']}"); print(f"  Name: {j['name']}")
                 elif cmd[:2]==['cron','edit']:
-                    ref=cmd[2]; j=next(x for x in jobs if x['id']==ref or x['name']==ref); j['deliver']=[cmd[cmd.index('--deliver')+1]]; f.write_text(json.dumps(jobs))
+                    ref=cmd[2]; j=next(x for x in jobs if x['id']==ref or x['name']==ref)
+                    if '--deliver' in cmd: j['deliver']=[cmd[cmd.index('--deliver')+1]]
+                    if '--provider' in cmd: j['provider']=cmd[cmd.index('--provider')+1]
+                    if '--model' in cmd: j['model']=cmd[cmd.index('--model')+1]
+                    f.write_text(json.dumps(jobs))
                 else: raise SystemExit('unexpected '+repr(cmd))
             """), encoding="utf-8")
             fake.chmod(0o755)
@@ -1390,14 +1407,20 @@ class ScoutSetupTests(unittest.TestCase):
             first=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, first.returncode, first.stderr)
             before=log.read_text().splitlines()
+            pulse_jobs=json.loads((state/"pulse.json").read_text())
+            pulse_jobs[0]["provider"]=None; pulse_jobs[0]["model"]=None
+            (state/"pulse.json").write_text(json.dumps(pulse_jobs))
             second=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, second.returncode, second.stderr)
             after=log.read_text().splitlines()[len(before):]
             self.assertFalse(any('"create"' in line for line in after), after)
+            self.assertTrue(any('"edit"' in line and '"--provider", "openai-codex"' in line and '"--model", "gpt-6-luna"' in line for line in after), after)
+            pulse_job=json.loads((state/"pulse.json").read_text())[0]
+            self.assertEqual(("openai-codex", "gpt-6-luna"), (pulse_job["provider"], pulse_job["model"]))
             enabled=subprocess.run(cmd+["--apply", "--enable-delivery"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, enabled.returncode, enabled.stderr)
             preview_enabled=subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True)
-            self.assertIn("nix-skill-scout-aggregate @ 0 21 * * 6 -> telegram:6926015052", preview_enabled.stdout)
+            self.assertIn("nix-skill-scout-aggregate @ 0 21 * * 6 [openai-codex/gpt-6-luna] -> telegram:6926015052", preview_enabled.stdout)
             before_preserve=log.read_text().splitlines()
             preserve=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, preserve.returncode, preserve.stderr)

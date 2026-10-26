@@ -24,6 +24,7 @@ REQUIRED = {
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
     "scripts/reconcile-hermes-default.sh",
+    "scripts/reconcile-hermes-models.py",
     "skills/packs.json",
     "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
@@ -39,6 +40,7 @@ REQUIRED = {
     "automation/skill-scout/report.schema.json",
     "automation/skill-scout/collect.py",
     "tests/test_skills.py",
+    "tests/test_model_routing.py",
     ".github/workflows/ci.yml",
     *{f"profiles/{name}/ROLE.md" for name in (
         "lnx", "pulse", "algua", "meabeclick", "meabeclickux",
@@ -349,6 +351,18 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual("default", profiles["lnx"]["hermes_profile"])
         self.assertEqual("lnx", manifest["orchestrator"])
         self.assertEqual(["lnx"], manifest["discord_visible_profiles"])
+        self.assertEqual("openai-codex", manifest["hermes_model_routing"]["provider"])
+        self.assertEqual(MODELS := {
+            "default": "gpt-6-luna", "pulse": "gpt-6-luna",
+            "meabeclick": "gpt-6-luna", "meabeclickux": "gpt-6-luna",
+            "meabeclickgrowth": "gpt-6-luna", "algua": "gpt-6.1-sol",
+            "meabeclickeng": "gpt-6.1-sol",
+        }, manifest["hermes_model_routing"]["models"])
+        self.assertEqual({"default", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"}, set(MODELS))
+        self.assertEqual([{
+            "hermes_profile": "default", "name": "Weekly Hermes aggregate usage review",
+            "provider": "openai-codex", "model": "gpt-6-luna",
+        }], manifest["hermes_model_routing"]["managed_cron_jobs"])
         self.assertEqual({"pulse", "algua", "meabeclick"}, {p["id"] for p in manifest["projects"]})
         self.assertEqual("lior-only", manifest["todoist"]["scope"])
 

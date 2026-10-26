@@ -27,13 +27,20 @@
 
 Hermes resolves state under `$HERMES_HOME`; when unset, it uses `${HOME}/.hermes`. Each named profile has an isolated local home. The LNX contract maps to Hermes' `default` profile. `ROLE.md` contracts are installed as local `SOUL.md` files only when bootstrap atomically claims an otherwise-missing named profile directory. Bootstrap deliberately does not call `hermes profile create`, because current Hermes versions initialize unrelated state in the active default home.
 
-Existing local profile directories are treated as user-owned. If a directory or identity file already exists, bootstrap reports it and makes no profile-level changes. Configuration remains a deliberate manual operation through Hermes CLI commands.
+Existing local profile directories are treated as user-owned. If a directory or identity file already exists, bootstrap reports it and makes no profile-level changes. The model-routing reconciler changes only the declared non-secret `model.provider` and `model.default` values through supported Hermes CLI commands after a full typed-read preflight.
 
 ## Skill and scout state
 
 Role-pack manifests and schemas are reviewable Git state. Installed skill copies belong to each exact local profile home and are never imported back into the repository. NixKit checkouts and authentication stores remain user-owned. The installation wrapper reads only Git metadata, the pinned source manifest, and destination paths; it never reads secrets.
 
 Scout packets live under `${HOME}/.local/share/hermes-scouts/<ISO-WEEK>/` and are untracked runtime data. Hermes cron state remains in each profile's own canonical local store (`${HERMES_HOME}/cron/jobs.json` for default and `${HERMES_HOME}/profiles/<name>/cron/jobs.json` for named profiles). `scripts/setup-skill-scouts.py` uses the CLI to create/edit/remove jobs and reads those stores only for preflight and exact post-command/rollback readback; repository code never writes `jobs.json` directly. Reconciliation rollback is invocation-scoped: it removes only newly created IDs, restores only a delivery target changed by that run, and deletes only a newly installed byte-identical collector. Pre-existing jobs and collectors remain user-owned. A store override is refused except in explicit test mode, where fake command-created state still receives exact readback validation. The collector copy exists only under the default profile's local scripts directory.
+
+Every governed scout job stores an explicit provider/model snapshot. Existing
+jobs whose only drift is routing are corrected by stable job ID discovered from
+their exact governed name; unrelated drift still fails closed. The separately
+governed weekly token-usage review is selected by its unique stable name and
+pinned to Luna by `scripts/reconcile-hermes-models.py`; its unstable local job
+ID is never declared in Git.
 
 ## Secret setup
 

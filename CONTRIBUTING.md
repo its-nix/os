@@ -31,7 +31,8 @@ Never add credentials, tokens, `.env` files, authentication stores, memories, se
 python3 -m unittest discover -s tests -v
 python3 scripts/verify.py
 bash -n scripts/bootstrap.sh
-python3 -m py_compile scripts/verify.py scripts/install-skills.py scripts/setup-skill-scouts.py automation/skill-scout/collect.py
+python3 -m py_compile scripts/verify.py scripts/install-skills.py scripts/setup-skill-scouts.py scripts/reconcile-hermes-models.py automation/skill-scout/collect.py
 bash scripts/bootstrap.sh
 python3 scripts/setup-skill-scouts.py
+python3 scripts/reconcile-hermes-models.py
 ```

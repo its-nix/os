@@ -4,6 +4,26 @@
   "description": "Lean Hermes operating model for the Nix portfolio",
   "orchestrator": "lnx",
   "discord_visible_profiles": ["lnx"],
+  "hermes_model_routing": {
+    "provider": "openai-codex",
+    "models": {
+      "default": "gpt-6-luna",
+      "pulse": "gpt-6-luna",
+      "meabeclick": "gpt-6-luna",
+      "meabeclickux": "gpt-6-luna",
+      "meabeclickgrowth": "gpt-6-luna",
+      "algua": "gpt-6.1-sol",
+      "meabeclickeng": "gpt-6.1-sol"
+    },
+    "managed_cron_jobs": [
+      {
+        "hermes_profile": "default",
+        "name": "Weekly Hermes aggregate usage review",
+        "provider": "openai-codex",
+        "model": "gpt-6-luna"
+      }
+    ]
+  },
   "skill_governance": {
     "packs": "skills/packs.json",
     "proposal_schema": "skills/proposal.schema.json",

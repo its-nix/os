@@ -17,14 +17,14 @@ from typing import NamedTuple
 ROOT = Path(__file__).resolve().parents[1]
 AUTOMATION = ROOT / "automation/skill-scout"
 EXPECTED_JOBS = [
-    {"name": "nix-skill-scout-pulse", "kind": "scout", "profile": "pulse", "hermes_profile": "pulse", "schedule": "0 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-algua", "kind": "scout", "profile": "algua", "hermes_profile": "algua", "schedule": "20 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclick", "kind": "scout", "profile": "meabeclick", "hermes_profile": "meabeclick", "schedule": "40 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclickux", "kind": "scout", "profile": "meabeclickux", "hermes_profile": "meabeclickux", "schedule": "0 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
+    {"name": "nix-skill-scout-pulse", "kind": "scout", "profile": "pulse", "hermes_profile": "pulse", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-algua", "kind": "scout", "profile": "algua", "hermes_profile": "algua", "provider": "openai-codex", "model": "gpt-6.1-sol", "schedule": "20 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclick", "kind": "scout", "profile": "meabeclick", "hermes_profile": "meabeclick", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "40 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickux", "kind": "scout", "profile": "meabeclickux", "hermes_profile": "meabeclickux", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "provider": "openai-codex", "model": "gpt-6.1-sol", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
 ]
 CANONICAL_FILES = (
     "automation/skill-scout/jobs.json", "automation/skill-scout/scout-prompt.md",
@@ -112,12 +112,16 @@ def _is_operational(job: dict) -> bool:
     return True
 
 
-def _is_exact(actual: dict, desired: dict) -> bool:
+def _is_exact(actual: dict, desired: dict, *, check_routing: bool = True) -> bool:
     if not _is_operational(actual):
         return False
     if actual.get("name") != desired["name"] or _schedule_value(actual) != desired["schedule"]:
         return False
     if actual.get("prompt") != _prompt(desired):
+        return False
+    if check_routing and (
+        actual.get("provider") != desired["provider"] or actual.get("model") != desired["model"]
+    ):
         return False
     expected_script = desired.get("script")
     actual_script = actual.get("script")
@@ -163,6 +167,7 @@ def _created_job_id(output: str) -> str:
 
 def _create_args(job: dict) -> list[str]:
     args = ["cron", "create", job["schedule"], _prompt(job), "--name", job["name"], "--deliver", "local"]
+    args.extend(["--provider", job["provider"], "--model", job["model"]])
     if job.get("script"):
         args.extend(["--script", job["script"]])
     if job.get("continuity"):
@@ -388,7 +393,10 @@ def main() -> int:
         print(("APPLY" if args.apply else "PREVIEW") + " weekly skill-scout reconciliation")
         print("Timezone contract: Asia/Jerusalem (the Hermes gateway host must use this timezone).")
         for job in jobs:
-            print(f"  {job['hermes_profile']}: {job['name']} @ {job['schedule']} -> {_preview_delivery(base, job, args.enable_delivery)}")
+            print(
+                f"  {job['hermes_profile']}: {job['name']} @ {job['schedule']} "
+                f"[{job['provider']}/{job['model']}] -> {_preview_delivery(base, job, args.enable_delivery)}"
+            )
         if not args.apply:
             return 0
 
@@ -407,7 +415,7 @@ def main() -> int:
                 matches = [job for job in existing if job.get("name") == desired["name"]]
                 if len(matches) > 1:
                     raise Refusal(f"duplicate same-name jobs for {desired['name']}")
-                if matches and not _is_exact(matches[0], desired):
+                if matches and not _is_exact(matches[0], desired, check_routing=False):
                     raise Refusal(f"same-name cron drift detected for {desired['name']}; refusing overwrite")
 
         collector_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -428,6 +436,24 @@ def main() -> int:
                     current = name_matches[0] if len(name_matches) == 1 else None
                     if current is None or current.get("id") != identifier or not _is_exact(current, desired):
                         raise Refusal(f"Hermes readback mismatch after creating {desired['name']}")
+                    existing_by_profile[profile] = refreshed
+                if current.get("provider") != desired["provider"] or current.get("model") != desired["model"]:
+                    identifier = current.get("id")
+                    if not isinstance(identifier, str) or not identifier:
+                        raise Refusal(f"{desired['name']} has no stable job id for model-routing edit")
+                    _run_hermes(
+                        binary,
+                        profile,
+                        [
+                            "cron", "edit", identifier,
+                            "--provider", desired["provider"],
+                            "--model", desired["model"],
+                        ],
+                    )
+                    refreshed = _read_jobs(_job_store(base, profile))
+                    current = next((job for job in refreshed if job.get("name") == desired["name"]), None)
+                    if current is None or not _is_exact(current, desired):
+                        raise Refusal(f"model-routing readback mismatch for {desired['name']}")
                     existing_by_profile[profile] = refreshed
                 if args.enable_delivery and desired["kind"] == "aggregator" and _delivery(current) != [desired["delivery_enabled"]]:
                     identifier = current.get("id")

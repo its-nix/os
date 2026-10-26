@@ -25,6 +25,7 @@ REQUIRED_FILES = {
     "scripts/verify.py",
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
+    "scripts/reconcile-hermes-models.py",
     "skills/packs.json",
     "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
@@ -43,6 +44,7 @@ REQUIRED_FILES = {
     "docs/SKILL-GOVERNANCE.md",
     "tests/test_repository.py",
     "tests/test_skills.py",
+    "tests/test_model_routing.py",
     ".github/workflows/ci.yml",
     "skills/proposals/lnx-todoist-cli-340d7b21.json",
     "skills/proposals/pulse-technical-project-management-7f446e60.json",
@@ -61,6 +63,19 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
+EXPECTED_MODEL_ROUTING = {
+    "provider": "openai-codex",
+    "models": {
+        "default": "gpt-6-luna", "pulse": "gpt-6-luna",
+        "meabeclick": "gpt-6-luna", "meabeclickux": "gpt-6-luna",
+        "meabeclickgrowth": "gpt-6-luna", "algua": "gpt-6.1-sol",
+        "meabeclickeng": "gpt-6.1-sol",
+    },
+    "managed_cron_jobs": [{
+        "hermes_profile": "default", "name": "Weekly Hermes aggregate usage review",
+        "provider": "openai-codex", "model": "gpt-6-luna",
+    }],
+}
 NIXKIT_COMMIT = "f5377ca3219daf4f33f6e8525f9438318dabcd2f"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
 NIXKIT_SOURCES_SHA256 = "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83"
@@ -183,14 +198,14 @@ SCOUT_CANDIDATE_FIELDS = {
     "evidence_urls", "risks", "score_components", "score", "gates", "gate_evidence",
 }
 EXPECTED_SCOUT_JOBS = [
-    {"name": "nix-skill-scout-pulse", "kind": "scout", "profile": "pulse", "hermes_profile": "pulse", "schedule": "0 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-algua", "kind": "scout", "profile": "algua", "hermes_profile": "algua", "schedule": "20 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclick", "kind": "scout", "profile": "meabeclick", "hermes_profile": "meabeclick", "schedule": "40 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclickux", "kind": "scout", "profile": "meabeclickux", "hermes_profile": "meabeclickux", "schedule": "0 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
+    {"name": "nix-skill-scout-pulse", "kind": "scout", "profile": "pulse", "hermes_profile": "pulse", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-algua", "kind": "scout", "profile": "algua", "hermes_profile": "algua", "provider": "openai-codex", "model": "gpt-6.1-sol", "schedule": "20 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclick", "kind": "scout", "profile": "meabeclick", "hermes_profile": "meabeclick", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "40 18 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickux", "kind": "scout", "profile": "meabeclickux", "hermes_profile": "meabeclickux", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "provider": "openai-codex", "model": "gpt-6.1-sol", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
+    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "provider": "openai-codex", "model": "gpt-6-luna", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
 ]
 EXPECTED_PROFILE_LAYOUT = {
     "lnx": ("default", "orchestrator", None, ["pulse", "algua", "meabeclick"]),
@@ -319,6 +334,8 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], errors: list[str]) 
         errors.append("manifest orchestrator must be lnx")
     if manifest.get("discord_visible_profiles") != ["lnx"]:
         errors.append("exactly one initial Discord-visible profile is required: lnx")
+    if manifest.get("hermes_model_routing") != EXPECTED_MODEL_ROUTING:
+        errors.append("Hermes model routing must match the exact approved profile and managed-cron mapping")
     todoist = manifest.get("todoist")
     if not isinstance(todoist, dict) or todoist.get("cli") != "td" or todoist.get("scope") != "lior-only":
         errors.append("Todoist must use td and scope lior-only")

@@ -32,6 +32,7 @@ bash scripts/bootstrap.sh --apply  # explicit local mutation
 python3 scripts/install-skills.py --profile lnx --nixkit /path/to/nixkit
 python3 scripts/setup-skill-scouts.py  # preview only
 scripts/reconcile-hermes-default.sh    # preview config/runtime reconciliation
+python3 scripts/reconcile-hermes-models.py  # preview profile/cron model routing
 ```
 
 The apply mode creates only missing named profile directories with reviewed role contracts, then uses Hermes CLI for missing boards and projects. It deliberately avoids `hermes profile create`, because that command initializes unrelated active-profile state. Existing profile identity and configuration are preserved; only the requested missing profile directories, boards, and project records are added. The script never reads or writes credentials, memories, sessions, transcripts, or copied runtime data.
@@ -73,6 +74,33 @@ hermes import <backup.zip>
 Successful command exit does not promise warning-free diagnostics; review the
 config-check, doctor, and gateway status output for warnings or degraded state.
 
+## Declarative model routing
+
+`nix-os.yaml` pins `openai-codex` for every profile. LNX/default, Pulse,
+MeaBeclick Lead, UX, and Growth use `gpt-6-luna`; Algua and Engineering use
+`gpt-6.1-sol`. LNX is intentionally a thin Luna orchestrator. Complex or
+high-risk work assigned directly to LNX goes to a fresh stronger-model child,
+normally `gpt-6.1-sol`; `gpt-6-astra` is reserved for exceptional review.
+
+The model reconciler is preview-first and invokes no Hermes command in preview.
+Apply requires all seven profile directories, preflights typed JSON reads for
+both model keys in every profile, sets provider and model explicitly through
+`hermes -p PROFILE config set`, and verifies each with exact typed JSON
+readback. It also finds the governed `Weekly Hermes aggregate usage review` by
+its unique stable name—not its runtime-generated ID—and pins its stored cron
+snapshot to Luna:
+
+```bash
+python3 scripts/reconcile-hermes-models.py
+python3 scripts/reconcile-hermes-models.py --apply
+```
+
+Apply can be rerun safely. It fails closed before mutation when a required
+profile, typed config read, or uniquely named managed cron job is unavailable;
+after the first write, any failure is reported as potentially partial and the
+same command is the recovery path. It never reads credentials, sessions, or
+memories.
+
 ## Governed role skills
 
 `skills/packs.json` pins NixKit checkout `f5377ca3219daf4f33f6e8525f9438318dabcd2f` and audited `sources.json` SHA-256 `110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83`, whose seven LNX skills retain source snapshot `da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3`. It classifies all 57 source skills into explicit persistent role packs, task-only tools, or exclusions. There is no universal pack. The baseline and all named role packs are unchanged. `web-design-guidelines` and `find-docs` remain task-only because their pinned skill instructions fetch mutable latest dependencies at runtime. Caveman and Watch retain their receipt-backed LNX-only single-skill approvals.
@@ -85,7 +113,7 @@ The manifest retains 11 least-privilege, receipt-backed profile-skill assignment
 
 ## Weekly scouting
 
-Seven role scouts run locally on staggered Saturday `Asia/Jerusalem` schedules. A default-profile aggregator validates all seven current-week packets, deterministically deduplicates qualifying candidates, and returns `[SILENT]` only for a complete valid week with nothing to report. Provisioning is preview-first:
+Seven role scouts run locally on staggered Saturday `Asia/Jerusalem` schedules. A default-profile aggregator validates all seven current-week packets, deterministically deduplicates qualifying candidates, and returns `[SILENT]` only for a complete valid week with nothing to report. Every job pins the profile's declared provider/model snapshot, and setup safely corrects routing-only drift while refusing unrelated same-name drift. Provisioning is preview-first:
 
 ```bash
 python3 scripts/setup-skill-scouts.py
@@ -108,6 +136,7 @@ The previous Paperclip-based design remains preserved remotely at `archive/paper
 - `scripts/install-skills.py` — pinned, exact-subset NixKit role installation
 - `scripts/setup-skill-scouts.py` — preview-first per-profile cron reconciliation
 - `scripts/reconcile-hermes-default.sh` — preview-first default-profile config/runtime reconciliation
+- `scripts/reconcile-hermes-models.py` — preview-first seven-profile and named-cron model routing
 - `skills/` — role packs and proposal/approval schemas
 - `automation/skill-scout/` — declarative jobs, prompts, report schema, and collector
 - `scripts/verify.py` — dependency-free repository safety verifier

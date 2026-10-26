@@ -18,6 +18,19 @@ Lior ⇄ Discord ⇄ LNX/default
 
 LNX is the portfolio front door and the only initially exposed messaging identity. Leads own project decomposition and synthesis. Specialists operate only inside their stated duties and return evidence to the MeaBeclick Lead.
 
+## Model-routing plane
+
+All seven profiles use `openai-codex`. LNX/default, Pulse, MeaBeclick Lead, UX,
+and Growth default to `gpt-6-luna`; Algua and Engineering default to
+`gpt-6.1-sol`. LNX remains a thin Luna orchestrator: complex or high-risk work
+assigned directly to it is routed to a fresh stronger-model subagent, normally
+`gpt-6.1-sol`; `gpt-6-astra` is reserved for exceptional independent review.
+
+Cron jobs snapshot model routing when they are created, so changing a profile
+default is not sufficient. The eight governed skill-scout jobs declare explicit
+provider/model values, and the stable-name `Weekly Hermes aggregate usage
+review` is pinned to Luna without committing its runtime-generated job ID.
+
 ## Planes and sources of truth
 
 ### Human communication plane
