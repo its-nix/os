@@ -31,11 +31,47 @@ bash scripts/bootstrap.sh          # preview only
 bash scripts/bootstrap.sh --apply  # explicit local mutation
 python3 scripts/install-skills.py --profile lnx --nixkit /path/to/nixkit
 python3 scripts/setup-skill-scouts.py  # preview only
+scripts/reconcile-hermes-default.sh    # preview config/runtime reconciliation
 ```
 
 The apply mode creates only missing named profile directories with reviewed role contracts, then uses Hermes CLI for missing boards and projects. It deliberately avoids `hermes profile create`, because that command initializes unrelated active-profile state. Existing profile identity and configuration are preserved; only the requested missing profile directories, boards, and project records are added. The script never reads or writes credentials, memories, sessions, transcripts, or copied runtime data.
 
 After apply, configure Discord manually for the default profile as printed by the script. Keep the bot credential in Hermes' interactive secret setup, never in this repository.
+
+## Hermes default-profile maintenance
+
+`scripts/reconcile-hermes-default.sh` declares the non-secret settings that
+must survive Hermes config migration: manual approvals, denied cron approvals,
+delegation concurrency 3, the existing 50-iteration child budget, and the
+existing full tool/background progress display. It removes the retired
+`display.tool_progress_overrides` and `delegation.max_async_children` keys by
+supported Hermes CLI calls rather than copying a live config file.
+
+The command is preview-first. Apply mode asks Hermes to create its built-in
+pre-update backup outside this repository, runs the supported updater, reads
+back the post-update version, reconciles and verifies every required default-
+profile setting through typed JSON reads, and then runs `config check`,
+`doctor`, and the real gateway status command:
+
+```bash
+scripts/reconcile-hermes-default.sh
+scripts/reconcile-hermes-default.sh --apply
+```
+
+Apply fails closed if `hermes --version` reports carried local commits or any
+unrecognized carried-state marker. Review and merge that fork deliberately
+first; the maintenance script never replaces local history or commits runtime
+state to this repository. If apply fails, the update or configuration may be
+partial: correct the error and rerun, or restore the backup path printed by
+Hermes only after stopping the gateway:
+
+```bash
+hermes gateway stop
+hermes import <backup.zip>
+```
+
+Successful command exit does not promise warning-free diagnostics; review the
+config-check, doctor, and gateway status output for warnings or degraded state.
 
 ## Governed role skills
 
@@ -71,6 +107,7 @@ The previous Paperclip-based design remains preserved remotely at `archive/paper
 - `scripts/bootstrap.sh` — preview-first local bootstrap
 - `scripts/install-skills.py` — pinned, exact-subset NixKit role installation
 - `scripts/setup-skill-scouts.py` — preview-first per-profile cron reconciliation
+- `scripts/reconcile-hermes-default.sh` — preview-first default-profile config/runtime reconciliation
 - `skills/` — role packs and proposal/approval schemas
 - `automation/skill-scout/` — declarative jobs, prompts, report schema, and collector
 - `scripts/verify.py` — dependency-free repository safety verifier

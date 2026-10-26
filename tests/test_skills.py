@@ -939,6 +939,8 @@ class SkillInstallerTests(unittest.TestCase):
 class ScoutTests(unittest.TestCase):
     def setUp(self):
         self.collect = load_module("skill_scout_collect", ROOT / "automation/skill-scout/collect.py")
+        # Keep dated fixture packets deterministic after their original week.
+        setattr(self.collect, "current_iso_week", lambda: "2026-W43")
 
     def _candidate(self, name="useful", path="skills/useful", repository="example/useful"):
         return {

@@ -23,6 +23,7 @@ REQUIRED = {
     "scripts/verify.py",
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
+    "scripts/reconcile-hermes-default.sh",
     "skills/packs.json",
     "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
@@ -56,7 +57,284 @@ def load_verifier():
     return module
 
 
+def write_strict_fake_hermes(path: Path) -> None:
+    path.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        from pathlib import Path
+        import sys
+
+        args = sys.argv[1:]
+        with open(os.environ["HERMES_FAKE_LOG"], "a", encoding="utf-8") as out:
+            out.write(json.dumps(args) + "\\n")
+
+        state_path = Path(os.environ["HERMES_FAKE_STATE"])
+        update_marker = Path(os.environ["HERMES_FAKE_UPDATE_MARKER"])
+
+        if args == ["--version"]:
+            if update_marker.exists():
+                print(os.environ.get("HERMES_FAKE_POST_VERSION", "Hermes Agent v1.1.0"))
+            else:
+                print(os.environ.get("HERMES_FAKE_VERSION", "Hermes Agent v1.0.0"))
+        elif args == ["-p", "default", "update", "--plan"]:
+            print("safe update plan")
+        elif args == ["-p", "default", "update", "--backup", "--yes"]:
+            update_marker.touch()
+            print("Backup created outside repository")
+        elif args == ["-p", "default", "config", "migrate"]:
+            pass
+        elif len(args) == 6 and args[:4] == ["-p", "default", "config", "set"]:
+            key, raw_value = args[4:]
+            if key == os.environ.get("HERMES_FAKE_SET_ERROR_KEY"):
+                print(f"rejected config setter: {key}", file=sys.stderr)
+                raise SystemExit(5)
+            if key != os.environ.get("HERMES_FAKE_INEFFECTIVE_SET_KEY"):
+                with state_path.open(encoding="utf-8") as source:
+                    state = json.load(source)
+                try:
+                    value = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    value = raw_value
+                state[key] = value
+                with state_path.open("w", encoding="utf-8") as target:
+                    json.dump(state, target)
+        elif len(args) in (5, 6) and args[:4] == ["-p", "default", "config", "get"]:
+            key = args[4]
+            if len(args) == 6 and args[5] != "--json":
+                raise SystemExit(f"unknown config get option: {args[5]}")
+            if key == os.environ.get("HERMES_FAKE_GET_ERROR_KEY"):
+                print("unexpected config read failure", file=sys.stderr)
+                raise SystemExit(2)
+            with state_path.open(encoding="utf-8") as source:
+                state = json.load(source)
+            if key not in state:
+                print(f"Config key not set: {key}", file=sys.stderr)
+                raise SystemExit(1)
+            print(json.dumps(state[key]))
+        elif len(args) == 5 and args[:4] == ["-p", "default", "config", "unset"]:
+            key = args[4]
+            with state_path.open(encoding="utf-8") as source:
+                state = json.load(source)
+            if key not in state:
+                print(f"Config key not set: {key}", file=sys.stderr)
+                raise SystemExit(1)
+            del state[key]
+            with state_path.open("w", encoding="utf-8") as target:
+                json.dump(state, target)
+        elif args in (
+            ["-p", "default", "config", "check"],
+            ["-p", "default", "doctor"],
+            ["-p", "default", "gateway", "status"],
+        ):
+            print("command completed")
+        else:
+            print(f"unknown fake Hermes command: {args!r}", file=sys.stderr)
+            raise SystemExit(64)
+    """), encoding="utf-8")
+    path.chmod(0o755)
+
+
 class RepositoryContractTests(unittest.TestCase):
+    def test_hermes_reconciliation_is_preview_first_and_fails_closed_on_carried_state(self):
+        script = ROOT / "scripts/reconcile-hermes-default.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake = base / "hermes"
+            log = base / "calls.jsonl"
+            state = base / "config-state.json"
+            state.write_text("{}", encoding="utf-8")
+            write_strict_fake_hermes(fake)
+            env = os.environ.copy()
+            env.update({
+                "HERMES_BIN": str(fake),
+                "HERMES_FAKE_LOG": str(log),
+                "HERMES_FAKE_STATE": str(state),
+                "HERMES_FAKE_UPDATE_MARKER": str(base / "updated"),
+            })
+
+            for version in (
+                "Hermes Agent v1.0.0",
+                "Hermes Agent v1.0.0 (+0 carried commits)",
+            ):
+                with self.subTest(version=version):
+                    if log.exists():
+                        log.unlink()
+                    env["HERMES_FAKE_VERSION"] = version
+                    preview = subprocess.run(
+                        ["bash", str(script)], cwd=ROOT, env=env,
+                        text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(0, preview.returncode, preview.stderr)
+                    self.assertIn("PREVIEW only", preview.stdout)
+                    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+                    self.assertEqual(
+                        [["--version"], ["-p", "default", "update", "--plan"]], calls
+                    )
+
+            blocked_versions = (
+                ("Hermes Agent v1.0.0 (+1 carried commit)", 3),
+                ("Hermes Agent v1.0.0 (+7 carried commits)", 3),
+                ("Hermes Agent v1.0.0 (+1 carried commits)", 4),
+                ("Hermes Agent v1.0.0 (+0 carried commit)", 4),
+                ("Hermes Agent v1.0.0 (+00 carried commits)", 4),
+                ("Hermes Agent v1.0.0 (+000 carried commits)", 4),
+                ("Hermes Agent v1.0.0 (+01 carried commit)", 4),
+                ("Hermes Agent v1.0.0 (+x carried commits)", 4),
+                ("Hermes Agent v1.0.0 (carried state unknown)", 4),
+                ("Hermes Agent v1.0.0 (+1 CARRIED COMMIT)", 4),
+                ("Hermes Agent v1.0.0 (+0 carried commits) (carried state unknown)", 4),
+            )
+            for version, expected_status in blocked_versions:
+                with self.subTest(version=version):
+                    log.unlink()
+                    env["HERMES_FAKE_VERSION"] = version
+                    blocked = subprocess.run(
+                        ["bash", str(script), "--apply"], cwd=ROOT, env=env,
+                        text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(expected_status, blocked.returncode, blocked.stderr)
+                    self.assertIn("BLOCKED", blocked.stderr)
+                    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+                    self.assertEqual([["--version"]], calls)
+
+    def test_strict_fake_hermes_rejects_unknown_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake = base / "hermes"
+            state = base / "state.json"
+            state.write_text("{}", encoding="utf-8")
+            write_strict_fake_hermes(fake)
+            env = os.environ.copy()
+            env.update({
+                "HERMES_FAKE_LOG": str(base / "calls.jsonl"),
+                "HERMES_FAKE_STATE": str(state),
+                "HERMES_FAKE_UPDATE_MARKER": str(base / "updated"),
+            })
+            result = subprocess.run(
+                [str(fake), "unsupported"], env=env,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(64, result.returncode)
+            self.assertIn("unknown fake Hermes command", result.stderr)
+
+    def test_hermes_reconciliation_apply_persists_and_verifies_complete_state(self):
+        script = ROOT / "scripts/reconcile-hermes-default.sh"
+        expected_state = {
+            "approvals.mode": "manual",
+            "approvals.cron_mode": "deny",
+            "delegation.max_concurrent_children": 3,
+            "delegation.max_iterations": 50,
+            "display.tool_progress": "all",
+            "display.background_process_notifications": "all",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake = base / "hermes"
+            log = base / "calls.jsonl"
+            state = base / "config-state.json"
+            state.write_text(json.dumps({
+                "display.tool_progress_overrides": {"terminal": "all"},
+                "delegation.max_async_children": 3,
+            }), encoding="utf-8")
+            write_strict_fake_hermes(fake)
+            env = os.environ.copy()
+            env.update({
+                "HERMES_BIN": str(fake),
+                "HERMES_FAKE_LOG": str(log),
+                "HERMES_FAKE_STATE": str(state),
+                "HERMES_FAKE_UPDATE_MARKER": str(base / "updated"),
+            })
+
+            call_batches = []
+            for attempt in range(2):
+                if log.exists():
+                    log.unlink()
+                result = subprocess.run(
+                    ["bash", str(script), "--apply"], cwd=ROOT, env=env,
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("Post-update Hermes version", result.stdout)
+                self.assertIn("gateway-status output", result.stdout)
+                if attempt == 1:
+                    self.assertIn("Config key already absent: display.tool_progress_overrides", result.stdout)
+                    self.assertIn("Config key already absent: delegation.max_async_children", result.stdout)
+                self.assertEqual(expected_state, json.loads(state.read_text(encoding="utf-8")))
+                call_batches.append([
+                    json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+                ])
+
+            required_sets = [
+                ["-p", "default", "config", "set", key, str(value)]
+                for key, value in expected_state.items()
+            ]
+            required_gets = [
+                ["-p", "default", "config", "get", key, "--json"]
+                for key in expected_state
+            ]
+            for calls in call_batches:
+                self.assertEqual(["--version"], calls[0])
+                self.assertEqual(["-p", "default", "update", "--plan"], calls[1])
+                self.assertEqual(["-p", "default", "update", "--backup", "--yes"], calls[2])
+                self.assertEqual(["--version"], calls[3])
+                self.assertIn(["-p", "default", "config", "migrate"], calls)
+                for setting_call in required_sets:
+                    self.assertEqual(1, calls.count(setting_call), setting_call)
+                for readback_call in required_gets:
+                    self.assertEqual(1, calls.count(readback_call), readback_call)
+                self.assertEqual(["-p", "default", "config", "check"], calls[-3])
+                self.assertEqual(["-p", "default", "doctor"], calls[-2])
+                self.assertEqual(["-p", "default", "gateway", "status"], calls[-1])
+
+            for key in ("display.tool_progress_overrides", "delegation.max_async_children"):
+                get_call = ["-p", "default", "config", "get", key]
+                unset_call = ["-p", "default", "config", "unset", key]
+                self.assertEqual(1, call_batches[0].count(get_call))
+                self.assertEqual(1, call_batches[0].count(unset_call))
+                self.assertEqual(1, call_batches[1].count(get_call))
+                self.assertNotIn(unset_call, call_batches[1])
+
+    def test_hermes_reconciliation_reports_rejected_or_ineffective_settings(self):
+        script = ROOT / "scripts/reconcile-hermes-default.sh"
+        cases = (
+            ("HERMES_FAKE_SET_ERROR_KEY", "approvals.cron_mode", "rejected config setter"),
+            ("HERMES_FAKE_INEFFECTIVE_SET_KEY", "delegation.max_iterations", "config readback mismatch"),
+        )
+        for behavior, key, expected_error in cases:
+            with self.subTest(behavior=behavior), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                fake = base / "hermes"
+                log = base / "calls.jsonl"
+                state = base / "config-state.json"
+                initial_state = {"delegation.max_iterations": 49} if behavior == "HERMES_FAKE_INEFFECTIVE_SET_KEY" else {}
+                state.write_text(json.dumps(initial_state), encoding="utf-8")
+                write_strict_fake_hermes(fake)
+                env = os.environ.copy()
+                env.update({
+                    "HERMES_BIN": str(fake),
+                    "HERMES_FAKE_LOG": str(log),
+                    "HERMES_FAKE_STATE": str(state),
+                    "HERMES_FAKE_UPDATE_MARKER": str(base / "updated"),
+                    behavior: key,
+                })
+                failed = subprocess.run(
+                    ["bash", str(script), "--apply"], cwd=ROOT, env=env,
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertNotEqual(0, failed.returncode)
+                self.assertIn(expected_error, failed.stderr)
+                self.assertIn("may be partially applied", failed.stderr)
+                self.assertIn("hermes gateway stop", failed.stderr)
+                self.assertIn("hermes import <backup.zip>", failed.stderr)
+                self.assertLess(
+                    failed.stderr.index("hermes gateway stop"),
+                    failed.stderr.index("hermes import <backup.zip>"),
+                )
+                calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+                self.assertNotIn(["-p", "default", "doctor"], calls)
+                self.assertNotIn(["-p", "default", "gateway", "status"], calls)
+
     def test_required_files_exist(self):
         missing = sorted(path for path in REQUIRED if not (ROOT / path).is_file())
         self.assertEqual([], missing)
