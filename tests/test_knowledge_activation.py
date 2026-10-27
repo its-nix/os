@@ -61,9 +61,13 @@ class ActivationTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts/install-skills.py')
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        for receipts in ([], ['skills/approvals/lnx-watch-a9cb5b57.json'], ['fake-approved-by-Lior.json']):
-            with self.assertRaisesRegex(m.Refusal, 'pending.*authenticated'):
-                m._require_knowledge_activation_authority('lnx', {'nix-knowledge'}, receipts)
+        # Explicit unpublished fixture: production now pins genuine authority.
+        execution = m._knowledge_execution()
+        with mock.patch.object(execution, 'EXPECTED_EVIDENCE', None), \
+             mock.patch.object(m, '_knowledge_execution', return_value=execution):
+            for receipts in ([], ['skills/approvals/lnx-watch-a9cb5b57.json'], ['fake-approved-by-Lior.json']):
+                with self.assertRaisesRegex(m.Refusal, 'pending.*authenticated'):
+                    m._require_knowledge_activation_authority('lnx', {'nix-knowledge'}, receipts)
         m._require_knowledge_activation_authority('pulse', {'technical-project-management'}, [])
 
     def test_apply_is_not_a_diagnostic_option(self):
@@ -243,14 +247,16 @@ class ActivationTests(unittest.TestCase):
             with self.assertRaises(m.installer.Refusal):
                 m.installer._validate_proposal(bad, p['proposal_id'], 'lnx', {'nix-knowledge'}, catalog)
 
-    def test_real_wrapper_pending_preview_and_apply_reject_false_receipts(self):
+    def test_real_wrapper_preview_and_apply_reject_false_receipts(self):
         for flag in ([], ['--apply']):
             command = ['python3', str(ROOT / 'scripts/install-skills.py'), '--profile', 'lnx',
                        '--nixkit', '/does-not-exist', '--skill', 'nix-knowledge',
                        '--approval', 'fake-approved-by-Lior.json'] + flag
             r = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(2, r.returncode)
-            self.assertIn('pending: authenticated', r.stderr)
+            self.assertIn('Refusing:', r.stderr)
+            self.assertTrue('all four exact additions' in r.stderr or
+                            'governance checkout must be completely clean' in r.stderr)
             self.assertEqual('', r.stdout)
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 """Static contract gates for inert candidates; not runtime/access acceptance."""
 import json
+import copy
 from pathlib import Path
 import re
 import subprocess
@@ -75,13 +76,18 @@ SOFTWARE.
             self.assertEqual(before, (ROOT / path).read_bytes(), path)
         manifest = json.loads(self.text("skills/packs.json"))
         before = json.loads(subprocess.check_output(["git", "show", f"{BASE}:skills/packs.json"], cwd=ROOT))
-        for field in ("profiles", "packs", "host_native_satisfaction", "proposed_pack_additions", "approved_pack_additions", "governance"):
+        for field in ("profiles", "packs", "proposed_pack_additions", "approved_pack_additions", "governance"):
             self.assertEqual(before[field], manifest[field], field)
         for profile, values in before["approved_additions"].items():
             self.assertEqual(values + (["nix-knowledge"] if profile == "lnx" else []), manifest["approved_additions"][profile])
         self.assertEqual(before["task_only"], [s for s in manifest["task_only"] if s not in {"nix-knowledge", "nix-document-design"}])
         self.assertEqual(before["excluded"], manifest["excluded"])
-        self.assertFalse((ROOT / "skills/approvals/lnx-nix-knowledge-1182c51c.json").exists())
+        proposal = json.loads(self.text("skills/activation-proposals/lnx-knowledge-v2.json"))
+        expected_preservation = copy.deepcopy(before["host_native_satisfaction"])
+        expected_preservation["lnx"] = proposal["preservation"]
+        self.assertEqual(expected_preservation, manifest["host_native_satisfaction"])
+        receipt = json.loads(self.text("skills/approvals/lnx-nix-knowledge-1182c51c.json"))
+        self.assertEqual("skills/activation-approvals/lnx-knowledge-v2.json", receipt["activation_receipt"])
 
     def test_retrieval_and_contribution_boundaries(self):
         text = self.text("skills/nix-knowledge/references/contribution-contract.md")

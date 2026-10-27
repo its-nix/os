@@ -1,0 +1,122 @@
+{
+  "schema_version": 2,
+  "proposal_id": "lnx-knowledge-v2",
+  "proposal_git_commit": "0ba0131f0da473d12bcb1fc3cadd8258bd66e15e",
+  "proposal_file_sha256": "9c7978bf7b2302c1e9a82c1db91b9c03d448675113d0ed41621117f285f9f313",
+  "skill_proposal_sha256": "073dc35dbb5205554552283b4e7d739c92ef2e317dd91be014b13eab35bb3e3d",
+  "manifest_sha256": "077dc9165bd73979eea38b953994005342c1bc1caf3f49f32a0f177535c7d3ab",
+  "profile": "lnx",
+  "hermes_profile": "default",
+  "source": {
+    "repository": "its-nix/os",
+    "revision": "1182c51c33ccb8a6c3b095bf551864fc5cb061c6",
+    "skill_path": "skills/nix-knowledge",
+    "license_url": "https://github.com/its-nix/os/blob/1182c51c33ccb8a6c3b095bf551864fc5cb061c6/skills/nix-knowledge/LICENSE"
+  },
+  "nixkit": {
+    "repository": "https://github.com/its-nix/kit.git",
+    "commit": "10018867c2544948109ce46217a689e1db2a1495",
+    "sources_sha256": "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49",
+    "node_runtime": "24.22.1"
+  },
+  "preservation": [
+    {
+      "skill": "nix-idea-to-mvp",
+      "path": "product-development/nix-idea-to-mvp",
+      "tree_sha256": "d0594a11fc1ae3e7b852e23f0ea8be40c3273feea903c25a8300e68a2b86db9e"
+    },
+    {
+      "skill": "writing-plans",
+      "path": "software-development/writing-plans",
+      "tree_sha256": "28a30bef5c4d6539791929f4c0e66eb92e47af3253fac6e5e43d72bc0381d2cd"
+    },
+    {
+      "skill": "subagent-driven-development",
+      "path": "software-development/subagent-driven-development",
+      "tree_sha256": "e6f083d602c635d8de51ccd5dd0d202cf41e385705cc7a61ead83d05fd17b54f"
+    },
+    {
+      "skill": "lnx-grilling",
+      "path": "lnx-grilling",
+      "tree_sha256": "d332fd9af0fb60002b5c3a5f7da1b079ce12ac08a44c453cc7b2f08481fbfaed"
+    },
+    {
+      "skill": "todoist-cli",
+      "path": "todoist-cli",
+      "tree_sha256": "3f2599f5c04661d017e70e4f155068c9a1bdf4b32361d6a0fe2b9a0993b035b4"
+    }
+  ],
+  "effective_skills": [
+    "caveman",
+    "dispatching-parallel-agents",
+    "handoff",
+    "lnx-domain-modeling",
+    "lnx-grill-me",
+    "lnx-grill-with-docs",
+    "lnx-grilling",
+    "lnx-to-spec",
+    "lnx-writing-for-agents",
+    "nix-idea-to-mvp",
+    "nix-knowledge",
+    "receiving-code-review",
+    "subagent-driven-development",
+    "todoist-cli",
+    "verification-before-completion",
+    "watch",
+    "writing-plans"
+  ],
+  "install_targets": [
+    "caveman",
+    "dispatching-parallel-agents",
+    "handoff",
+    "lnx-domain-modeling",
+    "lnx-grill-me",
+    "lnx-grill-with-docs",
+    "lnx-to-spec",
+    "lnx-writing-for-agents",
+    "nix-knowledge",
+    "receiving-code-review",
+    "verification-before-completion",
+    "watch"
+  ],
+  "cache_plan_sha256": "9ff3c2bcd4483628336166c33ccbbcf8c497241557e910b0700e0f45877c5b81",
+  "approved_by": "Lior",
+  "approval_evidence": {
+    "kind": "context_bound_voice_approval",
+    "platform": "discord",
+    "channel_id": "1563201690663125142",
+    "proposal_git_commit": "0ba0131f0da473d12bcb1fc3cadd8258bd66e15e",
+    "prompt": {
+      "message_id": "1564704949332615406",
+      "author_id": "1563178010020941956",
+      "timestamp": "2026-10-27T18:18:50.733000+00:00"
+    },
+    "human_voice": {
+      "message_id": "1564705817448423424",
+      "author_id": "454290355320520714",
+      "bot": false,
+      "timestamp": "2026-10-27T18:22:17.708000+00:00",
+      "content": "",
+      "attachment": {
+        "filename": "voice-message.ogg",
+        "size_bytes": 26402
+      }
+    },
+    "bot_stt": {
+      "message_id": "1564705827204370614",
+      "author_id": "1563178010020941956",
+      "timestamp": "2026-10-27T18:22:20.034000+00:00",
+      "quote": "I approve and make the repository public so you can test each CI again and then make it private again."
+    },
+    "scope": {
+      "profile": "lnx",
+      "hermes_profile": "default",
+      "new_skill": "nix-knowledge",
+      "preserved_trees": 5,
+      "cache_files": 5,
+      "hooks": false
+    },
+    "human_written_text_quote": false,
+    "voice_payload_cryptographically_verified": false
+  }
+}

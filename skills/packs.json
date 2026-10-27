@@ -66,12 +66,22 @@
       {
         "skill": "writing-plans",
         "path": "software-development/writing-plans",
-        "tree_sha256": "f39910eddd93faa946cffdba88121fbc62bef710ac9087d1221b64a8d7b3da04"
+        "tree_sha256": "28a30bef5c4d6539791929f4c0e66eb92e47af3253fac6e5e43d72bc0381d2cd"
       },
       {
         "skill": "subagent-driven-development",
         "path": "software-development/subagent-driven-development",
         "tree_sha256": "e6f083d602c635d8de51ccd5dd0d202cf41e385705cc7a61ead83d05fd17b54f"
+      },
+      {
+        "skill": "lnx-grilling",
+        "path": "lnx-grilling",
+        "tree_sha256": "d332fd9af0fb60002b5c3a5f7da1b079ce12ac08a44c453cc7b2f08481fbfaed"
+      },
+      {
+        "skill": "todoist-cli",
+        "path": "todoist-cli",
+        "tree_sha256": "3f2599f5c04661d017e70e4f155068c9a1bdf4b32361d6a0fe2b9a0993b035b4"
       }
     ],
     "pulse": [],

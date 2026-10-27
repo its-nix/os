@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import hashlib
 import json
 import os
@@ -117,7 +118,7 @@ class PackContractTests(unittest.TestCase):
             self.assertEqual((proposal_id, profile, name, "candidate"), (proposal["proposal_id"], proposal["profile"], proposal["name"], proposal["status"]))
             actual_digest = hashlib.sha256(json.dumps(proposal, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
             self.assertEqual(digest, actual_digest, proposal_id)
-        expected_receipts = {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"} | {f"{proposal_id}.json" for proposal_id in expected}
+        expected_receipts = {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json", "lnx-nix-knowledge-1182c51c.json"} | {f"{proposal_id}.json" for proposal_id in expected}
         self.assertEqual(expected_receipts, {path.name for path in (ROOT / "skills/approvals").glob("*.json")})
 
     def test_lnx_caveman_proposal_matches_pinned_source_and_policy(self):
@@ -228,7 +229,9 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual(manifest["nixkit"]["node_runtime"], installer.NODE_RUNTIME)
         self.assertEqual(manifest["packs"], installer.EXPECTED_PACKS)
         self.assertEqual(manifest["profiles"], installer.EXPECTED_ASSIGNMENTS)
-        self.assertEqual(manifest["host_native_satisfaction"], installer.EXPECTED_HOST_NATIVE_SATISFACTION)
+        expected = copy.deepcopy(installer.EXPECTED_HOST_NATIVE_SATISFACTION)
+        expected["lnx"] = installer._knowledge_execution().load_packet()["preservation"]
+        self.assertEqual(manifest["host_native_satisfaction"], expected)
         self.assertEqual(PROFILES, set(installer.PROFILE_MAP))
 
     def test_policy_has_hard_gates_and_threshold(self):
@@ -252,6 +255,9 @@ class SkillInstallerTests(unittest.TestCase):
         kit.mkdir()
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
         packs["approved_additions"] = {profile: [] for profile in PROFILES}
+        # These tests cover historical v1 policy with synthetic authority, not v2.
+        legacy_installer = load_module("legacy_fixture_preservation", self.script)
+        packs["host_native_satisfaction"] = copy.deepcopy(legacy_installer.EXPECTED_HOST_NATIVE_SATISFACTION)
         source_skills = sorted({
             skill
             for values in packs["packs"].values()
