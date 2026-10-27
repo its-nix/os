@@ -1,0 +1,626 @@
+{
+  "schema_version": 2,
+  "proposal_id": "lnx-knowledge-v2",
+  "status": "pending_approval",
+  "profile": "lnx",
+  "hermes_profile": "default",
+  "home": "${HOME}/.hermes",
+  "source": {
+    "repository": "its-nix/os",
+    "revision": "1182c51c33ccb8a6c3b095bf551864fc5cb061c6",
+    "skill_path": "skills/nix-knowledge",
+    "license_url": "https://github.com/its-nix/os/blob/1182c51c33ccb8a6c3b095bf551864fc5cb061c6/skills/nix-knowledge/LICENSE"
+  },
+  "nixkit": {
+    "repository": "https://github.com/its-nix/kit.git",
+    "commit": "10018867c2544948109ce46217a689e1db2a1495",
+    "sources_sha256": "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49",
+    "node_runtime": "24.22.1"
+  },
+  "kit_remote_availability": "Published at https://github.com/its-nix/kit/pull/6; exact GitHub commit API readback confirmed 10018867c2544948109ce46217a689e1db2a1495. Unmerged; hosted CI not asserted here.",
+  "manifest_sha256": "077dc9165bd73979eea38b953994005342c1bc1caf3f49f32a0f177535c7d3ab",
+  "preservation": [
+    {
+      "skill": "nix-idea-to-mvp",
+      "path": "product-development/nix-idea-to-mvp",
+      "tree_sha256": "d0594a11fc1ae3e7b852e23f0ea8be40c3273feea903c25a8300e68a2b86db9e"
+    },
+    {
+      "skill": "writing-plans",
+      "path": "software-development/writing-plans",
+      "tree_sha256": "28a30bef5c4d6539791929f4c0e66eb92e47af3253fac6e5e43d72bc0381d2cd"
+    },
+    {
+      "skill": "subagent-driven-development",
+      "path": "software-development/subagent-driven-development",
+      "tree_sha256": "e6f083d602c635d8de51ccd5dd0d202cf41e385705cc7a61ead83d05fd17b54f"
+    },
+    {
+      "skill": "lnx-grilling",
+      "path": "lnx-grilling",
+      "tree_sha256": "d332fd9af0fb60002b5c3a5f7da1b079ce12ac08a44c453cc7b2f08481fbfaed"
+    },
+    {
+      "skill": "todoist-cli",
+      "path": "todoist-cli",
+      "tree_sha256": "3f2599f5c04661d017e70e4f155068c9a1bdf4b32361d6a0fe2b9a0993b035b4"
+    }
+  ],
+  "historical_authorization": "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
+  "effective_skills": [
+    "caveman",
+    "dispatching-parallel-agents",
+    "handoff",
+    "lnx-domain-modeling",
+    "lnx-grill-me",
+    "lnx-grill-with-docs",
+    "lnx-grilling",
+    "lnx-to-spec",
+    "lnx-writing-for-agents",
+    "nix-idea-to-mvp",
+    "nix-knowledge",
+    "receiving-code-review",
+    "subagent-driven-development",
+    "todoist-cli",
+    "verification-before-completion",
+    "watch",
+    "writing-plans"
+  ],
+  "install_targets": [
+    "caveman",
+    "dispatching-parallel-agents",
+    "handoff",
+    "lnx-domain-modeling",
+    "lnx-grill-me",
+    "lnx-grill-with-docs",
+    "lnx-to-spec",
+    "lnx-writing-for-agents",
+    "nix-knowledge",
+    "receiving-code-review",
+    "verification-before-completion",
+    "watch"
+  ],
+  "cache": {
+    "action": "proposed_archive_then_remove_exact_generated_files_only",
+    "root": "watch",
+    "before_tree_sha256": "fe3958e8f284fb716babe95fecb8ca847f0619a8d17780fbc1ad585d4fac7009",
+    "files": [
+      {
+        "path": "scripts/__pycache__/download.cpython-311.pyc",
+        "sha256": "d26e46a8cea6976a625864a502e94390aeabcda99c378427b1856ca2edec04c8",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/frames.cpython-311.pyc",
+        "sha256": "6b2efa3bdac7ddd1c852e263a005224eaba49c154c7e3bc524762549351b4127",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/local_whisper.cpython-311.pyc",
+        "sha256": "f98cf5893b81591e0f5fdb74d7398f448f8d8dbdaf0673728cad040369b3fd1d",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/runtime.cpython-311.pyc",
+        "sha256": "9e6e245704a6120589b5cefb324c6b190122b5684ff6d263c24e4580722ef946",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/transcript.cpython-311.pyc",
+        "sha256": "32bbf8f7433d2f9e7cea06d1b2faeeb99c3fba779f3252a685c0cc6df4c4d7ea",
+        "mode": 436,
+        "type": 32768
+      }
+    ],
+    "inventory": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "add78957ea8124a8ae6eccd7a55c948543a9f32ea26917bf562b8cafacb01d3e",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "NOTICE.md",
+        "sha256": "b1f136e64151fda29713fa78f5423efb19c76458b157d399484fd750ebdcdda5",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "SKILL.md",
+        "sha256": "4e456b5d0187612568a21f74d1832129f1a8b073aee6e7166ee61fc5373de391",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "scripts/__pycache__",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "scripts/__pycache__/download.cpython-311.pyc",
+        "sha256": "d26e46a8cea6976a625864a502e94390aeabcda99c378427b1856ca2edec04c8",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/frames.cpython-311.pyc",
+        "sha256": "6b2efa3bdac7ddd1c852e263a005224eaba49c154c7e3bc524762549351b4127",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/local_whisper.cpython-311.pyc",
+        "sha256": "f98cf5893b81591e0f5fdb74d7398f448f8d8dbdaf0673728cad040369b3fd1d",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/runtime.cpython-311.pyc",
+        "sha256": "9e6e245704a6120589b5cefb324c6b190122b5684ff6d263c24e4580722ef946",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/__pycache__/transcript.cpython-311.pyc",
+        "sha256": "32bbf8f7433d2f9e7cea06d1b2faeeb99c3fba779f3252a685c0cc6df4c4d7ea",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/download.py",
+        "sha256": "d38405a0848ebf147740f99ba73a99467fcf038596dd518229b8a5883bce7a0b",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/frames.py",
+        "sha256": "3fb9c5653e352c9a02a05708e58477d1702d170626f52080d959f86d2e4e76c1",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/local_whisper.py",
+        "sha256": "c757be0682f1f375de66d6d6147eedaba024553203fc6cd9f98977ca2290190e",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/runtime.py",
+        "sha256": "177ca5baca3a1d55ec6a77302743301c32beccb7de65c980faaf3a6c4e9f6b7d",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/transcript.py",
+        "sha256": "ace4cf5656033f5ce3bb0b2089d876c1e6c740540ab1d8a39443908102004e37",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "scripts/watch.py",
+        "sha256": "cc0e23ca0bfc15e8f6c4a760554b1bc23ce6137e4f7e77fa6a9c5883d7bf34bc",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "tests",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "tests/__init__.py",
+        "sha256": "475e6a61a1cd90ddcc3b3c924cfe005e0d81d802cb27a1466da12f20cd74a619",
+        "mode": 436,
+        "type": 32768
+      },
+      {
+        "path": "tests/test_watch.py",
+        "sha256": "6bba3d8e4b09d34667a2f86671333f77686f0f4214443605de8788c2c9baa593",
+        "mode": 436,
+        "type": 32768
+      }
+    ],
+    "archive": "${HOME}/.local/state/nix-skill-rollbacks/lnx-knowledge-v2/<unique-transaction>",
+    "remove_directory_if_empty": "scripts/__pycache__",
+    "rollback": "Restore each exact archived file and mode to its original relative path only with no-replace publication; never overwrite concurrently recreated cache. Retain archive and report manual recovery on replacement. Revalidate all retained payload entries and complete canonical tree before and after; no broad cache ignore.",
+    "execution_preconditions": [
+      "Genuine authenticated approval of ancestor proposal commit, followed by reviewed receipt-route implementation",
+      "Capture then-current device/inode/ownership/timestamps in invocation-owned journal outside Git; enforce expected ownership policy before any mutation",
+      "Descriptor-relative non-following identity checks before each archive/remove/restore, including exact directory identity",
+      "Archive bytes/modes verified and durably journaled before unlink; original identity/hash/mode must still match",
+      "Guard cooperating writers; on concurrent replacement do not delete/overwrite it",
+      "Rehash remaining watch payload exactly against acquired pinned source; extra or changed entries abort",
+      "Only remove the named cache directory if empty and still same identity; rollback restores its mode if safely absent"
+    ],
+    "after_tree_sha256": "671a3b77f77809cc892c50d134005e9605df24c28586b4d0c188322b14a5f782"
+  },
+  "remaining_gates": [
+    "Independent parent release gates for source PR45 and Kit PR6; publication confirmed, merges/hosted Kit CI not asserted here",
+    "Genuine human approval referring to immutable proposal commit; later receipt must reference that ancestor",
+    "Later reviewed authenticated v2 receipt consumer and exact cache transaction; this commit cannot apply even with a self-authored receipt",
+    "Revalidate exact acquired closures and live payload immediately before any later production operation; archive/remove cache only after approved transaction, abort on any drift",
+    "Actual authorized production preview then separately authorized apply, post-apply identity checks and idempotence",
+    "Fresh Discord session outside checkout and representative retrieval/render checks; NOT passed here"
+  ],
+  "acquired_target_closures": {
+    "caveman": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "README.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "e8b22f37ccb204bd00cdf98c723c0df37aeda1f5863e9ad1d634f5c839d99e5d"
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "415d43518f2b1a9498c15a445d4657117b129ee5e81b19454ce348439cc6672b"
+      }
+    ],
+    "dispatching-parallel-agents": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "1968923066f3b707eb01d1992cdf4c42284c3855f70253b9cd5000ff45fca13c"
+      }
+    ],
+    "handoff": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "4cbb043950dad2ffd3662ff1a5a0b51ae676004b5cae10e3787e8ee7a4ee69d3"
+      },
+      {
+        "path": "agents",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "agents/openai.yaml",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28"
+      }
+    ],
+    "lnx-domain-modeling": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "cee738846e5c98f3ef427db4984978ded7b64cc791c36476aeaa13d85efdad6b"
+      },
+      {
+        "path": "references",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "references/ADR-FORMAT.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "1c5119176ea15a5657a1341562392850cda8da5907167a485050f50daefaa543"
+      },
+      {
+        "path": "references/GLOSSARY-FORMAT.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "c9a3eded9b75d54bf362cc952b9484856fd7f38f27d3e17c35359c1a1f2fd234"
+      },
+      {
+        "path": "references/LICENSE-MIT.txt",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+      },
+      {
+        "path": "references/UPSTREAM.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "6e65a22be00bae2932fd3fa599816656f4bb0a78a029cd5dfa174ed9348a3555"
+      }
+    ],
+    "lnx-grill-me": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "c6da7cac64d1249689f4cf7b6b6a379daee72f29ad23b1adc8e5ca38d140620f"
+      },
+      {
+        "path": "references",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "references/LICENSE-MIT.txt",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+      },
+      {
+        "path": "references/UPSTREAM.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "0a19510e8840acfcc11a6368c9a1eecbd4a38ffc05cdbbbdb55cbf5b28001e4c"
+      }
+    ],
+    "lnx-grill-with-docs": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "e94c8ac14947eb473197cf29964d1212674941854c1f77ebf5086826382a26ec"
+      },
+      {
+        "path": "references",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "references/LICENSE-MIT.txt",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+      },
+      {
+        "path": "references/UPSTREAM.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "dbd0f61135b20fd67daa896e70f7e566765c0dd41b2d0061e9a71bc5e7ceb5c3"
+      }
+    ],
+    "lnx-to-spec": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "b94ea99d1d755ce9dbcd94dc25faff764f0aae47be37a5babbd192093797ee60"
+      },
+      {
+        "path": "references",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "references/LICENSE-MIT.txt",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+      },
+      {
+        "path": "references/UPSTREAM.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "88538edc51a036c58ef05d0f98858e8168eeb5ff50b0fcf7cf136455b1e5fa63"
+      }
+    ],
+    "lnx-writing-for-agents": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "003a39859376554f06e8ad8be9696a847aae5e3301e7e03d7ca7c6e819d37bdd"
+      },
+      {
+        "path": "references",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "references/LICENSE-MIT.txt",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5"
+      },
+      {
+        "path": "references/SKILL-MECHANICS.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "ec34c71f3eb944965152d49b5412f86f9999b29c5fdcd9c900b44f953f00392b"
+      },
+      {
+        "path": "references/UPSTREAM.md",
+        "mode": 420,
+        "type": 32768,
+        "sha256": "ec3e06fba17fe49d3ad67bd576af95d66c6d1c33c91625de7853ff21119674ce"
+      }
+    ],
+    "nix-knowledge": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "LICENSE",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "d73665d2fe6418657ed373c61aa5112d4a880c211090f6e4034e5d707174cf5b"
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "ed0385a9dc4351aaa607302e4faf51c0eedcb28202fcb1b0bf162544c890e9cf"
+      },
+      {
+        "path": "references",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "references/contribution-contract.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "8f57fc1592cb8775f8005602c7168fb801b59bdaf592accf9832c7495be3390d"
+      }
+    ],
+    "receiving-code-review": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "091df1629510af1b92fc4abd6f96732ebedb4cb2c0f3457e8f2740b0504a2438"
+      }
+    ],
+    "verification-before-completion": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3"
+      }
+    ],
+    "watch": [
+      {
+        "path": ".",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "LICENSE",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "add78957ea8124a8ae6eccd7a55c948543a9f32ea26917bf562b8cafacb01d3e"
+      },
+      {
+        "path": "NOTICE.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "b1f136e64151fda29713fa78f5423efb19c76458b157d399484fd750ebdcdda5"
+      },
+      {
+        "path": "SKILL.md",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "4e456b5d0187612568a21f74d1832129f1a8b073aee6e7166ee61fc5373de391"
+      },
+      {
+        "path": "scripts",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "scripts/download.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "d38405a0848ebf147740f99ba73a99467fcf038596dd518229b8a5883bce7a0b"
+      },
+      {
+        "path": "scripts/frames.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "3fb9c5653e352c9a02a05708e58477d1702d170626f52080d959f86d2e4e76c1"
+      },
+      {
+        "path": "scripts/local_whisper.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "c757be0682f1f375de66d6d6147eedaba024553203fc6cd9f98977ca2290190e"
+      },
+      {
+        "path": "scripts/runtime.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "177ca5baca3a1d55ec6a77302743301c32beccb7de65c980faaf3a6c4e9f6b7d"
+      },
+      {
+        "path": "scripts/transcript.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "ace4cf5656033f5ce3bb0b2089d876c1e6c740540ab1d8a39443908102004e37"
+      },
+      {
+        "path": "scripts/watch.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "cc0e23ca0bfc15e8f6c4a760554b1bc23ce6137e4f7e77fa6a9c5883d7bf34bc"
+      },
+      {
+        "path": "tests",
+        "mode": 509,
+        "type": 16384
+      },
+      {
+        "path": "tests/__init__.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "475e6a61a1cd90ddcc3b3c924cfe005e0d81d802cb27a1466da12f20cd74a619"
+      },
+      {
+        "path": "tests/test_watch.py",
+        "mode": 436,
+        "type": 32768,
+        "sha256": "6bba3d8e4b09d34667a2f86671333f77686f0f4214443605de8788c2c9baa593"
+      }
+    ]
+  },
+  "acquisition_evidence": "Real pinned Kit scratch-only acquisition of all 12 install targets completed. Ten existing targets match full acquired files/types/modes/bytes; watch matches only after projecting removal of the exact five cache files plus now-empty named directory. nix-knowledge destination absent. Projection is not cleanup or production authorization. Scratch full-set offline repeat exited 0; all three acquired knowledge files independently compared byte-for-byte against Git blobs at the source revision.",
+  "skill_proposal_sha256": "073dc35dbb5205554552283b4e7d739c92ef2e317dd91be014b13eab35bb3e3d"
+}

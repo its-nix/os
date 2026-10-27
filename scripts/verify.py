@@ -61,9 +61,9 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
-NIXKIT_COMMIT = "f5377ca3219daf4f33f6e8525f9438318dabcd2f"
+NIXKIT_COMMIT = "10018867c2544948109ce46217a689e1db2a1495"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
-NIXKIT_SOURCES_SHA256 = "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83"
+NIXKIT_SOURCES_SHA256 = "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49"
 PRODUCT_NIXKIT_COMMIT = "92338765a1cc942b2a20dda3f1e220d6be0225e1"
 PRODUCT_NIXKIT_SOURCES_SHA256 = "6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21"
 CANONICAL_SCHEMA_SHA256 = {
@@ -88,6 +88,7 @@ NIXKIT_SKILLS = {
     "lnx-to-spec", "lnx-writing-for-agents", "nix-idea-to-mvp", "watch",
     "performance", "rtl-design", "analytics", "customer-research", "todoist-cli",
     "technical-project-management", "web-accessibility", "social-media-content-calendar",
+    "nix-knowledge", "nix-document-design",
 }
 EXPECTED_PACKS = {
     "baseline-evidence": ["verification-before-completion"],
@@ -128,7 +129,7 @@ EXPECTED_HOST_NATIVE_AUTHORIZATION = {
     "artifacts": EXPECTED_HOST_NATIVE_SATISFACTION["lnx"],
 }
 EXPECTED_APPROVED_ADDITIONS = {
-    "lnx": ["caveman", "watch", "todoist-cli"],
+    "lnx": ["caveman", "watch", "todoist-cli", "nix-knowledge"],
     "pulse": ["technical-project-management"],
     "algua": [],
     "meabeclick": [],
@@ -137,6 +138,7 @@ EXPECTED_APPROVED_ADDITIONS = {
     "meabeclickgrowth": ["analytics", "customer-research", "social-media-content-calendar"],
 }
 PROPOSALS = {
+    ("lnx", "nix-knowledge"): "lnx-nix-knowledge-1182c51c",
     ("lnx", "caveman"): "lnx-caveman-d8ede5cf", ("lnx", "watch"): "lnx-watch-a9cb5b57", ("lnx", "todoist-cli"): "lnx-todoist-cli-340d7b21",
     ("pulse", "technical-project-management"): "pulse-technical-project-management-7f446e60", ("meabeclickux", "rtl-design"): "meabeclickux-rtl-design-b7c52294", ("meabeclickux", "web-accessibility"): "meabeclickux-web-accessibility-7f446e60",
     ("meabeclickeng", "performance"): "meabeclickeng-performance-afa8da94", ("meabeclickeng", "web-accessibility"): "meabeclickeng-web-accessibility-7f446e60", ("meabeclickeng", "systematic-debugging"): "meabeclickeng-systematic-debugging-51414605", ("meabeclickeng", "test-driven-development"): "meabeclickeng-test-driven-development-51414605",
@@ -538,7 +540,7 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     actual_proposal_files = {path.name for path in proposal_dir.glob("*.json")} if proposal_dir.is_dir() else set()
     if actual_proposal_files != expected_proposal_files:
         errors.append("single-skill proposal files must exactly match all canonical profile-skill assignments")
-    expected_new_ids = set(PROPOSALS.values()) - {"lnx-caveman-d8ede5cf", "lnx-watch-a9cb5b57"}
+    expected_new_ids = set(PROPOSALS.values()) - {"lnx-caveman-d8ede5cf", "lnx-watch-a9cb5b57", "lnx-nix-knowledge-1182c51c"}
     if set(EXPECTED_NEW_PROPOSAL_SHA256) != expected_new_ids or len(expected_new_ids) != 11:
         errors.append("the exact 11 new assignments must each have one complete canonical proposal digest")
     installer = _load_installer_runtime(root, errors)
@@ -597,13 +599,13 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         if persistent & task or persistent & omit or task & omit:
             errors.append("persistent, task-only, and excluded classifications must be disjoint")
         if persistent | task | omit != NIXKIT_SKILLS:
-            errors.append("all 57 NixKit skills must be classified exactly once semantically")
+            errors.append("all 59 NixKit skills must be classified exactly once semantically")
         if not {"web-design-guidelines", "find-docs"} <= task:
             errors.append("mutable-latest web-design-guidelines and find-docs must remain task-only")
         if "watch" not in task:
             errors.append("watch must remain task-only while separately approved for LNX")
-        if not {"performance", "rtl-design", "analytics", "customer-research", "todoist-cli", "technical-project-management", "web-accessibility", "social-media-content-calendar"} <= task:
-            errors.append("all eight newly cataloged profile-specific skills must remain explicitly task-only outside their governed additions")
+        if not {"performance", "rtl-design", "analytics", "customer-research", "todoist-cli", "technical-project-management", "web-accessibility", "social-media-content-calendar","nix-knowledge","nix-document-design"} <= task:
+            errors.append("all ten cataloged profile-specific skills must remain explicitly task-only outside their governed additions")
     governance = packs.get("governance")
     if not isinstance(governance, dict) or set(governance.get("hard_gates", [])) != HARD_GATES:
         errors.append("skill governance must declare all seven hard gates")
@@ -798,6 +800,19 @@ def validate_repository(root: Path) -> list[str]:
         _validate_manifest(root, manifest, errors)
         _validate_skills(root, manifest, errors)
     _validate_files(root, errors)
+    # Pending proposal is an exact reviewed data artifact, never a receipt.
+    pending = _load_json_object(root / "skills/activation-proposals/lnx-knowledge-v2.json", "pending knowledge activation", errors)
+    canonical = json.dumps(pending, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    if hashlib.sha256(canonical).hexdigest() != "63e0706c4e262f4a4fe300fc040f2f70262b4f011261f87bd2362f8face270ab":
+        errors.append("pending default-only activation proposal must match its exact reviewed document")
+    if pending:
+        for relative, field in (("skills/packs.json", "manifest_sha256"), ("skills/proposals/lnx-nix-knowledge-1182c51c.json", "skill_proposal_sha256")):
+            try:
+                digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+            except OSError:
+                digest = None
+            if digest != pending.get(field):
+                errors.append("pending activation must bind exact current " + relative)
     return sorted(set(errors))
 
 

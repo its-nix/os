@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "proposal_id": "lnx-nix-knowledge-1182c51c",
+  "profile": "lnx",
+  "name": "nix-knowledge",
+  "summary": "Bounded on-demand organizational knowledge discovery and reviewed contribution for LNX/default only.",
+  "rationale": "Keep canonical company truth in the owning knowledgebase and preserve native Hermes continuity and working skills without broad profile assignment.",
+  "source_url": "https://github.com/its-nix/os/tree/1182c51c33ccb8a6c3b095bf551864fc5cb061c6/skills/nix-knowledge",
+  "repository": "its-nix/os",
+  "skill_path": "skills/nix-knowledge",
+  "revision": "1182c51c33ccb8a6c3b095bf551864fc5cb061c6",
+  "license": "MIT for original documentation inside skills/nix-knowledge only; exact scoped notice preserved.",
+  "evidence_urls": [
+    "https://github.com/its-nix/os/tree/1182c51c33ccb8a6c3b095bf551864fc5cb061c6/skills/nix-knowledge",
+    "https://github.com/its-nix/os/blob/1182c51c33ccb8a6c3b095bf551864fc5cb061c6/skills/nix-knowledge/LICENSE",
+    "https://github.com/its-nix/os/blob/1182c51c33ccb8a6c3b095bf551864fc5cb061c6/skills/nix-knowledge/references/contribution-contract.md"
+  ],
+  "risks": [
+    "Instructions are not a filesystem or credential sandbox; existing task and access authority remains mandatory.",
+    "Source links do not establish current KB note validity or private repository access.",
+    "No live activation, new Discord session, or representative renderer acceptance has occurred.",
+    "Preservation of changed working skills and generated watch-cache handling requires separately authenticated exact-proposal approval.",
+    "Ordinary NixKit GitHub sources retain first-fetch integrity; future rollout must independently compare acquired bytes against the pinned source."
+  ],
+  "score_components": {
+    "role_value": 28,
+    "evidence_quality": 16,
+    "security_provenance": 18,
+    "hermes_compatibility": 12,
+    "maintenance": 6,
+    "documentation_license": 5
+  },
+  "score": 85,
+  "gates": {
+    "relevance": true,
+    "provenance": true,
+    "reliability": true,
+    "safety_privacy": true,
+    "license": true,
+    "hermes_compatibility": true,
+    "non_duplication": true
+  },
+  "gate_evidence": {
+    "relevance": "LNX/default orchestrates Nix portfolio work and needs bounded on-demand discovery of the canonical organizational knowledgebase rather than copying truth into native continuity.",
+    "provenance": "Original its-nix/os documentation at 1182c51c33ccb8a6c3b095bf551864fc5cb061c6, exact skills/nix-knowledge path. Real NixKit acquisition retained all three package files and independent Git-object comparison established bytes and full closure.",
+    "reliability": "Reviewed documentation-only source, explicit retrieval/contribution contract and local reference closure; NixKit subset acquisition and offline repeat exercised in scratch. No claim of fresh Discord retrieval or knowledge correctness.",
+    "safety_privacy": "No executable payload, dependency, hook, automatic ingestion or install instruction. Explicit task/access authority, provisional/disputed status, no credential or profile mutation authority; actual host skills-guard-v10 community scan safe and allowed, not a sandbox.",
+    "license": "Complete package-scoped MIT notice at skills/nix-knowledge/LICENSE at 1182c51c33ccb8a6c3b095bf551864fc5cb061c6; retained byte-for-byte. Does not license the whole OS or linked third-party material.",
+    "hermes_compatibility": "Standard on-demand SKILL.md frontmatter, relative reference exists; real scratch Hermes detached acquisition and native static community scanner passed. Fresh-session behavior remains a later acceptance gate.",
+    "non_duplication": "Default enabled inventory audit found 84 distinct names and neither candidate. Native memory/session skills provide personal continuity, not bounded canonical Nix KB discovery and owner-reviewed contribution; no duplicate organizational entry skill found."
+  },
+  "status": "candidate"
+}
