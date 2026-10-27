@@ -486,13 +486,16 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
         errors.append("persistent skill packs must match the conservative audited matrix")
     if packs.get("profiles") != EXPECTED_PACK_ASSIGNMENTS:
         errors.append("profile pack assignments must match all seven explicit role mappings")
-    if packs.get("host_native_satisfaction") != EXPECTED_HOST_NATIVE_SATISFACTION:
-        errors.append("host-native satisfaction must exactly bind the three reviewed LNX paths and tree digests")
+    pending_packet = _load_json_object(root / 'skills/activation-proposals/lnx-knowledge-v2.json', 'activation proposal', errors)
+    lifecycle_preservation = dict(EXPECTED_HOST_NATIVE_SATISFACTION)
+    lifecycle_preservation['lnx'] = pending_packet.get('preservation')
+    if packs.get("host_native_satisfaction") not in (EXPECTED_HOST_NATIVE_SATISFACTION, lifecycle_preservation):
+        errors.append("host-native satisfaction must match exact pending or v2-derived approved lifecycle")
     authorization = _load_json_object(
         root / "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
         "host-native preservation authorization", errors,
     )
-    if authorization != EXPECTED_HOST_NATIVE_AUTHORIZATION or authorization.get("artifacts") != packs.get("host_native_satisfaction", {}).get("lnx"):
+    if authorization != EXPECTED_HOST_NATIVE_AUTHORIZATION or authorization.get("artifacts") != EXPECTED_HOST_NATIVE_SATISFACTION['lnx']:
         errors.append("host-native subtraction requires the exact compile-time Telegram corrective authorization and artifact bindings")
     approved_additions = packs.get("approved_additions")
     if approved_additions != EXPECTED_APPROVED_ADDITIONS:
@@ -564,6 +567,8 @@ def _validate_skills(root: Path, manifest: dict[str, Any], errors: list[str]) ->
     approval_files = {path.name for path in (root / "skills/approvals").glob("*.json")}
     expected_new_receipts = {f"{proposal_id}.json" for proposal_id in EXPECTED_NEW_PROPOSAL_SHA256}
     expected_approval_files = {"lnx-caveman-d8ede5cf.json", "lnx-watch-a9cb5b57.json"} | expected_new_receipts
+    if packs.get('host_native_satisfaction') == lifecycle_preservation:
+        expected_approval_files.add('lnx-nix-knowledge-1182c51c.json')
     if approval_files != expected_approval_files:
         errors.append("single-skill approvals must exactly match the historical and approved scout proposal receipts")
     proposal_scopes = {proposal_id: (profile, name) for (profile, name), proposal_id in PROPOSALS.items()}
@@ -806,7 +811,21 @@ def validate_repository(root: Path) -> list[str]:
     if hashlib.sha256(canonical).hexdigest() != "63e0706c4e262f4a4fe300fc040f2f70262b4f011261f87bd2362f8face270ab":
         errors.append("pending default-only activation proposal must match its exact reviewed document")
     if pending:
+        packs = _load_json_object(root / 'skills/packs.json', 'manifest', errors)
+        approved_state = packs.get('host_native_satisfaction') != EXPECTED_HOST_NATIVE_SATISFACTION
+        approval_root = root / 'skills/activation-approvals'
+        if approved_state or approval_root.exists() or approval_root.is_symlink():
+            try:
+                spec = importlib.util.spec_from_file_location('verified_execution', root / 'scripts/knowledge_execution.py')
+                assert spec and spec.loader
+                execution = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(execution)
+                execution.consume_receipt(packs)
+            except (OSError, ValueError, RuntimeError, AssertionError) as exc:
+                errors.append('v2 approved lifecycle/receipt invalid: ' + str(exc))
         for relative, field in (("skills/packs.json", "manifest_sha256"), ("skills/proposals/lnx-nix-knowledge-1182c51c.json", "skill_proposal_sha256")):
+            if approved_state and relative == 'skills/packs.json':
+                continue  # consumer above checks exact ancestor-derived current state
             try:
                 digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
             except OSError:

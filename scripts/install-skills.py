@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -204,7 +205,10 @@ def _canonical_manifest(manifest:dict)->None:
  if set(manifest)!={"schema_version","nixkit","packs","profiles","host_native_satisfaction","proposed_pack_additions","approved_pack_additions","approved_additions","task_only","excluded","governance"} or manifest.get("schema_version")!=1: raise Refusal("canonical pack manifest has invalid fields")
  if manifest.get("nixkit")!={"repository":NIXKIT_REPOSITORY,"commit":NIXKIT_COMMIT,"sources_sha256":NIXKIT_SOURCES_SHA256,"node_runtime":NODE_RUNTIME}: raise Refusal("canonical manifest does not match compile-time NixKit pins")
  if manifest.get("packs")!=EXPECTED_PACKS or manifest.get("profiles")!=EXPECTED_ASSIGNMENTS: raise Refusal("canonical manifest does not match the exact seven-profile pack topology")
- if manifest.get("host_native_satisfaction")!=EXPECTED_HOST_NATIVE_SATISFACTION: raise Refusal("canonical manifest does not match compile-time host-native satisfaction bindings")
+ if manifest.get("host_native_satisfaction")!=EXPECTED_HOST_NATIVE_SATISFACTION:
+  expected=json.loads(json.dumps(EXPECTED_HOST_NATIVE_SATISFACTION))
+  expected['lnx']=_knowledge_execution().load_packet()['preservation']
+  if manifest.get('host_native_satisfaction')!=expected: raise Refusal("canonical manifest does not match exact pending/approved host-native lifecycle bindings")
  additions=manifest.get("approved_additions")
  if not isinstance(additions,dict) or set(additions)!=set(PROFILE_MAP) or any(not isinstance(v,list) or len(v)!=len(set(v)) or any(not isinstance(x,str) or not SKILL.fullmatch(x) for x in v) for v in additions.values()): raise Refusal("canonical manifest has invalid approved additions topology")
  proposed=manifest.get("proposed_pack_additions"); approved=manifest.get("approved_pack_additions")
@@ -520,20 +524,25 @@ def _preflight_duplicate_names(profile_home:Path,selected:set[str],host_native:d
    locations=", ".join(str(path) for path in found)
    raise Refusal(f"host-native skill name {name} must exist exactly once at its declared path: {locations}")
 
-def _require_knowledge_activation_authority(profile:str, declared:set[str], receipts:list)->None:
- """Pending v2 is not policy. No self-authored receipt authenticates a human.
+def _knowledge_execution():
+ spec=importlib.util.spec_from_file_location('knowledge_execution',ROOT/'scripts/knowledge_execution.py')
+ assert spec and spec.loader
+ module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+ module.Refusal=Refusal; module.installer.Refusal=Refusal
+ return module
 
- A later reviewed change must pin genuine evidence for the ancestor proposal,
- then enable v2 preservation/cache execution. This commit has NO such evidence.
- Historical v1 authorization remains byte-for-byte authoritative for v1 only.
- """
+def _require_knowledge_activation_authority(profile:str, declared:set[str], receipts:list)->None:
+ """No local filename or self-authored JSON authenticates a human."""
  if "nix-knowledge" in declared:
-  raise Refusal("knowledge activation pending: authenticated ancestor-proposal approval and reviewed v2 receipt route required; diagnostic preview is not authority")
+  module=_knowledge_execution()
+  module.consume_receipt(_load_json(CANONICAL_MANIFEST,'manifest'))
 
 def main()->int:
  parser=argparse.ArgumentParser(description=__doc__); parser.add_argument("--profile",required=True,choices=sorted(PROFILE_MAP)); parser.add_argument("--nixkit",type=Path,default=Path.home()/"src/nixkit"); parser.add_argument("--skill",action="append",default=[]); parser.add_argument("--approval",type=Path,action="append",default=[]); parser.add_argument("--apply",action="store_true"); args=parser.parse_args()
  try:
   manifest=_load_json(CANONICAL_MANIFEST,"canonical pack manifest"); _canonical_manifest(manifest)
+  if args.profile=='lnx' and 'nix-knowledge' in manifest['approved_additions']['lnx']:
+   return _knowledge_execution().production(args,manifest)
   _require_knowledge_activation_authority(args.profile,set(manifest["approved_additions"][args.profile]),args.approval)
   host_native_authorization=_load_json(HOST_NATIVE_AUTHORIZATION,"host-native preservation authorization"); _validate_host_native_authorization(host_native_authorization,manifest["host_native_satisfaction"])
   checkout=args.nixkit.expanduser().absolute()
