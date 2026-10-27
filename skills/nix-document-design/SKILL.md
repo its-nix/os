@@ -6,7 +6,7 @@ license: MIT
 
 # Nix Document Design
 
-**Inert first-party candidate: not installed, approved, or deployed.** Initial proposal is task-only for a bounded LNX/default document-design task, not a persistent role skill or blanket specialist installation. No plugin, credential, network fetch, or profile mutation is required by this candidate.
+**First-party source; authority is governed separately.** Source availability grants no approval and does not self-authorize access, publication, promotion, or installation. Verify approval and deployment for the exact source revision from the governed manifest, authenticated approval receipt, and live inventory; do not infer status from this document. Initial proposal is task-only for a bounded LNX/default document-design task, not a persistent role skill or blanket specialist installation. No plugin, credential, network fetch, or profile mutation is required by this skill.
 
 1. Lead with one specific H1 and an answer-first summary. Put validity and consequential caveats in visible prose, not only frontmatter or color.
 2. Build a semantic H2/H3 hierarchy with short paragraphs, parallel lists, concrete examples, and deliberate whitespace. Use small comparable tables; move long narrative cells into sections.

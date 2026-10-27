@@ -6,7 +6,7 @@ license: MIT
 
 # Nix Knowledge
 
-**Inert first-party candidate: not installed, approved, or deployed.** This source does not grant access, publication, promotion, or installation authority. Proposed persistent target: LNX (`default`) only, subject to separate immutable admission and human approval.
+**First-party source; authority is governed separately.** Source availability grants no approval and does not self-authorize access, publication, promotion, or installation. Verify approval and deployment for the exact source revision from the governed manifest, authenticated approval receipt, and live inventory; do not infer status from this document. Proposed persistent target: LNX (`default`) only, subject to separate immutable admission and human approval.
 
 ## Start with the canonical entry
 

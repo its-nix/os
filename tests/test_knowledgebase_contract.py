@@ -14,16 +14,57 @@ class KnowledgebaseContractTests(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text()
 
-    def test_canonical_discovery_and_inert_metadata(self):
+    def test_canonical_discovery_and_on_demand_metadata(self):
         for name in ("nix-knowledge", "nix-document-design"):
             text = self.text(f"skills/{name}/SKILL.md")
             self.assertTrue(text.startswith(f"---\nname: {name}\n"))
             self.assertRegex(text, r'(?m)^description: "Use when .+"$')
-            self.assertIn("inert", text.lower())
-            self.assertIn("not installed", text.lower())
+            self.assertIn("license: MIT\n", text)
             for target in re.findall(r'\]\((references/[^)#]+)\)', text):
                 self.assertTrue((ROOT / "skills" / name / target).is_file())
         self.assertIn(ENTRY, self.text("skills/nix-knowledge/SKILL.md"))
+
+    def test_source_is_lifecycle_neutral_not_self_authorizing(self):
+        for name in ("nix-knowledge", "nix-document-design"):
+            text = self.text(f"skills/{name}/SKILL.md")
+            for assertion in ("Inert first-party candidate", "not installed", "not deployed"):
+                self.assertNotIn(assertion.lower(), text.lower())
+            for term in ("Source availability grants no approval", "governed manifest", "authenticated approval receipt", "live inventory", "does not self-authorize"):
+                self.assertIn(term, text)
+        proposal = self.text("docs/KNOWLEDGEBASE-INTEGRATION.md")
+        self.assertIn("inert", proposal.lower())
+        self.assertIn("not deployed", proposal)
+
+    def test_original_packages_have_exact_scoped_mit_grants(self):
+        grant = """MIT License
+
+Copyright (c) 2026 Nix
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+        for name in ("nix-knowledge", "nix-document-design"):
+            scope = (
+                f"\nScope: This license applies only to the original Nix-authored documentation\n"
+                f"in skills/{name}/. It does not license the rest of this\n"
+                "repository or any referenced third-party content.\n"
+            )
+            self.assertEqual(grant + scope, self.text(f"skills/{name}/LICENSE"))
 
     def test_governance_and_activation_inputs_unchanged(self):
         paths = ["skills/packs.json", "scripts/bootstrap.sh", "scripts/install-skills.py"]
@@ -74,7 +115,7 @@ class KnowledgebaseContractTests(unittest.TestCase):
             for path in files:
                 self.assertFalse(path.is_symlink())
                 if path.is_file():
-                    self.assertEqual(path.suffix, ".md")
+                    self.assertTrue(path.suffix == ".md" or path == ROOT / "skills" / name / "LICENSE")
                     text = path.read_text()
                     self.assertNotRegex(text, r"/" + r"home/[^\s/]+")
                     self.assertNotIn("skills.external_dirs:", text)
