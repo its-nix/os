@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "proposal_id": "lnx-nix-knowledge-1182c51c",
+  "profile": "lnx",
+  "skills": [
+    "nix-knowledge"
+  ],
+  "approved_by": "Lior",
+  "proposal_git_commit": "0ba0131f0da473d12bcb1fc3cadd8258bd66e15e",
+  "proposal_file_sha256": "073dc35dbb5205554552283b4e7d739c92ef2e317dd91be014b13eab35bb3e3d",
+  "activation_receipt": "skills/activation-approvals/lnx-knowledge-v2.json",
+  "approval_evidence": {
+    "kind": "context_bound_voice_approval",
+    "platform": "discord",
+    "channel_id": "1563201690663125142",
+    "proposal_git_commit": "0ba0131f0da473d12bcb1fc3cadd8258bd66e15e",
+    "prompt": {
+      "message_id": "1564704949332615406",
+      "author_id": "1563178010020941956",
+      "timestamp": "2026-10-27T18:18:50.733000+00:00"
+    },
+    "human_voice": {
+      "message_id": "1564705817448423424",
+      "author_id": "454290355320520714",
+      "bot": false,
+      "timestamp": "2026-10-27T18:22:17.708000+00:00",
+      "content": "",
+      "attachment": {
+        "filename": "voice-message.ogg",
+        "size_bytes": 26402
+      }
+    },
+    "bot_stt": {
+      "message_id": "1564705827204370614",
+      "author_id": "1563178010020941956",
+      "timestamp": "2026-10-27T18:22:20.034000+00:00",
+      "quote": "I approve and make the repository public so you can test each CI again and then make it private again."
+    },
+    "scope": {
+      "profile": "lnx",
+      "hermes_profile": "default",
+      "new_skill": "nix-knowledge",
+      "preserved_trees": 5,
+      "cache_files": 5,
+      "hooks": false
+    },
+    "human_written_text_quote": false,
+    "voice_payload_cryptographically_verified": false
+  }
+}

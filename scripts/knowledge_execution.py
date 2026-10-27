@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Inactive v2 receipt consumer and exact, reversible Watch cache transaction.
+"""Published v2 receipt consumer and exact, reversible Watch cache transaction.
 
-Trusted publication, NOT JSON, authenticates the human. EXPECTED_EVIDENCE remains
-None until a reviewer reads the real Discord message out of band and publishes
-its exact fields. No CLI option or environment variable can substitute evidence.
+Trusted publication, NOT JSON, authenticates the contextual human decision.
+EXPECTED_EVIDENCE pins the exact parent-verified Discord prompt/voice/STT event.
+Publication is governance approval, not evidence of live installation.
+No CLI option or environment variable can substitute evidence.
 Low-level transaction helpers are not authorization APIs; production callers
 must use consume_receipt() before constructing them.
 """
@@ -27,7 +28,22 @@ PACKET_HASH = '9c7978bf7b2302c1e9a82c1db91b9c03d448675113d0ed41621117f285f9f313'
 RECEIPT = Path('skills/activation-approvals/lnx-knowledge-v2.json')
 SINGLE = Path('skills/proposals/lnx-nix-knowledge-1182c51c.json')
 QUOTE = 'approve lnx-knowledge-v2 at ' + ANCESTOR
-EXPECTED_EVIDENCE = None  # Deliberately UNACTIVATED. Never fill from local JSON.
+# Exact contextual event read back by the parent; see the decision record.
+# Never fill from local JSON, normalize the utterance, or infer installation.
+EXPECTED_EVIDENCE = {
+    'kind': 'context_bound_voice_approval', 'platform': 'discord',
+    'channel_id': '1563201690663125142', 'proposal_git_commit': ANCESTOR,
+    'prompt': {'message_id': '1564704949332615406', 'author_id': '1563178010020941956',
+               'timestamp': '2026-10-27T18:18:50.733000+00:00'},
+    'human_voice': {'message_id': '1564705817448423424', 'author_id': '454290355320520714',
+                    'bot': False, 'timestamp': '2026-10-27T18:22:17.708000+00:00', 'content': '',
+                    'attachment': {'filename': 'voice-message.ogg', 'size_bytes': 26402}},
+    'bot_stt': {'message_id': '1564705827204370614', 'author_id': '1563178010020941956',
+                'timestamp': '2026-10-27T18:22:20.034000+00:00',
+                'quote': 'I approve and make the repository public so you can test each CI again and then make it private again.'},
+    'scope': {'profile': 'lnx', 'hermes_profile': 'default', 'new_skill': 'nix-knowledge',
+              'preserved_trees': 5, 'cache_files': 5, 'hooks': False},
+    'human_written_text_quote': False, 'voice_payload_cryptographically_verified': False}
 CACHE_NAMES = tuple(n + '.cpython-311.pyc' for n in ('download', 'frames', 'local_whisper', 'runtime', 'transcript'))
 spec = importlib.util.spec_from_file_location('execution_installer', ROOT / 'scripts/install-skills.py')
 assert spec and spec.loader
@@ -84,10 +100,10 @@ def validate_evidence(evidence):
 
 
 def voice_decision_contract():
-    """Known parent-reported metadata, not a published approval or normalized quote.
+    """Exact contextual decision schema, independently pinned by publication.
 
-    EXPECTED_EVIDENCE is still None. A separate reviewed publication must pin
-    this exact record after fresh Discord readback; no installer authentication.
+    The parent read back the real prompt, human voice event and distinct bot
+    transcription. This is not human-written text or installer authentication.
     """
     return {'kind': 'context_bound_voice_approval', 'platform': 'discord',
             'channel_id': '1563201690663125142', 'proposal_git_commit': ANCESTOR,

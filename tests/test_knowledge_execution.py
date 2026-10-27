@@ -1,4 +1,7 @@
-"""All evidence below is SYNTHETIC; only temporary trees may be mutated."""
+"""Synthetic refusal/transaction fixtures; published metadata checked separately.
+
+Only temporary trees may be mutated. Synthetic evidence is never authority.
+"""
 import copy
 import importlib.util
 import json
@@ -51,6 +54,10 @@ class ExecutionTests(unittest.TestCase):
             path = base / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, path)
+        # The real checkout now has approved preservation. The synthetic ancestor
+        # must still start from the immutable pending manifest, not that state.
+        (base / 'skills/packs.json').write_bytes(subprocess.check_output(
+            ['git', 'show', m.ANCESTOR + ':skills/packs.json'], cwd=ROOT))
         def git(*args):
             return subprocess.check_output(['git', '-C', str(base), *args], stderr=subprocess.PIPE, text=True).strip()
         git('init', '-q')
@@ -148,8 +155,11 @@ class ExecutionTests(unittest.TestCase):
         self.assertNotIn('quote', evidence['human_voice'])
         self.assertFalse(evidence['human_written_text_quote'])
         self.assertFalse(evidence['voice_payload_cryptographically_verified'])
-        with self.assertRaisesRegex(m.Refusal, 'genuine.*evidence'):
-            m.validate_evidence(evidence)
+        self.assertEqual(evidence, m.EXPECTED_EVIDENCE)
+        m.validate_evidence(evidence)
+        with mock.patch.object(m, 'EXPECTED_EVIDENCE', None):
+            with self.assertRaisesRegex(m.Refusal, 'genuine.*evidence'):
+                m.validate_evidence(evidence)
         with mock.patch.object(m, 'EXPECTED_EVIDENCE', evidence):
             m.validate_evidence(evidence)
             for field in ('prompt', 'human_voice', 'bot_stt', 'scope'):
@@ -167,13 +177,18 @@ class ExecutionTests(unittest.TestCase):
 
     def test_inactive_authority_cannot_be_replaced_by_same_quote(self):
         m = load()
-        with self.assertRaisesRegex(m.Refusal, 'genuine.*evidence'):
+        with mock.patch.object(m, 'EXPECTED_EVIDENCE', None):
+            with self.assertRaisesRegex(m.Refusal, 'genuine.*evidence'):
+                m.validate_evidence({'quote': m.QUOTE})
+        with self.assertRaisesRegex(m.Refusal, 'exact.*Discord'):
             m.validate_evidence({'quote': m.QUOTE})
 
     def test_manifest_transformation_is_only_preservation(self):
         m = load()
-        pending = json.loads((ROOT / 'skills/packs.json').read_text())
+        pending = json.loads(subprocess.check_output(
+            ['git', 'show', m.ANCESTOR + ':skills/packs.json'], cwd=ROOT))
         approved = m.approved_manifest(pending, m.load_packet())
+        self.assertEqual(approved, json.loads((ROOT / 'skills/packs.json').read_text()))
         self.assertEqual(5, len(approved['host_native_satisfaction']['lnx']))
         approved['host_native_satisfaction'] = pending['host_native_satisfaction']
         self.assertEqual(pending, approved)
@@ -377,7 +392,9 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(h.hexdigest(), m.kit_tree_digest(root))
 
     def test_production_cli_has_no_auth_or_path_override(self):
-        for args in ([], ['--apply'], ['--receipt', '/fabricated'], ['--home', '/other']):
+        # No arguments is now an authorized, read-only cache preview; negative
+        # CLI cases remain refusals, including standalone cleanup.
+        for args in (['--apply'], ['--receipt', '/fabricated'], ['--home', '/other']):
             result = subprocess.run(['python3', str(ROOT / 'scripts/knowledge_execution.py'), *args], text=True, capture_output=True)
             self.assertEqual(2, result.returncode)
             self.assertEqual('', result.stdout)
