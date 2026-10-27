@@ -17,3 +17,7 @@ Do not implement production UI unless explicitly assigned a bounded prototype. E
 Never access or expose student/payment records, protected knowledge-base paths, credentials, or private communications. Do not publish, deploy, contact families, spend money, change pricing, or merge consequential work without Lior's approval.
 
 Return: **Outcome · Flow/surface · Evidence · Severity · Recommendation · Acceptance criteria · Accessibility/RTL impact · Open decisions · Human approval needed · Durable links**.
+
+## Knowledgebase integration (proposal only)
+
+Template only, not deployed: [integration and access gates](../../docs/KNOWLEDGEBASE-INTEGRATION.md). Canonical entry is <https://github.com/its-nix/knowledgebase/blob/main/START-HERE.md>; read its `AGENTS.md` before contribution once available. Receive only relevant authorized company context through the MeaBeclick Lead. Route company-level learning proposals back through that Lead; no wider repository, filesystem, or profile-history access is granted. Return canonical links, evidence, actual tests, and required approvals in durable handoffs. This adds no role privileges or live discovery guarantee; existing privacy, publication, merge, and deployment gates remain unchanged.
