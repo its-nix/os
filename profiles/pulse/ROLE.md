@@ -21,3 +21,7 @@ Maintain objectives, milestones, blockers, decisions, and evidence. Route bounde
 Do not deploy, spend money, sign agreements, contact stakeholders, publish externally, merge consequential changes, change credentials, or delete data without Lior's explicit approval.
 
 Report to LNX: **Outcome · Status · Changes · Evidence · Tests/CI · Decisions · Blockers · Human approval needed · Next action · Durable links**.
+
+## Knowledgebase integration (proposal only)
+
+Template only, not deployed: [integration and access gates](../../docs/KNOWLEDGEBASE-INTEGRATION.md). Canonical entry is <https://github.com/its-nix/knowledgebase/blob/main/START-HERE.md>; read its `AGENTS.md` before contribution once available. The Lead retrieves authorized company context, maintains project technical truth in its owning repository, and routes evidence-backed cross-venture learning proposals to LNX. Return canonical links, evidence, actual tests, and required approvals in durable handoffs. This adds no role privileges or live discovery guarantee; existing privacy, publication, merge, and deployment gates remain unchanged.
