@@ -29,13 +29,13 @@ def load_module(name: str, path: Path):
 class PackContractTests(unittest.TestCase):
     def test_exact_profiles_pin_and_complete_skill_classification(self):
         packs = json.loads((ROOT / "skills/packs.json").read_text(encoding="utf-8"))
-        self.assertEqual("f5377ca3219daf4f33f6e8525f9438318dabcd2f", packs["nixkit"]["commit"])
-        self.assertEqual("110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83", packs["nixkit"]["sources_sha256"])
+        self.assertEqual("10018867c2544948109ce46217a689e1db2a1495", packs["nixkit"]["commit"])
+        self.assertEqual("a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49", packs["nixkit"]["sources_sha256"])
         self.assertEqual(64, len(packs["nixkit"]["sources_sha256"]))
         self.assertEqual("24.22.1", packs["nixkit"]["node_runtime"])
         self.assertEqual(PROFILES, set(packs["profiles"]))
         self.assertEqual({
-            "lnx": ["caveman", "watch", "todoist-cli"],
+            "lnx": ["caveman", "watch", "todoist-cli", "nix-knowledge"],
             "pulse": ["technical-project-management"],
             "algua": [],
             "meabeclick": [],
@@ -64,7 +64,7 @@ class PackContractTests(unittest.TestCase):
         self.assertFalse(persistent & task_only)
         self.assertFalse(persistent & excluded)
         self.assertFalse(task_only & excluded)
-        self.assertEqual(57, len(persistent | task_only | excluded))
+        self.assertEqual(59, len(persistent | task_only | excluded))
         self.assertIn("watch", task_only)
 
     def test_product_pack_is_exact_approved_and_only_changes_lnx_effective_set(self):
@@ -110,7 +110,7 @@ class PackContractTests(unittest.TestCase):
             "meabeclickgrowth-customer-research-e85f3cbc": ("meabeclickgrowth", "customer-research", "dc0058708aefc89b3d7b5b3299f0d82bf90fb5e381ec785291a3560b72fd1746"),
             "meabeclickgrowth-social-media-content-calendar-0319e113": ("meabeclickgrowth", "social-media-content-calendar", "9bcebf18e107574437e6ebdd610ed86fbb9d02cd5920ab63a63ef5604c3a578f"),
         }
-        actual_new = {path.stem for path in (ROOT / "skills/proposals").glob("*.json")} - {"lnx-caveman-d8ede5cf", "lnx-watch-a9cb5b57"}
+        actual_new = {path.stem for path in (ROOT / "skills/proposals").glob("*.json")} - {"lnx-caveman-d8ede5cf", "lnx-watch-a9cb5b57", "lnx-nix-knowledge-1182c51c"}
         self.assertEqual(set(expected), actual_new)
         for proposal_id, (profile, name, digest) in expected.items():
             proposal = json.loads((ROOT / f"skills/proposals/{proposal_id}.json").read_text(encoding="utf-8"))
@@ -315,8 +315,8 @@ class SkillInstallerTests(unittest.TestCase):
             fixture_digest = digest_runtime._skill_tree_digest(root)
             source = source.replace(record["tree_sha256"], fixture_digest)
             record["tree_sha256"] = fixture_digest
-        source = source.replace("f5377ca3219daf4f33f6e8525f9438318dabcd2f", commit)
-        source = source.replace("110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83", packs["nixkit"]["sources_sha256"])
+        source = source.replace("10018867c2544948109ce46217a689e1db2a1495", commit)
+        source = source.replace("a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49", packs["nixkit"]["sources_sha256"])
         source = source.replace("92338765a1cc942b2a20dda3f1e220d6be0225e1", commit)
         source = source.replace("6493103af689bdf4bae5455e1d901646fe079e51a69c53b6f5bcf57c62786d21", packs["nixkit"]["sources_sha256"])
         fixture_installer_sha = hashlib.sha256((kit / "install.mjs").read_bytes()).hexdigest()

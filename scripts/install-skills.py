@@ -21,9 +21,9 @@ HOST_NATIVE_AUTHORIZATION = ROOT / "skills/host-native-approvals/lnx-preserve-ho
 PROFILE_MAP = {"lnx":"default","pulse":"pulse","algua":"algua","meabeclick":"meabeclick","meabeclickux":"meabeclickux","meabeclickeng":"meabeclickeng","meabeclickgrowth":"meabeclickgrowth"}
 PROFILES = set(PROFILE_MAP)
 NIXKIT_REPOSITORY = "https://github.com/its-nix/kit.git"
-NIXKIT_COMMIT = "f5377ca3219daf4f33f6e8525f9438318dabcd2f"
+NIXKIT_COMMIT = "10018867c2544948109ce46217a689e1db2a1495"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
-NIXKIT_SOURCES_SHA256 = "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83"
+NIXKIT_SOURCES_SHA256 = "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49"
 NIXKIT_INSTALLER_SHA256 = "9748b8338c88c766208fa54fa144c95f0cd282a72f95327f485641ce85c18041"
 NIXKIT_LOCAL_TREES = {"skills/watch":"64685da3912a54d5f672c4bdce0e89b69b4cd6c8"}
 NODE_RUNTIME = "24.22.1"
@@ -59,7 +59,7 @@ EXPECTED_HOST_NATIVE_AUTHORIZATION = {
  "artifacts":EXPECTED_HOST_NATIVE_SATISFACTION["lnx"],
 }
 LEGACY_NIXKIT_SKILLS = {"using-superpowers","brainstorming","writing-plans","executing-plans","systematic-debugging","test-driven-development","verification-before-completion","requesting-code-review","receiving-code-review","using-git-worktrees","finishing-a-development-branch","subagent-driven-development","dispatching-parallel-agents","diagnosing-superpowers","setup-matt-pocock-skills","grill-with-docs","grilling","domain-modeling","to-spec","to-tickets","codebase-design","research","handoff","caveman","ponytail","frontend-design","web-design-guidelines","agent-browser","remotion-best-practices","auto-editor","auto-editor-effects","auto-editor-export","auto-editor-transcribe","obsidian-markdown","qmd","gws-shared","gws-drive","gws-docs","gws-drive-upload","gws-docs-write","find-docs"}
-NIXKIT_SKILLS = LEGACY_NIXKIT_SKILLS | {"lnx-grilling","lnx-grill-me","lnx-domain-modeling","lnx-grill-with-docs","lnx-to-spec","lnx-writing-for-agents","nix-idea-to-mvp","watch","performance","rtl-design","analytics","customer-research","todoist-cli","technical-project-management","web-accessibility","social-media-content-calendar"}
+NIXKIT_SKILLS = LEGACY_NIXKIT_SKILLS | {"lnx-grilling","lnx-grill-me","lnx-domain-modeling","lnx-grill-with-docs","lnx-to-spec","lnx-writing-for-agents","nix-idea-to-mvp","watch","performance","rtl-design","analytics","customer-research","todoist-cli","technical-project-management","web-accessibility","social-media-content-calendar","nix-knowledge","nix-document-design"}
 PACK_PROPOSALS = {("lnx","product-development"):"lnx-product-development-92338765"}
 PRODUCT_DEVELOPMENT_SKILLS = EXPECTED_PACKS["product-development"]
 APPROVAL_AUTHORITY_DISCORD_ID = "454290355320520714"
@@ -189,7 +189,13 @@ def _source_catalog(path:Path)->dict[str,tuple[str,str,str|None]]:
   else: raise Refusal("pinned NixKit sources.json has an invalid discriminated source record")
   for skill in source["skills"]:
    if not isinstance(skill,str) or not SKILL.fullmatch(skill) or skill in catalog: raise Refusal("pinned NixKit sources.json skill names must be valid and globally unique")
-   catalog[skill]=(repository,revision,expected_path)
+   # A GitHub path can name a package itself or its discovery parent.
+   # Preserve existing exact-package bindings; scope parent selectors per name.
+   # The local watch discriminator already names its exact package path.
+   package_path=expected_path
+   if github_keys and expected_path is not None and expected_path.rsplit("/",1)[-1]!=skill:
+    package_path=f"{expected_path}/{skill}"
+   catalog[skill]=(repository,revision,package_path)
  if local_records!=1: raise Refusal("pinned NixKit sources.json must contain exactly the audited local watch record")
  if set(catalog)!=NIXKIT_SKILLS: raise Refusal("pinned NixKit sources.json does not contain the exact audited skill catalog")
  return catalog
@@ -514,10 +520,21 @@ def _preflight_duplicate_names(profile_home:Path,selected:set[str],host_native:d
    locations=", ".join(str(path) for path in found)
    raise Refusal(f"host-native skill name {name} must exist exactly once at its declared path: {locations}")
 
+def _require_knowledge_activation_authority(profile:str, declared:set[str], receipts:list)->None:
+ """Pending v2 is not policy. No self-authored receipt authenticates a human.
+
+ A later reviewed change must pin genuine evidence for the ancestor proposal,
+ then enable v2 preservation/cache execution. This commit has NO such evidence.
+ Historical v1 authorization remains byte-for-byte authoritative for v1 only.
+ """
+ if "nix-knowledge" in declared:
+  raise Refusal("knowledge activation pending: authenticated ancestor-proposal approval and reviewed v2 receipt route required; diagnostic preview is not authority")
+
 def main()->int:
  parser=argparse.ArgumentParser(description=__doc__); parser.add_argument("--profile",required=True,choices=sorted(PROFILE_MAP)); parser.add_argument("--nixkit",type=Path,default=Path.home()/"src/nixkit"); parser.add_argument("--skill",action="append",default=[]); parser.add_argument("--approval",type=Path,action="append",default=[]); parser.add_argument("--apply",action="store_true"); args=parser.parse_args()
  try:
   manifest=_load_json(CANONICAL_MANIFEST,"canonical pack manifest"); _canonical_manifest(manifest)
+  _require_knowledge_activation_authority(args.profile,set(manifest["approved_additions"][args.profile]),args.approval)
   host_native_authorization=_load_json(HOST_NATIVE_AUTHORIZATION,"host-native preservation authorization"); _validate_host_native_authorization(host_native_authorization,manifest["host_native_satisfaction"])
   checkout=args.nixkit.expanduser().absolute()
   if checkout.is_symlink() or not checkout.is_dir(): raise Refusal("NixKit checkout must be an existing non-symlink directory")

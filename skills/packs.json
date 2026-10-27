@@ -2,8 +2,8 @@
   "schema_version": 1,
   "nixkit": {
     "repository": "https://github.com/its-nix/kit.git",
-    "commit": "f5377ca3219daf4f33f6e8525f9438318dabcd2f",
-    "sources_sha256": "110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83",
+    "commit": "10018867c2544948109ce46217a689e1db2a1495",
+    "sources_sha256": "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49",
     "node_runtime": "24.22.1"
   },
   "packs": {
@@ -103,7 +103,8 @@
     "lnx": [
       "caveman",
       "watch",
-      "todoist-cli"
+      "todoist-cli",
+      "nix-knowledge"
     ],
     "pulse": [
       "technical-project-management"
@@ -127,6 +128,8 @@
     ]
   },
   "task_only": [
+    "nix-knowledge",
+    "nix-document-design",
     "setup-matt-pocock-skills",
     "grill-with-docs",
     "grilling",

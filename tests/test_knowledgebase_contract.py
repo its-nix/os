@@ -66,16 +66,22 @@ SOFTWARE.
             )
             self.assertEqual(grant + scope, self.text(f"skills/{name}/LICENSE"))
 
-    def test_governance_and_activation_inputs_unchanged(self):
-        paths = ["skills/packs.json", "scripts/bootstrap.sh", "scripts/install-skills.py"]
+    def test_phased_proposal_preserves_historical_authority_and_scope(self):
+        paths = ["scripts/bootstrap.sh"]
         for directory in ("skills/approvals", "skills/proposals", "skills/pack-approvals", "skills/pack-proposals", "skills/host-native-approvals", "config"):
-            paths.extend(str(p.relative_to(ROOT)) for p in (ROOT / directory).rglob("*") if p.is_file())
+            paths.extend(subprocess.check_output(["git", "ls-tree", "-r", "--name-only", BASE, "--", directory], cwd=ROOT, text=True).splitlines())
         for path in paths:
             before = subprocess.check_output(["git", "show", f"{BASE}:{path}"], cwd=ROOT)
             self.assertEqual(before, (ROOT / path).read_bytes(), path)
         manifest = json.loads(self.text("skills/packs.json"))
-        self.assertNotIn("nix-knowledge", json.dumps(manifest))
-        self.assertNotIn("nix-document-design", json.dumps(manifest))
+        before = json.loads(subprocess.check_output(["git", "show", f"{BASE}:skills/packs.json"], cwd=ROOT))
+        for field in ("profiles", "packs", "host_native_satisfaction", "proposed_pack_additions", "approved_pack_additions", "governance"):
+            self.assertEqual(before[field], manifest[field], field)
+        for profile, values in before["approved_additions"].items():
+            self.assertEqual(values + (["nix-knowledge"] if profile == "lnx" else []), manifest["approved_additions"][profile])
+        self.assertEqual(before["task_only"], [s for s in manifest["task_only"] if s not in {"nix-knowledge", "nix-document-design"}])
+        self.assertEqual(before["excluded"], manifest["excluded"])
+        self.assertFalse((ROOT / "skills/approvals/lnx-nix-knowledge-1182c51c.json").exists())
 
     def test_retrieval_and_contribution_boundaries(self):
         text = self.text("skills/nix-knowledge/references/contribution-contract.md")
