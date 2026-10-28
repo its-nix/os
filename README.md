@@ -4,12 +4,12 @@ Nix OS is a lean, declarative operating repository for the Nix portfolio. It des
 
 ## Current topology
 
-- **LNX (`default`)** is Lior's portfolio orchestrator and the only initially Discord-visible identity.
+- **LNX (`default`)** is Lior's portfolio orchestrator and the sole Discord bot identity. The shared bot routes `#pulse`, `#algua`, and `#meabeclick` to their project lead profiles; other channels continue to LNX.
 - **Leads:** Pulse, Algua, and MeaBeclick.
 - **MeaBeclick specialists:** UX, Engineering, and Growth, routed through the MeaBeclick Lead.
 - **Boards/projects:** `pulse`, `algua`, and `meabeclick`.
 
-Internal profiles do not get messaging identities by default. LNX receives human requests and alerts, delegates bounded work through Hermes Kanban, and returns concise decisions or escalation requests.
+Internal profiles do not get separate messaging identities. The three named project channels are explicit exceptions to LNX handling the conversation: Hermes routes each channel to its matching lead profile while preserving the same LNX Discord account and LNX handling elsewhere. Leads still use Hermes Kanban for durable execution state and handoffs.
 
 ## Authority by plane
 
@@ -20,7 +20,7 @@ Internal profiles do not get messaging identities by default. LNX receives human
 | Hermes Kanban | Durable delegated execution, ownership, status, and handoffs |
 | GitHub and project docs | Durable technical artifacts, decisions, reviews, and evidence |
 
-The manifest in `nix-os.yaml` is JSON, which is a strict YAML subset. This allows validation with the Python standard library and no package installation.
+The manifest in `nix-os.yaml` is JSON, which is a strict YAML subset. This allows validation with the Python standard library and no package installation. `scripts/reconcile-discord-profile-routes.py` previews the manifest's non-secret routes and applies them through Hermes' supported config CLI; it refuses to overwrite unexpected existing routes.
 
 ## Safe start
 
@@ -37,6 +37,15 @@ scripts/reconcile-hermes-default.sh    # preview config/runtime reconciliation
 The apply mode creates only missing named profile directories with reviewed role contracts, then uses Hermes CLI for missing boards and projects. It deliberately avoids `hermes profile create`, because that command initializes unrelated active-profile state. Existing profile identity and configuration are preserved; only the requested missing profile directories, boards, and project records are added. The script never reads or writes credentials, memories, sessions, transcripts, or copied runtime data.
 
 After apply, configure Discord manually for the default profile as printed by the script. Keep the bot credential in Hermes' interactive secret setup, never in this repository.
+
+The shared LNX bot's three project-channel routes are declared in `nix-os.yaml`. Preview and apply them with:
+
+```bash
+python3 scripts/reconcile-discord-profile-routes.py
+python3 scripts/reconcile-discord-profile-routes.py --apply
+```
+
+After an apply, restart the active Hermes gateway and verify the three routes with `hermes config get gateway.profile_routes`; other Discord channels and DMs remain on LNX/default. The script refuses to replace any unexpected pre-existing route set.
 
 ## Hermes default-profile maintenance
 
@@ -112,6 +121,7 @@ The previous Paperclip-based design remains preserved remotely at `archive/paper
 - `scripts/install-skills.py` — pinned, exact-subset NixKit role installation
 - `scripts/setup-skill-scouts.py` — preview-first per-profile cron reconciliation
 - `scripts/reconcile-hermes-default.sh` — preview-first default-profile config/runtime reconciliation
+- `scripts/reconcile-discord-profile-routes.py` — preview-first reconciliation for the three shared-bot project routes
 - `skills/` — role packs and proposal/approval schemas
 - `automation/skill-scout/` — declarative jobs, prompts, report schema, and collector
 - `scripts/verify.py` — dependency-free repository safety verifier

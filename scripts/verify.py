@@ -25,6 +25,7 @@ REQUIRED_FILES = {
     "scripts/verify.py",
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
+    "scripts/reconcile-discord-profile-routes.py",
     "skills/packs.json",
     "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
@@ -61,6 +62,11 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
+EXPECTED_DISCORD_PROFILE_ROUTES = [
+    {"name": "pulse-channel", "platform": "discord", "guild_id": "1356588603517698169", "chat_id": "1564218041603194950", "profile": "pulse"},
+    {"name": "algua-channel", "platform": "discord", "guild_id": "1356588603517698169", "chat_id": "1565055030413893762", "profile": "algua"},
+    {"name": "meabeclick-channel", "platform": "discord", "guild_id": "1356588603517698169", "chat_id": "1565055212006285353", "profile": "meabeclick"},
+]
 NIXKIT_COMMIT = "10018867c2544948109ce46217a689e1db2a1495"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
 NIXKIT_SOURCES_SHA256 = "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49"
@@ -320,7 +326,9 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], errors: list[str]) 
     if manifest.get("orchestrator") != "lnx":
         errors.append("manifest orchestrator must be lnx")
     if manifest.get("discord_visible_profiles") != ["lnx"]:
-        errors.append("exactly one initial Discord-visible profile is required: lnx")
+        errors.append("the sole Discord bot identity must remain lnx")
+    if manifest.get("discord_profile_routes") != EXPECTED_DISCORD_PROFILE_ROUTES:
+        errors.append("Discord profile routes must map the three project channels to their matching leads")
     todoist = manifest.get("todoist")
     if not isinstance(todoist, dict) or todoist.get("cli") != "td" or todoist.get("scope") != "lior-only":
         errors.append("Todoist must use td and scope lior-only")

@@ -4,7 +4,7 @@ This repository is the safe, Git-tracked declaration of Nix's lean Hermes operat
 
 ## Required boundaries
 
-- LNX is Lior's personal portfolio orchestrator and the only initially Discord-visible profile.
+- LNX is Lior's personal portfolio orchestrator and the sole Discord bot identity. The three project channels may route to their matching lead profiles without creating separate bot identities.
 - Project Leads own project decomposition and synthesis; specialists execute fresh bounded assignments.
 - Discord is the primary human messaging, alert, and live-voice plane.
 - Todoist, accessed through `td`, contains only commitments assigned to Lior.

@@ -7,22 +7,23 @@ Nix is a six-human portfolio organization supported by seven role-isolated Herme
 ## Topology
 
 ```text
-Lior ⇄ Discord ⇄ LNX/default
-                     ├── Pulse Lead ───────── Pulse board
-                     ├── Algua Lead ───────── Algua board
-                     └── MeaBeclick Lead ──── MeaBeclick board
-                              ├── UX Specialist
-                              ├── Engineering Specialist
-                              └── Growth Specialist
+Lior ⇄ Discord (single LNX bot identity)
+          ├── #pulse ─────────────── Pulse Lead ───── Pulse board
+          ├── #algua ─────────────── Algua Lead ───── Algua board
+          ├── #meabeclick ────────── MeaBeclick Lead ─ MeaBeclick board
+          │                              ├── UX Specialist
+          │                              ├── Engineering Specialist
+          │                              └── Growth Specialist
+          └── other channels/DMs ─── LNX/default
 ```
 
-LNX is the portfolio front door and the only initially exposed messaging identity. Leads own project decomposition and synthesis. Specialists operate only inside their stated duties and return evidence to the MeaBeclick Lead.
+LNX is the sole Discord bot identity and portfolio front door. Three explicit channel routes let Lior talk directly with the matching project lead through that same bot; other Discord conversations continue to LNX. This changes the profile handling the channel, not the visible Discord account. Leads own project decomposition and synthesis. Specialists operate only inside their stated duties and return evidence to the MeaBeclick Lead.
 
 ## Planes and sources of truth
 
 ### Human communication plane
 
-Discord carries requests, alerts, decision prompts, and live voice. It is not the canonical task ledger or evidence store. Internal profiles do not need platform accounts.
+Discord carries requests, alerts, decision prompts, and live voice. It is not the canonical task ledger or evidence store. The three project text channels are explicitly routed to their leads; the bot's existing user allowlist remains unchanged, and internal profiles do not need separate platform accounts.
 
 ### Personal commitment plane
 
@@ -57,7 +58,7 @@ Weekly discovery is a proposal plane, not an authority plane. Seven profile-loca
 
 ## Deliberate non-goals
 
-The initial system has no external workflow engine, second team-chat plane, bespoke multi-agent runtime, or messaging bot for every internal role. Profiles and Kanban supply the required isolation and durable coordination.
+The system has no external workflow engine, second team-chat plane, bespoke multi-agent runtime, or separate messaging bot for every internal role. Hermes profile routing provides direct lead conversations in the three named project channels; profiles and Kanban supply the required role separation and durable coordination.
 
 ## Trust boundary
 

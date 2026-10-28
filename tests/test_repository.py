@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -24,6 +25,7 @@ REQUIRED = {
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
     "scripts/reconcile-hermes-default.sh",
+    "scripts/reconcile-discord-profile-routes.py",
     "skills/packs.json",
     "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
@@ -349,12 +351,88 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual("default", profiles["lnx"]["hermes_profile"])
         self.assertEqual("lnx", manifest["orchestrator"])
         self.assertEqual(["lnx"], manifest["discord_visible_profiles"])
+        self.assertEqual(
+            {"pulse": "1564218041603194950", "algua": "1565055030413893762", "meabeclick": "1565055212006285353"},
+            {route["profile"]: route["chat_id"] for route in manifest["discord_profile_routes"]},
+        )
         self.assertEqual({"pulse", "algua", "meabeclick"}, {p["id"] for p in manifest["projects"]})
         self.assertEqual("lior-only", manifest["todoist"]["scope"])
+
+    def test_discord_route_reconciliation_is_preview_first_and_idempotent(self):
+        script = ROOT / "scripts/reconcile-discord-profile-routes.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake = base / "hermes"
+            log = base / "calls.jsonl"
+            state = base / "config-state.json"
+            state.write_text(json.dumps({"gateway.multiplex_profiles": True, "gateway.profile_routes": []}), encoding="utf-8")
+            write_strict_fake_hermes(fake)
+            env = os.environ.copy()
+            env.update({
+                "HERMES_BIN": str(fake),
+                "HERMES_FAKE_LOG": str(log),
+                "HERMES_FAKE_STATE": str(state),
+                "HERMES_FAKE_UPDATE_MARKER": str(base / "updated"),
+            })
+
+            preview = subprocess.run([sys.executable, str(script)], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(0, preview.returncode, preview.stderr)
+            self.assertIn("PREVIEW only", preview.stdout)
+            self.assertFalse(any(json.loads(line)[2:4] == ["config", "set"] for line in log.read_text(encoding="utf-8").splitlines()))
+
+            applied = subprocess.run([sys.executable, str(script), "--apply"], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(0, applied.returncode, applied.stderr)
+            manifest = json.loads((ROOT / "nix-os.yaml").read_text(encoding="utf-8"))
+            expected = manifest["discord_profile_routes"]
+            self.assertEqual(expected, json.loads(state.read_text(encoding="utf-8"))["gateway.profile_routes"])
+
+            repeated = subprocess.run([sys.executable, str(script), "--apply"], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(0, repeated.returncode, repeated.stderr)
+            self.assertIn("already match", repeated.stdout)
+
+            current = json.loads(state.read_text(encoding="utf-8"))
+            current["gateway.profile_routes"].append({"name": "unexpected"})
+            state.write_text(json.dumps(current), encoding="utf-8")
+            drift = subprocess.run([sys.executable, str(script), "--apply"], env=env, text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, drift.returncode)
+            self.assertIn("unexpected existing profile routes", drift.stderr)
+
+    def test_discord_route_reconciler_refuses_when_multiplexing_is_off(self):
+        script = ROOT / "scripts/reconcile-discord-profile-routes.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fake = base / "hermes"
+            log = base / "calls.jsonl"
+            state = base / "config-state.json"
+            state.write_text(json.dumps({"gateway.multiplex_profiles": False, "gateway.profile_routes": []}), encoding="utf-8")
+            write_strict_fake_hermes(fake)
+            env = os.environ.copy()
+            env.update({
+                "HERMES_BIN": str(fake),
+                "HERMES_FAKE_LOG": str(log),
+                "HERMES_FAKE_STATE": str(state),
+                "HERMES_FAKE_UPDATE_MARKER": str(base / "updated"),
+            })
+            result = subprocess.run([sys.executable, str(script), "--apply"], env=env, text=True, capture_output=True, check=False)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("multiplex_profiles is not true", result.stderr)
+            self.assertEqual([], json.loads(state.read_text(encoding="utf-8"))["gateway.profile_routes"])
 
     def test_repository_verifier_passes(self):
         verifier = load_verifier()
         self.assertEqual([], verifier.validate_repository(ROOT))
+
+    def test_verifier_rejects_discord_route_drift(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "repo"
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            path = copy / "nix-os.yaml"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["discord_profile_routes"][0]["profile"] = "algua"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            errors = verifier.validate_repository(copy)
+            self.assertTrue(any("Discord profile routes" in error for error in errors), errors)
 
     def test_verifier_rejects_watch_approval_receipt_drift(self):
         verifier = load_verifier()
