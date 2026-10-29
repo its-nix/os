@@ -198,7 +198,7 @@ EXPECTED_SCOUT_JOBS = [
     {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
     {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
     {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
+    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "discord", "continuity": True},
 ]
 EXPECTED_PROFILE_LAYOUT = {
     "lnx": ("default", "orchestrator", None, ["pulse", "algua", "meabeclick"]),
@@ -216,6 +216,7 @@ EXPECTED_PROJECT_LAYOUT = {
 }
 EXPECTED_PLANES = {
     "human_messaging": "discord",
+    "disabled_messaging": ["telegram"],
     "lior_commitments": "todoist",
     "delegated_execution": "hermes-kanban",
     "durable_evidence": ["github", "project-docs"],

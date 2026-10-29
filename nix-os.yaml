@@ -115,6 +115,7 @@
   ],
   "planes": {
     "human_messaging": "discord",
+    "disabled_messaging": ["telegram"],
     "lior_commitments": "todoist",
     "delegated_execution": "hermes-kanban",
     "durable_evidence": ["github", "project-docs"]

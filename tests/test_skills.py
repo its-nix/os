@@ -995,7 +995,7 @@ class ScoutTests(unittest.TestCase):
         self.assertEqual(7, len(scouts))
         self.assertEqual({"default", "pulse", "algua", "meabeclick", "meabeclickux", "meabeclickeng", "meabeclickgrowth"}, {job["hermes_profile"] for job in scouts})
         self.assertTrue(all(job["delivery"] == "local" for job in scouts))
-        self.assertEqual(["telegram:6926015052"], [job["delivery_enabled"] for job in aggregators])
+        self.assertEqual(["discord"], [job["delivery_enabled"] for job in aggregators])
         self.assertTrue(aggregators[0]["continuity"])
 
     def test_collector_validates_all_packets_dedupes_and_silences_empty(self):
@@ -1358,7 +1358,7 @@ class ScoutSetupTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HERMES_SCOUT_TEST_STORE": str(state), "NIX_OS_SCOUT_TEST_MODE": "1"}):
                 failures = self.setup._rollback(
                     "/missing/hermes", root, [], [],
-                    [("default", current["id"], current["name"], "local", "telegram:6926015052")],
+                    [("default", current["id"], current["name"], "local", "discord")],
                     root / "collector.py", None,
                 )
             preserved = json.loads((state / "default.json").read_text(encoding="utf-8"))[0]
@@ -1403,13 +1403,13 @@ class ScoutSetupTests(unittest.TestCase):
             enabled=subprocess.run(cmd+["--apply", "--enable-delivery"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, enabled.returncode, enabled.stderr)
             preview_enabled=subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True)
-            self.assertIn("nix-skill-scout-aggregate @ 0 21 * * 6 -> telegram:6926015052", preview_enabled.stdout)
+            self.assertIn("nix-skill-scout-aggregate @ 0 21 * * 6 -> discord", preview_enabled.stdout)
             before_preserve=log.read_text().splitlines()
             preserve=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertEqual(0, preserve.returncode, preserve.stderr)
             self.assertFalse(any('"edit"' in line for line in log.read_text().splitlines()[len(before_preserve):]))
             aggregator=next(job for job in json.loads((state/"default.json").read_text()) if job["name"]=="nix-skill-scout-aggregate")
-            self.assertEqual(["telegram:6926015052"], aggregator["deliver"])
+            self.assertEqual(["discord"], aggregator["deliver"])
             jobs=json.loads((state/"pulse.json").read_text()); jobs[0]["prompt"]="drift"; (state/"pulse.json").write_text(json.dumps(jobs))
             drift=subprocess.run(cmd+["--apply"], cwd=ROOT, env=env, text=True, capture_output=True)
             self.assertNotEqual(0, drift.returncode); self.assertIn("drift", drift.stderr.lower())

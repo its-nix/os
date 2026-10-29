@@ -106,7 +106,7 @@ python3 scripts/setup-skill-scouts.py --apply                  # local canary de
 python3 scripts/setup-skill-scouts.py --apply --enable-delivery # aggregator only, after canaries
 ```
 
-Only the aggregator's second-stage delivery target is `telegram:6926015052`. Runtime packets stay under `${HOME}/.local/share/hermes-scouts/` and never enter Git.
+Only the aggregator's second-stage delivery target is `discord`, which resolves to the configured Discord Home channel; Telegram gateway messaging is disabled. Runtime packets stay under `${HOME}/.local/share/hermes-scouts/` and never enter Git.
 
 ## Migration note
 
