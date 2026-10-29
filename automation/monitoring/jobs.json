@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "timezone": "Asia/Jerusalem",
+  "jobs": [
+    {
+      "name": "nix-portfolio-monitor-12h",
+      "kind": "monitor",
+      "profile": "lnx",
+      "hermes_profile": "default",
+      "schedule": "0 */12 * * *",
+      "prompt_file": "portfolio-monitor-prompt.md",
+      "script_file": "monitor_snapshot.py",
+      "execution_mode": "monitor",
+      "workdir": "${HOME}/os",
+      "delivery": "discord:1563181903253737542",
+      "continuity": true
+    },
+    {
+      "name": "nix-portfolio-executive-weekly",
+      "kind": "executive_summary",
+      "profile": "lnx",
+      "hermes_profile": "default",
+      "schedule": "0 10 * * 1",
+      "prompt_file": "executive-summary-prompt.md",
+      "script_file": "executive_snapshot.py",
+      "execution_mode": "script",
+      "workdir": "${HOME}/os",
+      "delivery": "discord:1563181903253737542",
+      "continuity": true
+    }
+  ]
+}

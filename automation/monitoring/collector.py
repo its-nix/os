@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Deterministic, read-only Nix OS/Hermes metadata inventory collector."""
 from __future__ import annotations
-import argparse, hashlib, json, re, subprocess
+import argparse, hashlib, json, os, re, sqlite3, stat, subprocess, time
 from pathlib import Path
 from datetime import datetime, timezone
 
 ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$')
 VALID={'open','todo','triage','scheduled','ready','in_progress','running','blocked','review','done','completed','cancelled','failed','paused','archived'}
+MAX_TASK_ROWS=20_000
+MAX_BOARD_SOURCE_BYTES=64*1024*1024
+BOARD_READ_SECONDS=10
 def safe_id(x): return x if isinstance(x,str) and ID.fullmatch(x) else None
 def safe_time(x):
     if isinstance(x,(int,float)) and not isinstance(x,bool):
@@ -17,6 +20,105 @@ def safe_time(x):
     except ValueError:return None
 def safe_text(x, fallback): return x if isinstance(x,str) and len(x)<=120 and all(ord(c)>=32 for c in x) else fallback
 def valid_repo(x): return x if isinstance(x,str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}',x) else None
+
+
+def _identity(path):
+    """Identity/size metadata for one non-symlink regular SQLite file."""
+    try:
+        st=os.lstat(path)
+    except FileNotFoundError:
+        return None
+    uid=getattr(os,'getuid',None)
+    if (not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode) or st.st_nlink!=1
+            or (uid is not None and st.st_uid!=uid())):
+        raise ValueError('unsafe SQLite source')
+    return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns,stat.S_IMODE(st.st_mode))
+
+
+def _check_no_symlink_ancestry(path):
+    absolute=Path(os.path.abspath(path))
+    current=Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current=current/part
+        st=os.lstat(current)
+        if stat.S_ISLNK(st.st_mode): raise ValueError('symlinked SQLite source path')
+        if current!=absolute and not stat.S_ISDIR(st.st_mode): raise ValueError('invalid SQLite source ancestry')
+
+
+def read_board_tasks(board_id, db_path):
+    """Read checkpointed board rows without SQLite WAL/SHM coordination writes.
+
+    Immutable reads are accepted only while the WAL is absent or empty and all
+    DB/sidecar identities stay stable. Otherwise the board is explicitly
+    unavailable rather than returning a stale or inconsistent snapshot.
+    """
+    unavailable={'status':'unavailable','row_count':0,'included_count':0,'invalid_row_count':0,
+                 'limit':MAX_TASK_ROWS,'cap_reached':False,'read_mode':'immutable_checkpoint_only'}
+    if not safe_id(board_id) or os.environ.get('HERMES_KANBAN_DB'):
+        unavailable['unavailable_reason']='invalid_board_or_database_pin'
+        return [],unavailable,'unavailable'
+    try:
+        raw=os.fspath(db_path)
+    except TypeError:
+        unavailable['unavailable_reason']='invalid_path'
+        return [],unavailable,'unavailable'
+    if (not isinstance(raw,str) or not raw.startswith('/') or chr(0) in raw or raw.endswith('/')
+            or '//' in raw or any(part in {'.','..'} for part in raw.split('/')[1:])):
+        unavailable['unavailable_reason']='invalid_path'
+        return [],unavailable,'unavailable'
+    path=Path(raw)
+    wal=Path(str(path)+'-wal'); shm=Path(str(path)+'-shm')
+    try:
+        _check_no_symlink_ancestry(path)
+        before=(_identity(path),_identity(wal),_identity(shm))
+        if before[0] is None or sum(item[2] for item in before if item) > MAX_BOARD_SOURCE_BYTES:
+            unavailable['unavailable_reason']='wal_active_or_db_missing'
+            return [],unavailable,'unavailable'
+        if before[1] is not None and before[1][2]!=0:
+            unavailable['unavailable_reason']='wal_active_or_db_missing'
+            return [],unavailable,'unavailable'
+        deadline=time.monotonic()+BOARD_READ_SECONDS
+        uri=path.as_uri()+'?mode=ro&immutable=1'
+        conn=sqlite3.connect(uri,uri=True,timeout=0.2)
+        try:
+            conn.row_factory=sqlite3.Row
+            conn.execute('PRAGMA query_only=ON')
+            conn.set_progress_handler(lambda: 1 if time.monotonic()>deadline else 0,10000)
+            cols={row['name'] for row in conn.execute('PRAGMA table_info(tasks)')}
+            required={'id','status','project_id','assignee','created_at','completed_at','started_at','last_heartbeat_at'}
+            if not required.issubset(cols): raise sqlite3.DatabaseError('task schema incomplete')
+            sql="""WITH activity AS (
+                SELECT task_id, MAX(ts) AS last_activity_at FROM (
+                    SELECT task_id, created_at AS ts FROM task_events
+                    UNION ALL SELECT task_id, created_at AS ts FROM task_comments
+                    UNION ALL SELECT task_id, COALESCE(last_heartbeat_at,ended_at,started_at) AS ts FROM task_runs
+                ) GROUP BY task_id
+            )
+            SELECT t.id,t.status,t.project_id,t.assignee,t.created_at,t.completed_at,
+                   MAX(COALESCE(t.started_at,0),COALESCE(t.last_heartbeat_at,0),
+                       COALESCE(a.last_activity_at,0),COALESCE(t.created_at,0)) AS updated_at
+            FROM tasks AS t LEFT JOIN activity AS a ON a.task_id=t.id
+            WHERE LOWER(t.status)!='archived' ORDER BY t.created_at DESC,t.id LIMIT ?"""
+            rows=[dict(row) for row in conn.execute(sql,(MAX_TASK_ROWS+1,)).fetchall()]
+        finally:
+            conn.close()
+        after=(_identity(path),_identity(wal),_identity(shm))
+        if before!=after or (after[1] is not None and after[1][2]!=0):
+            unavailable['unavailable_reason']='source_changed_during_read'
+            return [],unavailable,'unavailable'
+        cap_reached=len(rows)>MAX_TASK_ROWS
+        rows=rows[:MAX_TASK_ROWS]
+        included=sum(1 for row in rows if sanitize_task(row,board_id) is not None)
+        invalid=len(rows)-included
+        record={'status':'partial' if cap_reached or invalid else 'available','row_count':len(rows),
+                'included_count':included,'invalid_row_count':invalid,'limit':MAX_TASK_ROWS,
+                'cap_reached':cap_reached,'read_mode':'immutable_checkpoint_only','wal_bytes':0}
+        return rows,record,'unavailable'
+    except (OSError,ValueError,sqlite3.Error) as exc:
+        unavailable['unavailable_reason']='source_error_'+type(exc).__name__
+        return [],unavailable,'unavailable'
+
+
 def load_json(p): return json.loads(Path(p).read_text())
 def _rows(text):
     try:x=json.loads(text)
@@ -37,28 +139,94 @@ def sanitize_task(t,board=None):
         v=safe_time(t.get(k))
         if v:out[k]=v
     return out
+def _sanitize_worker_diagnostics(items, board):
+    """Retain only safe task IDs, statuses, diagnostic kinds, and severities."""
+    if not isinstance(items, list):
+        return [], 'unknown'
+    out=[]; status='available'
+    for task in items:
+        if not isinstance(task, dict):
+            status='partial'; continue
+        task_id=safe_id(task.get('task_id') or task.get('id'))
+        task_status=task.get('status')
+        task_status=task_status.lower() if isinstance(task_status,str) and task_status.lower() in VALID else 'unknown'
+        diagnostics=task.get('diagnostics', [])
+        if not isinstance(diagnostics,list):
+            status='partial'; continue
+        for diagnostic in diagnostics:
+            if not isinstance(diagnostic,dict):
+                status='partial'; continue
+            kind=safe_id(diagnostic.get('kind'))
+            severity=diagnostic.get('severity')
+            count=diagnostic.get('count',1)
+            if not task_id or not kind or severity not in {'warning','error','critical'} or not isinstance(count,int) or isinstance(count,bool) or not 0<=count<=1_000_000:
+                status='partial'; continue
+            out.append({'board_id':board,'task_id':task_id,'status':task_status,'kind':kind,'severity':severity,'count':count})
+    return out,status
+
+
 def run_readonly_live():
-    """Only invokes Hermes list/status commands; failures yield unknown/empty evidence."""
-    def run(args):
+    """Only invokes Hermes list/status commands; failures yield explicit unknown evidence."""
+    max_output_bytes = 2_000_000
+    def run_result(args):
         try:
             p=subprocess.run(args,capture_output=True,text=True,timeout=20,check=False)
-            return p.stdout if p.returncode==0 else ''
-        except (OSError,subprocess.TimeoutExpired):return ''
+            size=len(p.stdout.encode('utf-8',errors='replace'))+len(p.stderr.encode('utf-8',errors='replace'))
+            if size>max_output_bytes:
+                return '', 'partial'
+            return (p.stdout, 'available') if p.returncode==0 else ('', 'unavailable')
+        except (OSError,subprocess.TimeoutExpired):return '', 'unavailable'
+    def run(args):
+        text,state=run_result(args)
+        return text if state=='available' else ''
     profiles=[]
     for line in run(['hermes','profile','list']).splitlines():
         token=line.strip().split()[0] if line.strip() else ''
         token=re.sub(r'^[^A-Za-z0-9]+','',token)
         if safe_id(token) and token.lower() not in {'profile','name','id'}:profiles.append({'name':token,'kind':'unknown'})
-    rawboards=[b for b in _rows(run(['hermes','kanban','boards','list','--json','--all'])) if isinstance(b,dict)]
-    boards=[]; tasks=[]
+    def json_rows(text, keys):
+        try: payload=json.loads(text)
+        except (ValueError,TypeError): return [], 'unavailable'
+        if isinstance(payload,list): return payload, 'available'
+        if isinstance(payload,dict):
+            for key in keys:
+                if isinstance(payload.get(key),list): return payload[key], 'available'
+        return [], 'unavailable'
+    board_text,board_list_status=run_result(['hermes','kanban','boards','list','--json','--all'])
+    rawboards,parsed_status=json_rows(board_text,('items','boards')) if board_list_status=='available' else ([],board_list_status)
+    if parsed_status!='available': board_list_status=parsed_status
+    else:
+        if any(not isinstance(b,dict) or not safe_id(b.get('slug') or b.get('id')) for b in rawboards):
+            board_list_status='partial'
+    rawboards=[b for b in rawboards if isinstance(b,dict) and safe_id(b.get('slug') or b.get('id'))]
+    boards=[]; tasks=[]; task_collection_status={}; worker_diagnostics=[]; worker_diagnostics_status={}
     for b in rawboards:
         bid=safe_id(b.get('slug') or b.get('id'))
         if not bid:continue
-        boards.append({'id':bid,'name':safe_text(b.get('name'),bid),'archived':b.get('archived') is True,'paused':b.get('paused') is True})
-        for t in _rows(run(['hermes','kanban','--board',bid,'list','--json'])):
-            if isinstance(t,dict):
-                v=sanitize_task(t,bid)
-                if v:tasks.append(v)
+        archived=b.get('archived') is True or b.get('status')=='archived'
+        boards.append({'id':bid,'name':safe_text(b.get('name'),bid),'archived':archived,'paused':b.get('paused') is True})
+        db_path=b.get('db_path')
+        if archived or not isinstance(db_path,str):
+            task_rows=[]
+            record={'status':'unavailable','row_count':0,'included_count':0,'invalid_row_count':0,
+                    'limit':MAX_TASK_ROWS,'cap_reached':False,'read_mode':'immutable_checkpoint_only',
+                    'unavailable_reason':'archived_or_missing_database'}
+            diagnostic_status='unavailable'
+        else:
+            task_rows,record,diagnostic_status=read_board_tasks(bid,db_path)
+        included=invalid=0
+        for t in task_rows:
+            if not isinstance(t,dict):
+                invalid+=1; continue
+            v=sanitize_task(t,bid)
+            if v:tasks.append(v); included+=1
+            else:invalid+=1
+        if invalid and record.get('status')=='available':record['status']='partial'
+        record['included_count']=included; record['invalid_row_count']=invalid
+        task_collection_status[bid]=record
+        # The CLI diagnostics command opens the DB through Hermes's writable
+        # initialization path; do not invoke it from this observer.
+        worker_diagnostics_status[bid]=diagnostic_status
     cron_text=run(['hermes','cron','status']).strip().lower()
     match=re.search(r'ticker heartbeat:\s*(\d+)\s*(s|sec|seconds|m|minutes|h|hours)\s+ago',cron_text)
     scheduler='unknown'
@@ -71,34 +239,85 @@ def run_readonly_live():
     elif any(x in gateway_text for x in ('active: inactive','gateway is not running','gateway service is stopped')):gateway='degraded'
     else:gateway='unknown'
     status={'scheduler':scheduler,'gateway':gateway,'heartbeat':'unknown','workers':'unknown'}
+    if worker_diagnostics_status and all(value=='available' for value in worker_diagnostics_status.values()):
+        status['workers']='degraded' if worker_diagnostics else 'healthy'
     # Only declared repositories are queried; retain only aggregate counts/status.
     policy=load_json(Path(__file__).with_name('policy.json'))
     repo_map=policy.get('repos',{}) if isinstance(policy,dict) else {}
-    prs={}
+    prs={};repo_status={};repo_collection={}
     if isinstance(repo_map,dict):
         for project,repo in repo_map.items():
             if not safe_id(project) or not valid_repo(repo):continue
-            try:
-                p=subprocess.run(['gh','pr','list','--repo',repo,'--state','open','--limit','100','--json','state,statusCheckRollup'],capture_output=True,text=True,timeout=20,check=False)
-                if p.returncode!=0:continue
-                rows=json.loads(p.stdout)
-                if not isinstance(rows,list):continue
-                counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0}
-                for pr in rows:
-                    if not isinstance(pr,dict):continue
-                    state=pr.get('state')
-                    if state=='OPEN':counts['open']+=1
-                    checks=pr.get('statusCheckRollup')
-                    if isinstance(checks,list):
-                        for c in checks:
-                            if isinstance(c,dict):
-                                conclusion=c.get('conclusion') or c.get('state')
-                                if conclusion in ('SUCCESS','NEUTRAL','SKIPPED'):counts['checks_passing']+=1
-                                elif conclusion in ('FAILURE','ERROR','TIMED_OUT','ACTION_REQUIRED'):counts['checks_failing']+=1
-                                elif conclusion in ('PENDING','QUEUED','IN_PROGRESS','EXPECTED'):counts['checks_pending']+=1
-                prs[project]=counts
-            except (OSError,subprocess.TimeoutExpired,ValueError):continue
-    return {'profiles':profiles,'boards':boards,'tasks':tasks,'status':status,'repos':prs}
+            repo_status[project]='unavailable'
+            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','state,statusCheckRollup']
+            ptext,query_status=run_result(args)
+            if query_status!='available':
+                repo_status[project]=query_status
+                repo_collection[project]={'status':query_status,'rows_observed':0,'limit':1000,'cap_reached':False}
+                continue
+            try: rows=json.loads(ptext)
+            except (ValueError,TypeError):
+                repo_collection[project]={'status':'unavailable','rows_observed':0,'limit':1000,'cap_reached':False}
+                continue
+            if not isinstance(rows,list):
+                repo_collection[project]={'status':'unavailable','rows_observed':0,'limit':1000,'cap_reached':False}
+                continue
+            counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0,'checks_unknown':0}
+            invalid=0
+            for pr in rows:
+                if not isinstance(pr,dict):
+                    invalid+=1; continue
+                state=pr.get('state')
+                if state=='OPEN':counts['open']+=1
+                else:invalid+=1
+                checks=pr.get('statusCheckRollup')
+                if not isinstance(checks,list) or not checks:
+                    counts['checks_unknown']+=1
+                    continue
+                for c in checks:
+                    if not isinstance(c,dict):
+                        counts['checks_unknown']+=1; invalid+=1
+                        continue
+                    conclusion=c.get('conclusion') or c.get('state')
+                    if conclusion in ('SUCCESS','NEUTRAL','SKIPPED'):counts['checks_passing']+=1
+                    elif conclusion in ('FAILURE','ERROR','TIMED_OUT','ACTION_REQUIRED'):counts['checks_failing']+=1
+                    elif conclusion in ('PENDING','QUEUED','IN_PROGRESS','EXPECTED'):counts['checks_pending']+=1
+                    else:counts['checks_unknown']+=1
+            cap_reached=len(rows)>=1000
+            repo_status[project]='partial' if cap_reached or invalid else 'available'
+            repo_collection[project]={'status':repo_status[project],'rows_observed':len(rows),'limit':1000,'cap_reached':cap_reached,'invalid_row_count':invalid}
+            prs[project]=counts
+    return {'profiles':profiles,'boards':boards,'board_list_status':board_list_status,'tasks':tasks,'task_collection_status':task_collection_status,
+            'task_read_mode':'immutable_checkpoint_only','status':status,'repos':prs,'repo_status':repo_status,'repo_collection':repo_collection,
+            'worker_diagnostics':worker_diagnostics,'worker_diagnostics_status':worker_diagnostics_status}
+
+
+def _worker_health(project, runtime):
+    board=project.get('board')
+    statuses=runtime.get('worker_diagnostics_status',{}) if isinstance(runtime.get('worker_diagnostics_status',{}),dict) else {}
+    source_status=statuses.get(board,'unknown') if board else 'unknown'
+    raw=runtime.get('worker_diagnostics',[]) if isinstance(runtime.get('worker_diagnostics',[]),list) else []
+    rows=[]
+    for item in raw:
+        if not isinstance(item,dict) or item.get('board_id')!=board:continue
+        task_id=safe_id(item.get('task_id')); kind=safe_id(item.get('kind')); severity=item.get('severity')
+        count=item.get('count',1)
+        status=item.get('status')
+        if task_id and kind and severity in {'warning','error','critical'} and isinstance(count,int) and not isinstance(count,bool) and 0<=count<=1_000_000:
+            rows.append({'task_id':task_id,'kind':kind,'severity':severity,'count':count,'status':status if isinstance(status,str) and status in VALID else 'unknown'})
+    rows=sorted(set(tuple(sorted(row.items())) for row in rows))
+    rows=[dict(row) for row in rows]
+    severity_counts={level:sum(item['count'] for item in rows if item['severity']==level) for level in ('critical','error','warning')}
+    kind_counts={}
+    for item in rows:kind_counts[item['kind']]=kind_counts.get(item['kind'],0)+item['count']
+    digest=hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    source_status=source_status if source_status in {'available','partial','unavailable'} else 'unknown'
+    state='unknown' if source_status!='available' else 'degraded' if rows else 'healthy'
+    return {'status':state,'source_status':source_status,'diagnostic_count':len(rows),'severity_counts':severity_counts,
+            'diagnostic_kind_counts':dict(sorted(kind_counts.items())[:20]),'diagnostic_kinds_truncated':len(kind_counts)>20,
+            'diagnostic_digest':digest,'diagnostics':rows[:100],'sample_truncated':len(rows)>100}
+
+
 def discover(manifest,runtime,now=None):
     now=now or datetime.now(timezone.utc); now=now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now; projects={}; roles={}
     policy=load_json(Path(__file__).with_name('policy.json'))
@@ -107,7 +326,7 @@ def discover(manifest,runtime,now=None):
     for p in manifest.get('projects',[]):
         if not isinstance(p,dict):continue
         pid=safe_id(p.get('id'))
-        if pid:projects[pid]={'id':pid,'name':safe_text(p.get('name'),pid),'board':safe_id(p.get('board')),'paused':p.get('paused') is True or p.get('archived') is True,'scope':'governed'}
+        if pid:projects[pid]={'id':pid,'name':safe_text(p.get('name'),pid),'board':safe_id(p.get('board')),'lead':safe_id(p.get('lead')),'paused':p.get('paused') is True or p.get('archived') is True,'scope':'governed'}
     role_aliases=set()
     for r in manifest.get('profiles',[]):
         if isinstance(r,dict) and safe_id(r.get('id')):
@@ -115,12 +334,13 @@ def discover(manifest,runtime,now=None):
             alias=safe_id(r.get('hermes_profile'))
             if alias:role_aliases.add(alias)
     boards=set(p['board'] for p in projects.values() if p['board'])
+    governed_boards=set(p['board'] for p in projects.values() if p.get('scope')=='governed' and p.get('board'))
     for b in runtime.get('boards',[]):
         if not isinstance(b,dict):continue
         bid=safe_id(b.get('id'))
         if not bid:continue
         boards.add(bid)
-        if bid not in projects:projects[bid]={'id':bid,'name':safe_text(b.get('name'),bid),'board':bid,'paused':b.get('archived') is True or b.get('paused') is True,'scope':'unclassified'}
+        if bid not in projects and bid not in governed_boards:projects[bid]={'id':bid,'name':safe_text(b.get('name'),bid),'board':bid,'paused':b.get('archived') is True or b.get('paused') is True,'scope':'unclassified'}
     for p in runtime.get('profiles',[]):
         name=safe_id(p.get('name')) if isinstance(p,dict) else None
         if name and name not in roles and name not in role_aliases:roles[name]={'kind':safe_text(p.get('kind'),'unknown'),'scope':'unclassified'}
@@ -130,11 +350,15 @@ def discover(manifest,runtime,now=None):
             clean=sanitize_task(t)
             if clean:tasks.append(clean)
     result=[]
+    task_collection_status=runtime.get('task_collection_status',{}) if isinstance(runtime.get('task_collection_status',{}),dict) else {}
+    board_list_status=runtime.get('board_list_status') if runtime.get('board_list_status') in {'available','partial','unavailable'} else 'unknown'
     for pid,p in sorted(projects.items()):
         if p['paused'] or any(b.get('id')==p['board'] and (b.get('archived') or b.get('paused')) for b in runtime.get('boards',[]) if isinstance(b,dict)):continue
+        collection=task_collection_status.get(p.get('board'),{}) if p.get('board') else {}
+        collection_status=collection.get('status') if isinstance(collection,dict) and collection.get('status') in {'available','partial','unavailable'} else board_list_status if board_list_status!='available' else 'unknown'
         rows=[t for t in tasks if t.get('project_id')==pid or p['board'] and t.get('board_id')==p['board']]; enriched=[]
         for t in sorted(rows,key=lambda x:x['id']):
-            age=None; stamp=t.get('created_at') or t.get('updated_at')
+            age=None; stamp=t.get('updated_at') or t.get('created_at')
             if stamp:
                 try:
                     created=datetime.fromisoformat(stamp.replace('Z','+00:00')); created=created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
@@ -155,21 +379,39 @@ def discover(manifest,runtime,now=None):
                     dt=datetime.fromisoformat(stamp.replace('Z','+00:00'));dt=dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
                     if (now-dt).total_seconds()<=7*86400 and t['status'] in {'done','completed'}:completed.append(t)
                 except ValueError:pass
-        result.append({'project':{k:v for k,v in p.items() if k!='paused'},'tasks':enriched,'task_count':len(enriched),'completed_count_observed':sum(t['status'] in {'done','completed'} for t in enriched),'completed_count_7d_observed':len(completed),'blocked_count':sum(t['status']=='blocked' for t in enriched),'running_count':sum(t['status'] in {'running','in_progress'} for t in enriched),'kpis':kpis})
+        worker_health=_worker_health(p,runtime)
+        result.append({'project':{k:v for k,v in p.items() if k!='paused'},'tasks':enriched,'task_count':len(enriched),'task_collection_status':collection_status,'task_collection':collection if isinstance(collection,dict) else {},'completed_count_observed':sum(t['status'] in {'done','completed'} for t in enriched),'completed_count_7d_observed':len(completed),'blocked_count':sum(t['status']=='blocked' for t in enriched),'stale_count':sum(t['stale'] for t in enriched),'running_count':sum(t['status'] in {'running','in_progress'} for t in enriched),'worker_health':worker_health,'kpis':kpis})
     status=runtime.get('status',{}); cleanstatus={}
     for k in ('gateway','scheduler','heartbeat','workers'):
         v=status.get(k) if isinstance(status,dict) else None
         cleanstatus[k]=v if isinstance(v,(str,int,float,bool)) and (not isinstance(v,str) or v in {'available','unknown','healthy','running','stopped','degraded','ok','error','idle','active','paused'}) else 'unknown'
+    worker_states=[item.get('worker_health',{}).get('status') for item in result if isinstance(item.get('worker_health'),dict)]
+    if worker_states and all(value in {'healthy','degraded'} for value in worker_states):
+        cleanstatus['workers']='degraded' if 'degraded' in worker_states else 'healthy'
     governed=sorted(p['id'] for p in manifest.get('projects',[]) if isinstance(p,dict) and safe_id(p.get('id')))
     policy=load_json(Path(__file__).with_name('policy.json')); mapping=policy.get('repos',{})
     raw_repos=runtime.get('repos',{}) if isinstance(runtime.get('repos',{}),dict) else {}; repos={}
+    raw_repo_status=runtime.get('repo_status',{}) if isinstance(runtime.get('repo_status',{}),dict) else {}; repo_status={}
+    raw_repo_collection=runtime.get('repo_collection',{}) if isinstance(runtime.get('repo_collection',{}),dict) else {}; repo_collection={}
     allowed=set(mapping) if isinstance(mapping,dict) else set()
     for project in allowed:
-        counts=raw_repos.get(project)
-        if safe_id(project) and isinstance(counts,dict):
-            clean={k:counts[k] for k in ('open','checks_passing','checks_failing','checks_pending') if isinstance(counts.get(k),int) and not isinstance(counts.get(k),bool) and counts[k]>=0}
+        if not safe_id(project):continue
+        counts=raw_repos.get(project); status=raw_repo_status.get(project)
+        if status not in {'available','unavailable','unknown','partial'}:status='available' if isinstance(counts,dict) else 'unknown'
+        repo_status[project]=status
+        record=raw_repo_collection.get(project,{})
+        if isinstance(record,dict):
+            clean_record={'status':status}
+            for key in ('rows_observed','limit','invalid_row_count'):
+                value=record.get(key)
+                if isinstance(value,int) and not isinstance(value,bool) and value>=0:clean_record[key]=value
+            if isinstance(record.get('cap_reached'),bool):clean_record['cap_reached']=record['cap_reached']
+            repo_collection[project]=clean_record
+        if isinstance(counts,dict):
+            clean={k:counts[k] for k in ('open','checks_passing','checks_failing','checks_pending','checks_unknown') if isinstance(counts.get(k),int) and not isinstance(counts.get(k),bool) and counts[k]>=0}
             if clean:repos[project]=clean
-    return {'schema_version':1,'scope':{'governed_projects':governed,'unclassified_projects':sorted(k for k,v in projects.items() if v['scope']=='unclassified'),'governed_roles':sorted(k for k,v in roles.items() if v['scope']=='governed'),'unclassified_roles':sorted(k for k,v in roles.items() if v['scope']=='unclassified'),'boards':sorted(boards)},'projects':result,'profiles':sorted([{'id':k,'kind':v['kind'],'scope':v['scope']} for k,v in roles.items()],key=lambda x:x['id']),'runtime_status':cleanstatus,'repos':repos,'collection':'read-only'}
+    collection_status=runtime.get('board_list_status') if runtime.get('board_list_status') in {'available','partial','unavailable'} else 'unknown'
+    return {'schema_version':1,'scope':{'governed_projects':governed,'unclassified_projects':sorted(k for k,v in projects.items() if v['scope']=='unclassified'),'governed_roles':sorted(k for k,v in roles.items() if v['scope']=='governed'),'unclassified_roles':sorted(k for k,v in roles.items() if v['scope']=='unclassified'),'boards':sorted(boards)},'projects':result,'profiles':sorted([{'id':k,'kind':v['kind'],'scope':v['scope']} for k,v in roles.items()],key=lambda x:x['id']),'runtime_status':cleanstatus,'board_list_status':collection_status,'task_read_mode':runtime.get('task_read_mode') if runtime.get('task_read_mode') in {'immutable_checkpoint_only'} else 'unknown','repos':repos,'repo_status':repo_status,'repo_collection':repo_collection,'collection':'read-only'}
 def stable_events(report):
     out=[]
     for p in report['projects']:
@@ -177,6 +419,21 @@ def stable_events(report):
             identity={'project':p['project']['id'],'task_id':t['id'],'status':t['status']}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
             out.append({'key':key,'project':identity['project'],'task':t})
+        health=p.get('worker_health',{})
+        diagnostics=health.get('diagnostics',[]) if isinstance(health,dict) else []
+        for d in diagnostics if isinstance(diagnostics,list) else []:
+            if not isinstance(d,dict):continue
+            identity={'project':p['project']['id'],'task_id':d.get('task_id'),'diagnostic_kind':d.get('kind'),'severity':d.get('severity')}
+            key=hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            out.append({'key':key,'project':identity['project'],'task_id':identity['task_id'],'kind':'worker_diagnostic','diagnostic_kind':identity['diagnostic_kind'],'severity':identity['severity'],'count':d.get('count',1)})
+    repos=report.get('repos',{}) if isinstance(report.get('repos',{}),dict) else {}
+    statuses=report.get('repo_status',{}) if isinstance(report.get('repo_status',{}),dict) else {}
+    for project,counts in repos.items():
+        failures=counts.get('checks_failing',0) if isinstance(counts,dict) else 0
+        if statuses.get(project) in {'available','partial'} and isinstance(failures,int) and not isinstance(failures,bool) and failures>0:
+            identity={'project':project,'kind':'repo_checks','status':'failing','count':failures}
+            key=hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            out.append({'key':key,**identity})
     return out
 def collect(manifest_path,runtime_path,output_path):
     r=discover(load_json(manifest_path),load_json(runtime_path));r['events']=stable_events(r);Path(output_path).write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');return r
