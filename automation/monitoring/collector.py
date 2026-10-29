@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$')
 VALID={'open','todo','triage','scheduled','ready','in_progress','running','blocked','review','done','completed','cancelled','failed','paused','archived'}
 MAX_TASK_ROWS=20_000
+MAX_RECOVERY_HISTORY_ROWS=50
 MAX_BOARD_SOURCE_BYTES=64*1024*1024
 BOARD_READ_SECONDS=10
+HEX64=re.compile(r'^[0-9a-f]{64}$')
 def safe_id(x): return x if isinstance(x,str) and ID.fullmatch(x) else None
 def safe_time(x):
     if isinstance(x,(int,float)) and not isinstance(x,bool):
@@ -53,7 +55,10 @@ def read_board_tasks(board_id, db_path):
     unavailable rather than returning a stale or inconsistent snapshot.
     """
     unavailable={'status':'unavailable','row_count':0,'included_count':0,'invalid_row_count':0,
-                 'limit':MAX_TASK_ROWS,'cap_reached':False,'read_mode':'immutable_checkpoint_only'}
+                 'limit':MAX_TASK_ROWS,'cap_reached':False,'read_mode':'immutable_checkpoint_only',
+                 'recovery_history':{'status':'unavailable','source':'immutable_checkpoint_sqlite',
+                                     'observed_at':None,'complete':False,'records':[],
+                                     'limit':MAX_RECOVERY_HISTORY_ROWS,'cap_reached':False}}
     if not safe_id(board_id) or os.environ.get('HERMES_KANBAN_DB'):
         unavailable['unavailable_reason']='invalid_board_or_database_pin'
         return [],unavailable,'unavailable'
@@ -68,6 +73,7 @@ def read_board_tasks(board_id, db_path):
         return [],unavailable,'unavailable'
     path=Path(raw)
     wal=Path(str(path)+'-wal'); shm=Path(str(path)+'-shm')
+    db_fd=None; conn=None
     try:
         _check_no_symlink_ancestry(path)
         before=(_identity(path),_identity(wal),_identity(shm))
@@ -77,8 +83,21 @@ def read_board_tasks(board_id, db_path):
         if before[1] is not None and before[1][2]!=0:
             unavailable['unavailable_reason']='wal_active_or_db_missing'
             return [],unavailable,'unavailable'
+        if not hasattr(os,'O_NOFOLLOW') or not Path('/proc/self/fd').is_dir():
+            unavailable['unavailable_reason']='safe_descriptor_sqlite_open_unavailable'
+            return [],unavailable,'unavailable'
+        flags=os.O_RDONLY|os.O_NOFOLLOW|getattr(os,'O_CLOEXEC',0)
+        db_fd=os.open(path,flags)
+        opened=os.fstat(db_fd)
+        opened_identity=(opened.st_dev,opened.st_ino,opened.st_size,opened.st_mtime_ns,
+                         opened.st_ctime_ns,stat.S_IMODE(opened.st_mode))
+        if opened_identity!=before[0]:
+            unavailable['unavailable_reason']='source_changed_before_open'
+            return [],unavailable,'unavailable'
         deadline=time.monotonic()+BOARD_READ_SECONDS
-        uri=path.as_uri()+'?mode=ro&immutable=1'
+        # Bind SQLite to the validated open descriptor, not a pathname that can be
+        # swapped between lstat and sqlite3.connect. Immutable mode avoids sidecar writes.
+        uri=Path(f'/proc/self/fd/{db_fd}').as_uri()+'?mode=ro&immutable=1'
         conn=sqlite3.connect(uri,uri=True,timeout=0.2)
         try:
             conn.row_factory=sqlite3.Row
@@ -100,10 +119,67 @@ def read_board_tasks(board_id, db_path):
             FROM tasks AS t LEFT JOIN activity AS a ON a.task_id=t.id
             WHERE LOWER(t.status)!='archived' ORDER BY t.created_at DESC,t.id LIMIT ?"""
             rows=[dict(row) for row in conn.execute(sql,(MAX_TASK_ROWS+1,)).fetchall()]
+            history_columns={'body','idempotency_key','max_retries','created_at','completed_at'}
+            history_status='available';history_records=[];history_invalid=0
+            history_capped=False
+            if not history_columns.issubset(cols):
+                history_status='unavailable'
+            else:
+                # Treat bare legacy digest keys as possible recovery attempts even without a marker;
+                # an unrecognized candidate taints the history rather than being silently omitted.
+                history_sql="""SELECT id,status,idempotency_key,max_retries,created_at,completed_at,
+                    substr(body,instr(body,'monitor_recovery event='),256) AS marker
+                    FROM tasks
+                    WHERE (body IS NOT NULL AND instr(body,'monitor_recovery event=')>0)
+                       OR (length(idempotency_key)=64 AND lower(idempotency_key) NOT GLOB '*[^0-9a-f]*')
+                       OR (idempotency_key LIKE 'monitor-recovery-v1:%')
+                    ORDER BY created_at DESC,id LIMIT ?"""
+                try:
+                    raw_history=conn.execute(history_sql,(MAX_RECOVERY_HISTORY_ROWS+1,)).fetchall()
+                except sqlite3.Error:
+                    raw_history=[];history_status='unavailable'
+                if history_status=='available':
+                    history_capped=len(raw_history)>MAX_RECOVERY_HISTORY_ROWS
+                    seen_history=set()
+                    for row in raw_history[:MAX_RECOVERY_HISTORY_ROWS]:
+                        marker=row['marker'] if isinstance(row['marker'],str) else ''
+                        marker_line=marker.splitlines()[0] if marker else ''
+                        match=re.match(r'monitor_recovery event=([0-9a-f]{64}) action=([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?) source=.{1,256}$',marker_line)
+                        event_key=match.group(1) if match else None
+                        action=match.group(2) if match else None
+                        key=row['idempotency_key']
+                        expected=hashlib.sha256((event_key+chr(0)+action).encode()).hexdigest() if event_key and action else None
+                        status=row['status'].lower() if isinstance(row['status'],str) else None
+                        task_id=safe_id(row['id'])
+                        max_retries=row['max_retries']
+                        identity=(event_key,action)
+                        if (not task_id or status not in VALID or not event_key or not HEX64.fullmatch(event_key)
+                                or not isinstance(key,str) or key!=expected or type(max_retries) is not int
+                                or not 1<=max_retries<=20 or identity in seen_history):
+                            history_invalid+=1
+                            continue
+                        seen_history.add(identity)
+                        item={'id':task_id,'status':status,'event_key':event_key,'action':action,
+                              'idempotency_key':key,'max_retries':max_retries}
+                        created=safe_time(row['created_at']);completed=safe_time(row['completed_at'])
+                        if created:item['created_at']=created
+                        if completed:item['completed_at']=completed
+                        history_records.append(item)
+                    if history_invalid or history_capped:history_status='partial'
+            recovery_history={'status':history_status,'source':'immutable_checkpoint_sqlite',
+                              'observed_at':datetime.now(timezone.utc).isoformat(),
+                              'complete':history_status=='available','records':history_records,
+                              'limit':MAX_RECOVERY_HISTORY_ROWS,'cap_reached':history_capped}
         finally:
             conn.close()
+            conn=None
+        opened_after=os.fstat(db_fd)
+        opened_after_identity=(opened_after.st_dev,opened_after.st_ino,opened_after.st_size,
+                               opened_after.st_mtime_ns,opened_after.st_ctime_ns,
+                               stat.S_IMODE(opened_after.st_mode))
         after=(_identity(path),_identity(wal),_identity(shm))
-        if before!=after or (after[1] is not None and after[1][2]!=0):
+        if (before!=after or opened_after_identity!=before[0]
+                or (after[1] is not None and after[1][2]!=0)):
             unavailable['unavailable_reason']='source_changed_during_read'
             return [],unavailable,'unavailable'
         cap_reached=len(rows)>MAX_TASK_ROWS
@@ -112,11 +188,19 @@ def read_board_tasks(board_id, db_path):
         invalid=len(rows)-included
         record={'status':'partial' if cap_reached or invalid else 'available','row_count':len(rows),
                 'included_count':included,'invalid_row_count':invalid,'limit':MAX_TASK_ROWS,
-                'cap_reached':cap_reached,'read_mode':'immutable_checkpoint_only','wal_bytes':0}
+                'cap_reached':cap_reached,'read_mode':'immutable_checkpoint_only','wal_bytes':0,
+                'recovery_history':recovery_history}
         return rows,record,'unavailable'
     except (OSError,ValueError,sqlite3.Error) as exc:
         unavailable['unavailable_reason']='source_error_'+type(exc).__name__
         return [],unavailable,'unavailable'
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        finally:
+            if db_fd is not None:
+                os.close(db_fd)
 
 
 def load_json(p): return json.loads(Path(p).read_text())
@@ -241,15 +325,15 @@ def run_readonly_live():
     status={'scheduler':scheduler,'gateway':gateway,'heartbeat':'unknown','workers':'unknown'}
     if worker_diagnostics_status and all(value=='available' for value in worker_diagnostics_status.values()):
         status['workers']='degraded' if worker_diagnostics else 'healthy'
-    # Only declared repositories are queried; retain only aggregate counts/status.
+    # Only declared repositories are queried; retain aggregate counts and bounded sanitized failed-check identities.
     policy=load_json(Path(__file__).with_name('policy.json'))
     repo_map=policy.get('repos',{}) if isinstance(policy,dict) else {}
-    prs={};repo_status={};repo_collection={}
+    prs={};repo_status={};repo_collection={};repo_failures={}
     if isinstance(repo_map,dict):
         for project,repo in repo_map.items():
             if not safe_id(project) or not valid_repo(repo):continue
             repo_status[project]='unavailable'
-            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','state,statusCheckRollup']
+            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','number,state,statusCheckRollup']
             ptext,query_status=run_result(args)
             if query_status!='available':
                 repo_status[project]=query_status
@@ -263,13 +347,14 @@ def run_readonly_live():
                 repo_collection[project]={'status':'unavailable','rows_observed':0,'limit':1000,'cap_reached':False}
                 continue
             counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0,'checks_unknown':0}
-            invalid=0
+            invalid=0;failure_records={};ambiguous=set();failure_cap=False
             for pr in rows:
                 if not isinstance(pr,dict):
                     invalid+=1; continue
                 state=pr.get('state')
                 if state=='OPEN':counts['open']+=1
                 else:invalid+=1
+                number=pr.get('number')
                 checks=pr.get('statusCheckRollup')
                 if not isinstance(checks,list) or not checks:
                     counts['checks_unknown']+=1
@@ -279,17 +364,35 @@ def run_readonly_live():
                         counts['checks_unknown']+=1; invalid+=1
                         continue
                     conclusion=c.get('conclusion') or c.get('state')
-                    if conclusion in ('SUCCESS','NEUTRAL','SKIPPED'):counts['checks_passing']+=1
-                    elif conclusion in ('FAILURE','ERROR','TIMED_OUT','ACTION_REQUIRED'):counts['checks_failing']+=1
-                    elif conclusion in ('PENDING','QUEUED','IN_PROGRESS','EXPECTED'):counts['checks_pending']+=1
+                    if conclusion in ('SUCCESS','NEUTRAL','SKIPPED'):
+                        counts['checks_passing']+=1
+                    elif conclusion in ('FAILURE','ERROR','TIMED_OUT','ACTION_REQUIRED'):
+                        counts['checks_failing']+=1
+                        name=c.get('name') or c.get('context')
+                        if (type(number) is not int or number<1 or not isinstance(name,str) or not name.strip()
+                                or len(name)>200 or any(ord(ch)<32 for ch in name)):
+                            invalid+=1;continue
+                        identity=(number,name)
+                        if identity in failure_records or identity in ambiguous:
+                            failure_records.pop(identity,None);ambiguous.add(identity);invalid+=1;continue
+                        if len(failure_records)>=100:
+                            failure_cap=True;continue
+                        failure_records[identity]={'repo':repo,'pr_number':number,'check_name':name,'conclusion':conclusion}
+                    elif conclusion in ('PENDING','QUEUED','IN_PROGRESS','EXPECTED'):
+                        counts['checks_pending']+=1
                     else:counts['checks_unknown']+=1
             cap_reached=len(rows)>=1000
-            repo_status[project]='partial' if cap_reached or invalid else 'available'
-            repo_collection[project]={'status':repo_status[project],'rows_observed':len(rows),'limit':1000,'cap_reached':cap_reached,'invalid_row_count':invalid}
+            repo_status[project]='partial' if cap_reached or invalid or failure_cap else 'available'
+            repo_collection[project]={'status':repo_status[project],'rows_observed':len(rows),'limit':1000,
+                                      'cap_reached':cap_reached,'invalid_row_count':invalid,
+                                      'failure_count':counts['checks_failing'],'failure_records_included':len(failure_records),
+                                      'failure_cap_reached':failure_cap}
             prs[project]=counts
+            repo_failures[project]=sorted(failure_records.values(),key=lambda item:(item['pr_number'],item['check_name']))
     return {'profiles':profiles,'boards':boards,'board_list_status':board_list_status,'tasks':tasks,'task_collection_status':task_collection_status,
             'task_read_mode':'immutable_checkpoint_only','status':status,'repos':prs,'repo_status':repo_status,'repo_collection':repo_collection,
-            'worker_diagnostics':worker_diagnostics,'worker_diagnostics_status':worker_diagnostics_status}
+            'repo_failures':repo_failures,'worker_diagnostics':worker_diagnostics,'worker_diagnostics_status':worker_diagnostics_status,
+            'observed_at':datetime.now(timezone.utc).isoformat()}
 
 
 def _worker_health(project, runtime):
@@ -316,6 +419,41 @@ def _worker_health(project, runtime):
     return {'status':state,'source_status':source_status,'diagnostic_count':len(rows),'severity_counts':severity_counts,
             'diagnostic_kind_counts':dict(sorted(kind_counts.items())[:20]),'diagnostic_kinds_truncated':len(kind_counts)>20,
             'diagnostic_digest':digest,'diagnostics':rows[:100],'sample_truncated':len(rows)>100}
+
+
+def _sanitize_recovery_history(raw, board):
+    raw=raw if isinstance(raw,dict) else {}
+    status=raw.get('status') if raw.get('status') in {'available','partial','unavailable'} else 'unknown'
+    observed=safe_time(raw.get('observed_at'))
+    records=[];invalid=False
+    source='immutable_checkpoint_sqlite' if raw.get('source')=='immutable_checkpoint_sqlite' else None
+    rows=raw.get('records',[])
+    if not isinstance(rows,list):rows=[];invalid=True
+    for row in rows[:MAX_RECOVERY_HISTORY_ROWS]:
+        if not isinstance(row,dict):invalid=True;continue
+        task_id=safe_id(row.get('id'));event_key=row.get('event_key');action=row.get('action')
+        key=row.get('idempotency_key');task_status=row.get('status')
+        max_retries=row.get('max_retries')
+        expected=(hashlib.sha256((event_key+chr(0)+action).encode()).hexdigest()
+                  if isinstance(event_key,str) and isinstance(action,str) else None)
+        if (not task_id or not isinstance(event_key,str) or not HEX64.fullmatch(event_key)
+                or not isinstance(action,str) or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',action)
+                or key!=expected or not isinstance(task_status,str) or task_status.lower() not in VALID
+                or type(max_retries) is not int or not 1<=max_retries<=20):
+            invalid=True;continue
+        item={'id':task_id,'status':task_status.lower(),'event_key':event_key,'action':action,
+              'idempotency_key':key,'max_retries':max_retries}
+        for field in ('created_at','completed_at'):
+            stamp=safe_time(row.get(field))
+            if stamp:item[field]=stamp
+        records.append(item)
+    cap=raw.get('cap_reached') is True
+    if invalid or cap:
+        status='partial' if status=='available' else status
+    complete=(status=='available' and source is not None and observed is not None
+              and raw.get('complete') is True and not cap and not invalid)
+    return {'board_id':board,'status':status,'source':source or 'unknown','observed_at':observed,
+            'complete':complete,'records':records,'limit':MAX_RECOVERY_HISTORY_ROWS,'cap_reached':cap}
 
 
 def discover(manifest,runtime,now=None):
@@ -380,7 +518,8 @@ def discover(manifest,runtime,now=None):
                     if (now-dt).total_seconds()<=7*86400 and t['status'] in {'done','completed'}:completed.append(t)
                 except ValueError:pass
         worker_health=_worker_health(p,runtime)
-        result.append({'project':{k:v for k,v in p.items() if k!='paused'},'tasks':enriched,'task_count':len(enriched),'task_collection_status':collection_status,'task_collection':collection if isinstance(collection,dict) else {},'completed_count_observed':sum(t['status'] in {'done','completed'} for t in enriched),'completed_count_7d_observed':len(completed),'blocked_count':sum(t['status']=='blocked' for t in enriched),'stale_count':sum(t['stale'] for t in enriched),'running_count':sum(t['status'] in {'running','in_progress'} for t in enriched),'worker_health':worker_health,'kpis':kpis})
+        recovery_history=_sanitize_recovery_history(collection.get('recovery_history') if isinstance(collection,dict) else None,p.get('board'))
+        result.append({'project':{k:v for k,v in p.items() if k!='paused'},'tasks':enriched,'task_count':len(enriched),'task_collection_status':collection_status,'task_collection':collection if isinstance(collection,dict) else {},'recovery_history':recovery_history,'completed_count_observed':sum(t['status'] in {'done','completed'} for t in enriched),'completed_count_7d_observed':len(completed),'blocked_count':sum(t['status']=='blocked' for t in enriched),'stale_count':sum(t['stale'] for t in enriched),'running_count':sum(t['status'] in {'running','in_progress'} for t in enriched),'worker_health':worker_health,'kpis':kpis})
     status=runtime.get('status',{}); cleanstatus={}
     for k in ('gateway','scheduler','heartbeat','workers'):
         v=status.get(k) if isinstance(status,dict) else None
@@ -402,16 +541,42 @@ def discover(manifest,runtime,now=None):
         record=raw_repo_collection.get(project,{})
         if isinstance(record,dict):
             clean_record={'status':status}
-            for key in ('rows_observed','limit','invalid_row_count'):
+            for key in ('rows_observed','limit','invalid_row_count','failure_count','failure_records_included'):
                 value=record.get(key)
                 if isinstance(value,int) and not isinstance(value,bool) and value>=0:clean_record[key]=value
             if isinstance(record.get('cap_reached'),bool):clean_record['cap_reached']=record['cap_reached']
+            if isinstance(record.get('failure_cap_reached'),bool):clean_record['failure_cap_reached']=record['failure_cap_reached']
             repo_collection[project]=clean_record
         if isinstance(counts,dict):
             clean={k:counts[k] for k in ('open','checks_passing','checks_failing','checks_pending','checks_unknown') if isinstance(counts.get(k),int) and not isinstance(counts.get(k),bool) and counts[k]>=0}
             if clean:repos[project]=clean
+    raw_repo_failures=runtime.get('repo_failures',{}) if isinstance(runtime.get('repo_failures',{}),dict) else {}
+    repo_failures={}
+    for project in allowed:
+        expected_repo=mapping.get(project) if isinstance(mapping,dict) else None
+        rows=raw_repo_failures.get(project,[])
+        clean_failures=[];seen=set();invalid_failure=False
+        if not isinstance(rows,list):rows=[];invalid_failure=True
+        for row in rows[:100]:
+            if not isinstance(row,dict):invalid_failure=True;continue
+            repo=row.get('repo');number=row.get('pr_number');name=row.get('check_name');conclusion=row.get('conclusion')
+            if (repo!=expected_repo or not valid_repo(repo) or type(number) is not int or number<1
+                    or not isinstance(name,str) or not name.strip() or len(name)>200 or any(ord(ch)<32 for ch in name)
+                    or conclusion not in {'FAILURE','ERROR','TIMED_OUT','ACTION_REQUIRED'}
+                    or (number,name) in seen):
+                invalid_failure=True;continue
+            seen.add((number,name))
+            clean_failures.append({'repo':repo,'pr_number':number,'check_name':name,'conclusion':conclusion})
+        counts=raw_repos.get(project,{}) if isinstance(raw_repos.get(project,{}),dict) else {}
+        failing_count=counts.get('checks_failing')
+        if (len(rows)>100 or invalid_failure or (repo_status.get(project)=='available'
+                and isinstance(failing_count,int) and not isinstance(failing_count,bool)
+                and failing_count!=len(clean_failures))):
+            repo_status[project]='partial'
+        repo_failures[project]=clean_failures
     collection_status=runtime.get('board_list_status') if runtime.get('board_list_status') in {'available','partial','unavailable'} else 'unknown'
-    return {'schema_version':1,'scope':{'governed_projects':governed,'unclassified_projects':sorted(k for k,v in projects.items() if v['scope']=='unclassified'),'governed_roles':sorted(k for k,v in roles.items() if v['scope']=='governed'),'unclassified_roles':sorted(k for k,v in roles.items() if v['scope']=='unclassified'),'boards':sorted(boards)},'projects':result,'profiles':sorted([{'id':k,'kind':v['kind'],'scope':v['scope']} for k,v in roles.items()],key=lambda x:x['id']),'runtime_status':cleanstatus,'board_list_status':collection_status,'task_read_mode':runtime.get('task_read_mode') if runtime.get('task_read_mode') in {'immutable_checkpoint_only'} else 'unknown','repos':repos,'repo_status':repo_status,'repo_collection':repo_collection,'collection':'read-only'}
+    observed_at=safe_time(runtime.get('observed_at'))
+    return {'schema_version':1,'observed_at':observed_at,'scope':{'governed_projects':governed,'unclassified_projects':sorted(k for k,v in projects.items() if v['scope']=='unclassified'),'governed_roles':sorted(k for k,v in roles.items() if v['scope']=='governed'),'unclassified_roles':sorted(k for k,v in roles.items() if v['scope']=='unclassified'),'boards':sorted(boards)},'projects':result,'profiles':sorted([{'id':k,'kind':v['kind'],'scope':v['scope']} for k,v in roles.items()],key=lambda x:x['id']),'runtime_status':cleanstatus,'board_list_status':collection_status,'task_read_mode':runtime.get('task_read_mode') if runtime.get('task_read_mode') in {'immutable_checkpoint_only'} else 'unknown','repos':repos,'repo_status':repo_status,'repo_collection':repo_collection,'repo_failures':repo_failures,'collection':'read-only'}
 def stable_events(report):
     out=[]
     for p in report['projects']:
@@ -434,6 +599,17 @@ def stable_events(report):
             identity={'project':project,'kind':'repo_checks','status':'failing','count':failures}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
             out.append({'key':key,**identity})
+    repo_failures=report.get('repo_failures',{}) if isinstance(report.get('repo_failures',{}),dict) else {}
+    for project,records in repo_failures.items():
+        if statuses.get(project)!='available' or not isinstance(records,list):continue
+        for failure in records:
+            if not isinstance(failure,dict):continue
+            repo=failure.get('repo');number=failure.get('pr_number');name=failure.get('check_name');conclusion=failure.get('conclusion')
+            if not valid_repo(repo) or type(number) is not int or not isinstance(name,str) or not isinstance(conclusion,str):continue
+            identity={'project':project,'repo':repo,'pr_number':number,'check_name':name,'conclusion':conclusion}
+            event_identity={key:identity[key] for key in ('project','repo','pr_number','check_name')}
+            key=hashlib.sha256(json.dumps(event_identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            out.append({'key':key,'kind':'repo_check','status':'failing',**identity})
     return out
 def collect(manifest_path,runtime_path,output_path):
     r=discover(load_json(manifest_path),load_json(runtime_path));r['events']=stable_events(r);Path(output_path).write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');return r

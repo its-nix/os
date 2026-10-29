@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
 from automation.monitoring import recovery
 
@@ -13,6 +14,7 @@ SYNTHETIC_MANIFEST = {
     "profiles": [{"id": "synthetic-lead", "kind": "lead", "projects": ["synthetic"]}],
 }
 SYNTHETIC_POLICY = {
+    "interval_hours": 12,
     "max_fix_attempts": 2,
     "stale_after_hours": 72,
     "repos": {"synthetic": "its-nix/synthetic"},
@@ -34,10 +36,36 @@ def plan(**changes):
     return value
 
 
-def request(value=None, evidence=None, verification_evidence=None, **extra):
-    result = {"plan": value or plan(), "source_evidence": evidence or {"id": "src1", "status": "blocked"}}
+def request(value: dict[str, Any] | None = None, evidence: dict[str, Any] | None = None,
+            verification_evidence: dict[str, Any] | None = None, **extra: Any):
+    value = value or plan()
+    now = datetime.now(timezone.utc)
+    observed = now.isoformat()
+    evidence_obj: dict[str, Any] = dict(evidence) if evidence is not None else {"id": "src1", "status": "blocked"}
+    evidence_obj.setdefault("observed_at", observed)
+    evidence_obj.setdefault("source", recovery._evidence_source(value["source_kind"]))
+    evidence_obj.setdefault("complete", True)
+    result = {"plan": value, "source_evidence": evidence_obj}
     if verification_evidence is not None:
-        result["verification_evidence"] = verification_evidence
+        verification_obj = dict(verification_evidence)
+        verification_obj.setdefault("observed_at", observed)
+        verification_obj.setdefault("source", recovery._evidence_source(value["source_kind"]))
+        verification_obj.setdefault("complete", True)
+        result["verification_evidence"] = verification_obj
+    history = extra.pop("recovery_history", None)
+    if history is None:
+        history = {"board_id": "synthetic-board", "event_key": value["event_key"],
+                   "source": "immutable_checkpoint_sqlite", "observed_at": observed,
+                   "complete": True, "tasks": []}
+    result["recovery_history"] = history
+    task_value = extra.get("recovery_task")
+    if isinstance(task_value, dict):
+        task_obj = cast(dict[str, Any], dict(task_value))
+        task_obj.setdefault("source", "kanban_readback")
+        task_obj.setdefault("observed_at", observed)
+        task_obj.setdefault("complete", True)
+        task_obj.setdefault("completed_at", (now - timedelta(minutes=1)).isoformat())
+        extra["recovery_task"] = task_obj
     result.update(extra)
     return result
 
@@ -82,6 +110,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(first["assignee"], "synthetic-lead")
         self.assertEqual(first["max_retries"], 2)
         self.assertEqual(first["max_fix_attempts"], 2)
+        self.assertEqual(first["attempt_number"], 1)
         self.assertIs(first["requires_human_approval"], True)
         self.assertEqual(first["creation_channel"], "approval_gated_native_kanban")
         self.assertIn("at most 2 distinct attempts total", first["body"])
@@ -91,6 +120,63 @@ class RecoveryTests(unittest.TestCase):
         # The helper has no subprocess/CLI integration and cannot create a task.
         self.assertFalse(hasattr(recovery, "subprocess"))
         self.assertNotIn("hermes kanban", Path(recovery.__file__).read_text(encoding="utf-8"))
+
+    def test_prepare_enforces_complete_history_deduplication_and_retry_cap(self):
+        value = plan()
+        now = datetime.now(timezone.utc).isoformat()
+        base_history = {"board_id": "synthetic-board", "event_key": value["event_key"],
+                        "source": "immutable_checkpoint_sqlite", "observed_at": now,
+                        "complete": True, "tasks": []}
+        first = self.run_execute(request(value, recovery_history=base_history))
+        self.assertEqual(first["attempt_number"], 1)
+
+        def row(action, status, task_id):
+            return {"id": task_id, "status": status, "event_key": value["event_key"],
+                    "action": action, "idempotency_key": recovery.stable_key(value["event_key"], action),
+                    "max_retries": 2}
+
+        second_history = dict(base_history, tasks=[row("alternate-fix", "failed", "rec1")])
+        second = self.run_execute(request(value, recovery_history=second_history))
+        self.assertEqual(second["attempt_number"], 2)
+        invalid_retry = row("alternate-fix", "failed", "rec1")
+        invalid_retry["max_retries"] = 3
+        for tasks in (
+            [row("repair-worker", "done", "rec1")],
+            [row("alternate-fix", "running", "rec1")],
+            [row("alternate-fix", "failed", "rec1"), row("other-fix", "failed", "rec2")],
+            [invalid_retry],
+        ):
+            with self.subTest(tasks=tasks):
+                with self.assertRaises(recovery.Refusal):
+                    self.run_execute(request(value, recovery_history=dict(base_history, tasks=tasks)))
+
+        stale = dict(base_history, observed_at=(datetime.now(timezone.utc) - timedelta(hours=13)).isoformat())
+        incomplete = dict(base_history, complete=False)
+        for history in (stale, incomplete):
+            with self.subTest(history=history):
+                with self.assertRaises(recovery.Refusal):
+                    self.run_execute(request(value, recovery_history=history))
+
+    def test_prepare_requires_fresh_timestamped_source_evidence(self):
+        value = plan()
+        now = datetime.now(timezone.utc)
+        bad_evidence = (
+            {"id": "src1", "status": "blocked", "source": "immutable_checkpoint_sqlite"},
+            {"id": "src1", "status": "blocked", "source": "immutable_checkpoint_sqlite",
+             "observed_at": (now - timedelta(hours=13)).isoformat()},
+            {"id": "src1", "status": "blocked", "source": "immutable_checkpoint_sqlite",
+             "observed_at": (now + timedelta(hours=1)).isoformat()},
+            {"id": "src1", "status": "blocked", "source": "immutable_checkpoint_sqlite",
+             "observed_at": now.isoformat(), "complete": False},
+            {"id": "src1", "status": "blocked", "source": "untrusted", "observed_at": now.isoformat()},
+        )
+        for index, evidence in enumerate(bad_evidence):
+            with self.subTest(evidence=evidence):
+                req = request(value, evidence)
+                if index == 0:
+                    req["source_evidence"].pop("observed_at", None)
+                with self.assertRaises(recovery.Refusal):
+                    self.run_execute(req)
 
     def test_prepare_fails_closed_for_stale_or_mismatched_source(self):
         fresh = (datetime.now(timezone.utc) - timedelta(hours=71)).isoformat()
@@ -141,11 +227,38 @@ class RecoveryTests(unittest.TestCase):
                                      "body": prepared["body"]})
         self.assertEqual(self.run_execute(req, mode="verify"),
                          {"result": "verified_resolved", "task_id": "rec1", "status": "done"})
-        req["verification_evidence"] = {"id": "src1", "status": "blocked"}
+        req["verification_evidence"] = {"id": "src1", "status": "blocked",
+                                         "source": "immutable_checkpoint_sqlite",
+                                         "observed_at": datetime.now(timezone.utc).isoformat(), "complete": True}
         self.assertEqual(self.run_execute(req, mode="verify")["result"], "unresolved")
-        req["verification_evidence"] = {"id": "src1", "status": "ready"}
+        req["verification_evidence"] = {"id": "src1", "status": "ready",
+                                         "source": "immutable_checkpoint_sqlite",
+                                         "observed_at": datetime.now(timezone.utc).isoformat(), "complete": True}
         req["recovery_task"]["status"] = "running"
         self.assertEqual(self.run_execute(req, mode="verify")["result"], "unresolved")
+
+    def test_verify_requires_observation_after_completion_and_within_freshness_window(self):
+        value = plan()
+        now = datetime.now(timezone.utc)
+        task = {"id": "rec1", "status": "done", "board_id": "synthetic-board",
+                "assignee": "synthetic-lead", "max_retries": 2,
+                "idempotency_key": recovery.stable_key("a" * 64, "repair-worker"),
+                "body": recovery._marker(value)}
+        pre_completion = request(value, {"id": "src1", "status": "blocked"},
+                                 verification_evidence={"id": "src1", "status": "ready",
+                                                        "observed_at": now.isoformat()},
+                                 recovery_task_id="rec1", recovery_task=dict(task,
+                                     completed_at=(now + timedelta(minutes=1)).isoformat()))
+        stale = request(value, {"id": "src1", "status": "blocked"},
+                        verification_evidence={"id": "src1", "status": "ready",
+                                               "observed_at": (now - timedelta(hours=13)).isoformat()},
+                        recovery_task_id="rec1", recovery_task=dict(task,
+                            completed_at=(now - timedelta(hours=14)).isoformat(),
+                            observed_at=now.isoformat()))
+        for req in (pre_completion, stale):
+            with self.subTest(req=req):
+                with self.assertRaises(recovery.Refusal):
+                    self.run_execute(req, mode="verify")
 
     def test_independent_verification_requires_a_fresh_source_observation(self):
         value = plan()

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ from automation.monitoring.executive_snapshot import main as executive_main
 class SnapshotTests(unittest.TestCase):
     def fixture(self):
         now = datetime(2026, 1, 10, tzinfo=timezone.utc)
+        event_key, action = "a" * 64, "repair-worker"
+        idempotency_key = hashlib.sha256((event_key + chr(0) + action).encode()).hexdigest()
         manifest = {
             "projects": [
                 {"id": "new-project", "name": "New Project", "lead": "new-lead", "board": "new-board"},
@@ -25,7 +28,7 @@ class SnapshotTests(unittest.TestCase):
             "profiles": [{"name": "new-lead", "kind": "lead"}, {"name": "runtime-worker", "kind": "worker"}],
             "boards": [{"id": "new-board"}, {"id": "paused-board", "paused": True}, {"id": "mystery-board"}],
             "tasks": [
-                {"id": "blocked-1", "board_id": "new-board", "status": "blocked", "created_at": "2026-01-09T00:00:00Z", "body": "PRIVATE"},
+                {"id": "blocked-1", "board_id": "new-board", "status": "blocked", "created_at": "2026-01-09T00:00:00Z", "updated_at": "2026-01-09T12:00:00Z", "body": "PRIVATE"},
                 {"id": "stale-1", "board_id": "new-board", "status": "ready", "created_at": "2026-01-01T00:00:00Z"},
                 {"id": "done-1", "board_id": "new-board", "status": "done"},
                 {"id": "unclassified-1", "board_id": "mystery-board", "status": "blocked"},
@@ -36,7 +39,13 @@ class SnapshotTests(unittest.TestCase):
             "task_read_mode": "immutable_checkpoint_only",
             "task_collection_status": {"new-board": {"status": "available", "row_count": 3, "included_count": 3,
                                     "invalid_row_count": 0, "limit": 20000, "cap_reached": False,
-                                    "read_mode": "immutable_checkpoint_only", "wal_bytes": 0}},
+                                    "read_mode": "immutable_checkpoint_only", "wal_bytes": 0,
+                                    "recovery_history": {"status": "available", "source": "immutable_checkpoint_sqlite",
+                                        "observed_at": now.isoformat(), "complete": True, "records": [{
+                                            "id": "rec1", "status": "failed", "event_key": event_key,
+                                            "action": action, "idempotency_key": idempotency_key, "max_retries": 2,
+                                            "created_at": "2026-01-09T13:00:00Z"}], "limit": 50, "cap_reached": False}}},
+            "observed_at": now.isoformat(),
             "repos": {},
         }
         report = discover(manifest, runtime, now=now)
@@ -54,6 +63,7 @@ class SnapshotTests(unittest.TestCase):
                          "included_count": 3, "invalid_row_count": 0, "limit": 20000,
                          "cap_reached": False, "read_mode": "immutable_checkpoint_only", "wal_bytes": 0})
         self.assertEqual(snapshot["task_read_mode"], "immutable_checkpoint_only")
+        self.assertEqual(snapshot["observed_at"], "2026-01-10T00:00:00+00:00")
         self.assertEqual(snapshot["board_list_status"], "available")
         self.assertEqual(projects["new-project"]["kpi_status"], "observed")
         self.assertEqual(projects["new-project"]["kpis"]["users"], {"value": 7, "status": "observed"})
@@ -61,6 +71,11 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(projects["new-project"]["blocked_stale_sample_truncated"])
         self.assertEqual(projects["new-project"]["blocked_stale_finding_count"], 2)
         self.assertEqual(len(projects["new-project"]["blocked_stale_findings_digest"]), 64)
+        self.assertEqual(projects["new-project"]["recovery_history"]["status"], "available")
+        self.assertTrue(projects["new-project"]["recovery_history"]["complete"])
+        self.assertEqual(projects["new-project"]["recovery_history"]["records"][0]["event_key"], "a" * 64)
+        self.assertEqual(projects["new-project"]["blocked_stale_task_sample"][0]["updated_at"], "2026-01-09T12:00:00Z")
+        self.assertNotIn("PRIVATE", json.dumps(snapshot))
         self.assertNotIn("paused", projects)
         self.assertNotIn("new-board", projects)
         self.assertEqual(snapshot["scope"]["governed_projects"], ["new-project"])
@@ -71,6 +86,28 @@ class SnapshotTests(unittest.TestCase):
         encoded = json.dumps(snapshot)
         self.assertNotIn("PRIVATE", encoded)
         self.assertEqual(len(snapshot["events"]), 2)
+
+    def test_recovery_history_overflow_marks_snapshot_partial_and_incomplete(self):
+        _, _, report = self.fixture()
+        project = next(item for item in report["projects"] if item["project"]["id"] == "new-project")
+        history = project["recovery_history"]
+        event_key = "c" * 64
+        history["records"] = []
+        for index in range(51):
+            action = f"repair-{index}"
+            key = hashlib.sha256((event_key + chr(0) + action).encode()).hexdigest()
+            history["records"].append({"id": f"rec-{index}", "status": "failed", "event_key": event_key,
+                                        "action": action, "idempotency_key": key, "max_retries": 2})
+        history["status"] = "available"
+        history["complete"] = True
+        history["cap_reached"] = False
+        snapshot = compact(report)
+        compact_history = next(item for item in snapshot["projects"]
+                               if item["project"]["id"] == "new-project")["recovery_history"]
+        self.assertEqual(compact_history["status"], "partial")
+        self.assertFalse(compact_history["complete"])
+        self.assertTrue(compact_history["cap_reached"])
+        self.assertEqual(len(compact_history["records"]), 50)
 
     def test_task_collection_unavailable_reason_is_allowlisted_not_path(self):
         manifest, runtime, _ = self.fixture()

@@ -156,7 +156,7 @@ class MonitorEndToEnd(unittest.TestCase):
   from unittest.mock import patch
   root=Path(__file__).parents[1]; policy_path=root/'automation/monitoring/policy.json'; policy=json.loads(policy_path.read_text())
   original_policy=json.loads(json.dumps(policy));policy['repos']={'base':'owner/repo'}
-  payload=json.dumps([{'state':'OPEN','title':'SECRET TITLE','url':'PRIVATE URL','statusCheckRollup':[{'conclusion':'FAILURE','name':'SECRET CHECK'}]}])
+  payload=json.dumps([{'number':123,'state':'OPEN','title':'SECRET TITLE','url':'PRIVATE URL','statusCheckRollup':[{'conclusion':'FAILURE','name':'Lint'}]}])
   seen=[]
   def fake(args,**kwargs):
    seen.append(tuple(args))
@@ -166,13 +166,15 @@ class MonitorEndToEnd(unittest.TestCase):
   try:
    policy_path.write_text(json.dumps(policy))
    with patch.object(collector.subprocess,'run',side_effect=fake):snap=run_readonly_live()
-   self.assertIn(('gh','pr','list','--repo','owner/repo','--state','open','--limit','1000','--json','state,statusCheckRollup'),seen)
+   self.assertIn(('gh','pr','list','--repo','owner/repo','--state','open','--limit','1000','--json','number,state,statusCheckRollup'),seen)
    self.assertEqual(snap['repos']['base']['open'],1);self.assertEqual(snap['repos']['base']['checks_failing'],1)
-   runtime={'repos':{'base':snap['repos']['base'],'unmapped':{'title':'SECRET TITLE'}}}
+   runtime={'repos':{'base':snap['repos']['base'],'unmapped':{'title':'SECRET TITLE'}},'repo_status':snap['repo_status'],'repo_collection':snap['repo_collection'],'repo_failures':snap['repo_failures']}
    report=discover({'projects':[{'id':'base'}],'profiles':[],'metrics':[]},runtime)
    self.assertEqual(report['repo_status']['base'],'available')
-   self.assertTrue(any(e.get('kind')=='repo_checks' and e['project']=='base' for e in collector.stable_events(report)))
-   encoded=json.dumps(report);self.assertIn('base',report['repos']);self.assertNotIn('unmapped',report['repos']);self.assertNotIn('SECRET TITLE',encoded);self.assertNotIn('SECRET CHECK',json.dumps(snap))
+   events=collector.stable_events(report)
+   self.assertTrue(any(e.get('kind')=='repo_checks' and e['project']=='base' for e in events))
+   self.assertTrue(any(e.get('kind')=='repo_check' and e['check_name']=='Lint' and e['pr_number']==123 for e in events))
+   encoded=json.dumps(report);self.assertIn('base',report['repos']);self.assertNotIn('unmapped',report['repos']);self.assertNotIn('SECRET TITLE',encoded);self.assertNotIn('PRIVATE URL',json.dumps(snap))
    payload=json.dumps([{'state':'OPEN','statusCheckRollup':[]} for _ in range(1000)])
    with patch.object(collector.subprocess,'run',side_effect=fake):partial=run_readonly_live()
    partial_report=discover({'projects':[{'id':'base'}],'profiles':[],'metrics':[]},partial)

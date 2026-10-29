@@ -27,6 +27,8 @@ def compact(report: dict, max_samples: int = MAX_SAMPLES_PER_PROJECT) -> dict:
     for event in events:
         if event.get("kind") == "repo_checks":
             compact_events.append({k: event[k] for k in ("key", "project", "kind", "status", "count") if k in event})
+        elif event.get("kind") == "repo_check":
+            compact_events.append({k: event[k] for k in ("key", "project", "kind", "status", "repo", "pr_number", "check_name", "conclusion") if k in event})
         elif event.get("kind") == "worker_diagnostic":
             compact_events.append({k: event[k] for k in ("key", "project", "kind", "task_id", "diagnostic_kind", "severity", "count") if k in event})
     projects = []
@@ -37,11 +39,15 @@ def compact(report: dict, max_samples: int = MAX_SAMPLES_PER_PROJECT) -> dict:
         candidates.sort(key=lambda t: (t.get("status") != "blocked", -(t.get("age_hours") or 0), t.get("id", "")))
         sample = []
         for task in candidates[:max_samples]:
-            clean = {k: task[k] for k in ("id", "status", "assignee", "stale") if k in task}
+            clean = {k: task[k] for k in ("id", "status", "assignee", "stale", "created_at", "updated_at") if k in task}
             sample.append(clean)
             event_key = event_by_task.get((pid, task.get("id")))
             if event_key:
-                compact_events.append({"key": event_key, "project": pid, "task_id": task["id"], "status": task["status"]})
+                compact_event = {"key": event_key, "project": pid, "task_id": task["id"], "status": task["status"]}
+                for field in ("created_at", "updated_at"):
+                    if field in task:
+                        compact_event[field] = task[field]
+                compact_events.append(compact_event)
         candidate_keys = sorted(
             event_by_task.get((pid, task.get("id")), f"{pid}:{task.get('id')}:{task.get('status')}")
             for task in candidates
@@ -76,10 +82,50 @@ def compact(report: dict, max_samples: int = MAX_SAMPLES_PER_PROJECT) -> dict:
         if isinstance(reason, str) and (reason in {"invalid_path", "invalid_board_or_database_pin", "wal_active_or_db_missing", "source_changed_during_read"}
                                         or reason in {"source_error_OSError", "source_error_ValueError", "source_error_DatabaseError"}):
             task_collection_clean["unavailable_reason"] = reason
+        history = item.get("recovery_history", {})
+        if not isinstance(history, dict):
+            history = {}
+        history_status = history.get("status") if history.get("status") in {"available", "partial", "unavailable"} else "unknown"
+        history_records = []
+        history_invalid = False
+        raw_history_records = history.get("records", [])
+        if not isinstance(raw_history_records, list):
+            raw_history_records = []
+            history_invalid = True
+        history_capped = len(raw_history_records) > 50 or history.get("cap_reached") is True
+        for record in raw_history_records[:50]:
+            if not isinstance(record, dict):
+                history_invalid = True
+                continue
+            event_key, action = record.get("event_key"), record.get("action")
+            key = record.get("idempotency_key")
+            expected = hashlib.sha256((event_key + "\0" + action).encode()).hexdigest() if isinstance(event_key, str) and isinstance(action, str) else None
+            if (not isinstance(record.get("id"), str) or not isinstance(record.get("status"), str)
+                    or key != expected or type(record.get("max_retries")) is not int):
+                history_invalid = True
+                continue
+            history_records.append({k: record[k] for k in (
+                "id", "status", "event_key", "action", "idempotency_key", "max_retries", "created_at", "completed_at"
+            ) if k in record})
+        if (history_invalid or history_capped) and history_status == "available":
+            history_status = "partial"
+        history_complete = (history_status == "available" and history.get("complete") is True
+                            and not history_invalid and not history_capped)
+        history_clean = {
+            "board_id": project.get("board"),
+            "status": history_status,
+            "source": history.get("source") if history.get("source") == "immutable_checkpoint_sqlite" else "unknown",
+            "observed_at": history.get("observed_at") if isinstance(history.get("observed_at"), str) else None,
+            "complete": history_complete,
+            "limit": 50,
+            "cap_reached": history_capped,
+            "records": history_records,
+        }
         projects.append({
             "project": {k: project[k] for k in ("id", "name", "board", "lead", "scope") if k in project},
             "task_count": item.get("task_count", 0),
             "task_collection": task_collection_clean,
+            "recovery_history": history_clean,
             "blocked_count": item.get("blocked_count", 0),
             "stale_count": item.get("stale_count", 0),
             "blocked_stale_finding_count": len(candidates),
@@ -101,6 +147,7 @@ def compact(report: dict, max_samples: int = MAX_SAMPLES_PER_PROJECT) -> dict:
     scope["excluded_paused_or_archived_projects"] = sorted(set(all_governed) - set(active_governed))
     return {
         "schema_version": report.get("schema_version", 1),
+        "observed_at": report.get("observed_at") if isinstance(report.get("observed_at"), str) else None,
         "collection": "read-only",
         "scope": scope,
         "board_list_status": report.get("board_list_status", "unknown") if report.get("board_list_status") in {"available", "partial", "unavailable", "unknown"} else "unknown",
