@@ -1,6 +1,7 @@
 {
   "version": 1,
   "interval_hours": 12,
+  "stale_after_hours": 72,
   "max_fix_attempts": 2,
   "retry_window_hours": 72,
   "approvals_required": true,
@@ -12,5 +13,9 @@
   "weekly_summary": true,
   "read_only": true,
   "include_private_content": false,
-  "repos": {}
+  "repos": {
+    "pulse": "its-nix/pulse",
+    "algua": "its-nix/algua",
+    "meabeclick": "its-nix/meabeclick"
+  }
 }

@@ -46,9 +46,9 @@ class MonitorEndToEnd(unittest.TestCase):
   import subprocess
   responses={
    ('hermes','profile','list'):'Profile Model Gateway Alias Distribution\n───────────────\n◆default gpt-6-luna running — —\nextra-profile gpt-6-luna running — —\n',
-   ('hermes','kanban','boards','list','--json','--include-archived'):json.dumps([{'slug':'new-board','name':'Board','db_path':'/SECRET'}]),
-   ('hermes','kanban','--board','new-board','list','--json','--include-archived'):json.dumps([{'id':'t1','status':'running','body':'PRIVATE','workspace':'/SECRET','session_id':'SECRET','error':'PRIVATE'}]),
-   ('hermes','cron','list'):'scheduled jobs',('hermes','gateway','status'):'running'}
+   ('hermes','kanban','boards','list','--json','--all'):json.dumps([{'slug':'new-board','name':'Board','db_path':'/SECRET'}]),
+   ('hermes','kanban','--board','new-board','list','--json'):json.dumps([{'id':'t1','status':'running','body':'PRIVATE','workspace':'/SECRET','session_id':'SECRET','error':'PRIVATE'}]),
+   ('hermes','cron','status'):'Scheduler host: host (PID 1)\nTicker heartbeat: 31s ago',('hermes','gateway','status'):'✓ User gateway service is running'}
   calls=[]
   def fake(args,**kwargs):
    calls.append(tuple(args));return subprocess.CompletedProcess(args,0,responses.get(tuple(args),''),'')
@@ -58,7 +58,7 @@ class MonitorEndToEnd(unittest.TestCase):
   self.assertIn({'name':'default','kind':'unknown'},snap['profiles'])
   self.assertIn({'name':'extra-profile','kind':'unknown'},snap['profiles'])
   self.assertEqual(snap['tasks'],[{'id':'t1','status':'running','board_id':'new-board'}])
-  self.assertEqual(snap['status'],{'scheduler':'available','gateway':'available'})
+  self.assertEqual(snap['status'],{'scheduler':'available','gateway':'available','heartbeat':'unknown','workers':'unknown'})
   encoded=json.dumps(snap)
   for x in ('PRIVATE','SECRET','/SECRET','db_path','workspace','session_id','error'):self.assertNotIn(x,encoded)
 
@@ -73,7 +73,10 @@ class MonitorEndToEnd(unittest.TestCase):
    {'id':'freshdone','board_id':'b','status':'completed','created_at':base-3600,'completed_at':now.isoformat()},
    {'id':'olddone','board_id':'b','status':'done','completed_at':int(base-8*86400)},
    {'id':'notincluded','board_id':'ab','status':'open'}, {'id':'notincluded2','board_id':'pb','status':'open'}], 'status':{}}
+  from automation.monitoring.collector import stable_events
   report=discover(m,r,now); project=report['projects'][0]
+  later=discover(m,r,datetime(2026,1,10,1,tzinfo=timezone.utc))
+  self.assertEqual([x['key'] for x in stable_events(report)],[x['key'] for x in stable_events(later)])
   self.assertEqual({t['id']:t['stale'] for t in project['tasks']}['exact'],True)
   self.assertFalse({t['id']:t['stale'] for t in project['tasks']}['young'])
   self.assertIn('triage', {t['status'] for t in project['tasks']});self.assertIn('scheduled', {t['status'] for t in project['tasks']});self.assertIn('review', {t['status'] for t in project['tasks']})
@@ -83,13 +86,13 @@ class MonitorEndToEnd(unittest.TestCase):
 
  def test_health_unknown_for_empty_failure_and_unrecognized(self):
   import unittest.mock as mock, subprocess
-  base={('hermes','profile','list'):'',('hermes','kanban','boards','list','--json','--include-archived'):'[]',('hermes','cron','list'):'',('hermes','gateway','status'):'connected to socket'}
+  base={('hermes','profile','list'):'',('hermes','kanban','boards','list','--json','--all'):'[]',('hermes','cron','list'):'',('hermes','gateway','status'):'connected to socket'}
   def fake(args,**kwargs):
    key=tuple(args)
    if key==('hermes','gateway','status'):return subprocess.CompletedProcess(args,1,'running','')
    return subprocess.CompletedProcess(args,0,base.get(key,''),'')
   with mock.patch('automation.monitoring.collector.subprocess.run',side_effect=fake):
-   self.assertEqual(run_readonly_live()['status'],{'scheduler':'unknown','gateway':'unknown'})
+   self.assertEqual(run_readonly_live()['status'],{'scheduler':'unknown','gateway':'unknown','heartbeat':'unknown','workers':'unknown'})
 
  def test_repo_mapping_readonly_and_no_metadata_leakage(self):
   import unittest.mock as mock, subprocess
@@ -102,12 +105,12 @@ class MonitorEndToEnd(unittest.TestCase):
   def fake(args,**kwargs):
    seen.append(tuple(args))
    if args[0]=='gh':return subprocess.CompletedProcess(args,0,payload,'')
-   if tuple(args)==('hermes','kanban','boards','list','--json','--include-archived'):return subprocess.CompletedProcess(args,0,'[]','')
+   if tuple(args)==('hermes','kanban','boards','list','--json','--all'):return subprocess.CompletedProcess(args,0,'[]','')
    return subprocess.CompletedProcess(args,0,'','')
   try:
    policy_path.write_text(json.dumps(policy))
    with patch.object(collector.subprocess,'run',side_effect=fake):snap=run_readonly_live()
-   self.assertIn(('gh','pr','list','--repo','owner/repo','--state','all','--json','state,statusCheckRollup'),seen)
+   self.assertIn(('gh','pr','list','--repo','owner/repo','--state','open','--limit','100','--json','state,statusCheckRollup'),seen)
    self.assertEqual(snap['repos']['base']['open'],1);self.assertEqual(snap['repos']['base']['checks_failing'],1)
    runtime={'repos':{'base':snap['repos']['base'],'unmapped':{'title':'SECRET TITLE'}}}
    report=discover({'projects':[{'id':'base'}],'profiles':[],'metrics':[]},runtime)

@@ -49,24 +49,28 @@ def run_readonly_live():
         token=line.strip().split()[0] if line.strip() else ''
         token=re.sub(r'^[^A-Za-z0-9]+','',token)
         if safe_id(token) and token.lower() not in {'profile','name','id'}:profiles.append({'name':token,'kind':'unknown'})
-    rawboards=[b for b in _rows(run(['hermes','kanban','boards','list','--json','--include-archived'])) if isinstance(b,dict)]
+    rawboards=[b for b in _rows(run(['hermes','kanban','boards','list','--json','--all'])) if isinstance(b,dict)]
     boards=[]; tasks=[]
     for b in rawboards:
         bid=safe_id(b.get('slug') or b.get('id'))
         if not bid:continue
         boards.append({'id':bid,'name':safe_text(b.get('name'),bid),'archived':b.get('archived') is True,'paused':b.get('paused') is True})
-        for t in _rows(run(['hermes','kanban','--board',bid,'list','--json','--include-archived'])):
+        for t in _rows(run(['hermes','kanban','--board',bid,'list','--json'])):
             if isinstance(t,dict):
                 v=sanitize_task(t,bid)
                 if v:tasks.append(v)
-    def health(args,positive):
-        text=run(args).strip().lower()
-        if not text:return 'unknown'
-        if any(x in text for x in ('error','failed','unavailable','stopped','inactive','disabled')):return 'degraded'
-        return 'available' if any(x in text for x in positive) else 'unknown'
-    cron=health(['hermes','cron','list'],('scheduled','enabled','running','active','jobs'))
-    gateway=health(['hermes','gateway','status'],('running','healthy','active','ok'))
-    status={'scheduler':cron,'gateway':gateway}
+    cron_text=run(['hermes','cron','status']).strip().lower()
+    match=re.search(r'ticker heartbeat:\s*(\d+)\s*(s|sec|seconds|m|minutes|h|hours)\s+ago',cron_text)
+    scheduler='unknown'
+    if match and 'scheduler host:' in cron_text:
+        amount=int(match.group(1));unit=match.group(2)
+        seconds=amount*(1 if unit in {'s','sec','seconds'} else 60 if unit in {'m','minutes'} else 3600)
+        scheduler='available' if seconds<=120 else 'degraded'
+    gateway_text=run(['hermes','gateway','status']).strip().lower()
+    if 'active: active (running)' in gateway_text or 'user gateway service is running' in gateway_text or 'gateway is running' in gateway_text:gateway='available'
+    elif any(x in gateway_text for x in ('active: inactive','gateway is not running','gateway service is stopped')):gateway='degraded'
+    else:gateway='unknown'
+    status={'scheduler':scheduler,'gateway':gateway,'heartbeat':'unknown','workers':'unknown'}
     # Only declared repositories are queried; retain only aggregate counts/status.
     policy=load_json(Path(__file__).with_name('policy.json'))
     repo_map=policy.get('repos',{}) if isinstance(policy,dict) else {}
@@ -75,17 +79,15 @@ def run_readonly_live():
         for project,repo in repo_map.items():
             if not safe_id(project) or not valid_repo(repo):continue
             try:
-                p=subprocess.run(['gh','pr','list','--repo',repo,'--state','all','--json','state,statusCheckRollup'],capture_output=True,text=True,timeout=20,check=False)
+                p=subprocess.run(['gh','pr','list','--repo',repo,'--state','open','--limit','100','--json','state,statusCheckRollup'],capture_output=True,text=True,timeout=20,check=False)
                 if p.returncode!=0:continue
                 rows=json.loads(p.stdout)
                 if not isinstance(rows,list):continue
-                counts={'open':0,'merged':0,'closed':0,'checks_passing':0,'checks_failing':0,'checks_pending':0}
+                counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0}
                 for pr in rows:
                     if not isinstance(pr,dict):continue
                     state=pr.get('state')
                     if state=='OPEN':counts['open']+=1
-                    elif state=='MERGED':counts['merged']+=1
-                    elif state=='CLOSED':counts['closed']+=1
                     checks=pr.get('statusCheckRollup')
                     if isinstance(checks,list):
                         for c in checks:
@@ -99,6 +101,9 @@ def run_readonly_live():
     return {'profiles':profiles,'boards':boards,'tasks':tasks,'status':status,'repos':prs}
 def discover(manifest,runtime,now=None):
     now=now or datetime.now(timezone.utc); now=now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now; projects={}; roles={}
+    policy=load_json(Path(__file__).with_name('policy.json'))
+    stale_after=policy.get('stale_after_hours',72) if isinstance(policy,dict) else 72
+    if not isinstance(stale_after,int) or isinstance(stale_after,bool) or not 1<=stale_after<=8760:stale_after=72
     for p in manifest.get('projects',[]):
         if not isinstance(p,dict):continue
         pid=safe_id(p.get('id'))
@@ -135,7 +140,7 @@ def discover(manifest,runtime,now=None):
                     created=datetime.fromisoformat(stamp.replace('Z','+00:00')); created=created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
                     age=max(0,int((now-created).total_seconds()//3600))
                 except ValueError:pass
-            enriched.append({**t,'age_hours':age,'stale':bool(age is not None and age>=72 and t['status'] not in {'done','completed','cancelled'})})
+            enriched.append({**t,'age_hours':age,'stale':bool(age is not None and age>=stale_after and t['status'] not in {'done','completed','cancelled'})})
         kpis={}
         for m in manifest.get('metrics',[]):
             if isinstance(m,dict) and m.get('project')==pid and safe_id(m.get('name')):
@@ -162,14 +167,16 @@ def discover(manifest,runtime,now=None):
     for project in allowed:
         counts=raw_repos.get(project)
         if safe_id(project) and isinstance(counts,dict):
-            clean={k:counts[k] for k in ('open','merged','closed','checks_passing','checks_failing','checks_pending') if isinstance(counts.get(k),int) and not isinstance(counts.get(k),bool) and counts[k]>=0}
+            clean={k:counts[k] for k in ('open','checks_passing','checks_failing','checks_pending') if isinstance(counts.get(k),int) and not isinstance(counts.get(k),bool) and counts[k]>=0}
             if clean:repos[project]=clean
     return {'schema_version':1,'scope':{'governed_projects':governed,'unclassified_projects':sorted(k for k,v in projects.items() if v['scope']=='unclassified'),'governed_roles':sorted(k for k,v in roles.items() if v['scope']=='governed'),'unclassified_roles':sorted(k for k,v in roles.items() if v['scope']=='unclassified'),'boards':sorted(boards)},'projects':result,'profiles':sorted([{'id':k,'kind':v['kind'],'scope':v['scope']} for k,v in roles.items()],key=lambda x:x['id']),'runtime_status':cleanstatus,'repos':repos,'collection':'read-only'}
 def stable_events(report):
     out=[]
     for p in report['projects']:
         for t in p['tasks']:
-            e={'project':p['project']['id'],'task':t}; key=hashlib.sha256(json.dumps(e,sort_keys=True,separators=(',',':')).encode()).hexdigest();out.append({'key':key,**e})
+            identity={'project':p['project']['id'],'task_id':t['id'],'status':t['status']}
+            key=hashlib.sha256(json.dumps(identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            out.append({'key':key,'project':identity['project'],'task':t})
     return out
 def collect(manifest_path,runtime_path,output_path):
     r=discover(load_json(manifest_path),load_json(runtime_path));r['events']=stable_events(r);Path(output_path).write_text(json.dumps(r,indent=2,sort_keys=True)+'\n');return r
