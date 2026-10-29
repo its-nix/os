@@ -1,0 +1,1 @@
+{"boards":[{"id":"base-board"}],"profiles":[{"name":"base-role","kind":"lead"}],"tasks":[{"id":"base-task","project_id":"base","board_id":"base-board","status":"open"}],"metrics":{},"status":{"gateway":"unknown","scheduler":"unknown","heartbeat":"unknown","workers":"unknown"}}
