@@ -6,8 +6,11 @@
   "approvals_required": true,
   "cron_mode": "deny",
   "paused_projects_excluded": true,
-  "alert_severity": ["critical"],
+  "alert_severity": [
+    "critical"
+  ],
   "weekly_summary": true,
   "read_only": true,
-  "include_private_content": false
+  "include_private_content": false,
+  "repos": {}
 }
