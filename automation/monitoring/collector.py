@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 ID=re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$')
-VALID={'open','todo','triage','scheduled','in_progress','running','blocked','review','done','completed','cancelled','failed','paused','archived'}
+VALID={'open','todo','triage','scheduled','ready','in_progress','running','blocked','review','done','completed','cancelled','failed','paused','archived'}
 def safe_id(x): return x if isinstance(x,str) and ID.fullmatch(x) else None
 def safe_time(x):
     if isinstance(x,(int,float)) and not isinstance(x,bool):
@@ -155,7 +155,7 @@ def discover(manifest,runtime,now=None):
                     dt=datetime.fromisoformat(stamp.replace('Z','+00:00'));dt=dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
                     if (now-dt).total_seconds()<=7*86400 and t['status'] in {'done','completed'}:completed.append(t)
                 except ValueError:pass
-        result.append({'project':{k:v for k,v in p.items() if k!='paused'},'tasks':enriched,'task_count':len(enriched),'throughput':sum(t['status'] in {'done','completed'} for t in enriched),'throughput_7d':len(completed),'blocked_count':sum(t['status']=='blocked' for t in enriched),'running_count':sum(t['status'] in {'running','in_progress'} for t in enriched),'kpis':kpis})
+        result.append({'project':{k:v for k,v in p.items() if k!='paused'},'tasks':enriched,'task_count':len(enriched),'completed_count_observed':sum(t['status'] in {'done','completed'} for t in enriched),'completed_count_7d_observed':len(completed),'blocked_count':sum(t['status']=='blocked' for t in enriched),'running_count':sum(t['status'] in {'running','in_progress'} for t in enriched),'kpis':kpis})
     status=runtime.get('status',{}); cleanstatus={}
     for k in ('gateway','scheduler','heartbeat','workers'):
         v=status.get(k) if isinstance(status,dict) else None

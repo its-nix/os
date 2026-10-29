@@ -69,6 +69,7 @@ class MonitorEndToEnd(unittest.TestCase):
   r={'boards':[{'id':'b'},{'id':'ab','archived':True},{'id':'pb','paused':True}], 'profiles':[{'name':'default'}], 'tasks':[
    {'id':'exact','board_id':'b','status':'triage','created_at':base-72*3600},
    {'id':'young','board_id':'b','status':'scheduled','created_at':base-72*3600+1},
+   {'id':'ready','board_id':'b','status':'ready','created_at':base-1},
    {'id':'review','board_id':'b','status':'review','created_at':base-80*3600},
    {'id':'freshdone','board_id':'b','status':'completed','created_at':base-3600,'completed_at':now.isoformat()},
    {'id':'olddone','board_id':'b','status':'done','completed_at':int(base-8*86400)},
@@ -79,8 +80,9 @@ class MonitorEndToEnd(unittest.TestCase):
   self.assertEqual([x['key'] for x in stable_events(report)],[x['key'] for x in stable_events(later)])
   self.assertEqual({t['id']:t['stale'] for t in project['tasks']}['exact'],True)
   self.assertFalse({t['id']:t['stale'] for t in project['tasks']}['young'])
-  self.assertIn('triage', {t['status'] for t in project['tasks']});self.assertIn('scheduled', {t['status'] for t in project['tasks']});self.assertIn('review', {t['status'] for t in project['tasks']})
-  self.assertEqual((project['throughput'],project['throughput_7d']),(2,1))
+  statuses={t['status'] for t in project['tasks']}
+  self.assertIn('triage',statuses);self.assertIn('scheduled',statuses);self.assertIn('ready',statuses);self.assertIn('review',statuses)
+  self.assertEqual((project['completed_count_observed'],project['completed_count_7d_observed']),(2,1))
   self.assertNotIn('archived',[p['project']['id'] for p in report['projects']]);self.assertNotIn('paused',[p['project']['id'] for p in report['projects']])
   self.assertEqual(report['scope']['governed_roles'],['lnx']);self.assertNotIn('default',report['scope']['unclassified_roles'])
 
