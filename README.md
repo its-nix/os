@@ -4,23 +4,23 @@ Nix OS is a lean, declarative operating repository for the Nix portfolio. It des
 
 ## Current topology
 
-- **LNX (`default`)** is Lior's portfolio orchestrator and the only initially Discord-visible identity.
-- **Leads:** Pulse, Algua, and MeaBeclick.
+- **LNX (`default`)** owns company OS/infrastructure, cross-project coordination, portfolio priorities, and independent monitoring. It is not the routine project request router or required delivery messenger.
+- **Leads:** Pulse, Algua, and MeaBeclick own their project objectives, execution, recovery, and verified outcomes; Lior communicates with each directly in its dedicated channel.
 - **MeaBeclick specialists:** UX, Engineering, and Growth, routed through the MeaBeclick Lead.
 - **Boards/projects:** `pulse`, `algua`, and `meabeclick`.
 
-Internal profiles do not get messaging identities by default. LNX receives human requests and alerts, delegates bounded work through Hermes Kanban, and returns concise decisions or escalation requests.
+The shared Discord bot routes each named project channel directly to its matching Lead profile and the portfolio channel to LNX. There are no extra bot identities. Leads use Hermes Kanban for durable execution state and handoffs; specialists report to their Lead. A Lead proactively contacts Lior directly when a human-only decision is required.
 
 ## Authority by plane
 
 | Plane | Authority |
 | --- | --- |
-| Discord | Human messaging, alerts, and live voice through LNX only |
+| Discord | Direct human-to-Lead project conversation; company/portfolio matters to LNX |
 | Todoist (`td`) | Tasks personally assigned to Lior; never delegated-agent work |
 | Hermes Kanban | Durable delegated execution, ownership, status, and handoffs |
 | GitHub and project docs | Durable technical artifacts, decisions, reviews, and evidence |
 
-The manifest in `nix-os.yaml` is JSON, which is a strict YAML subset. This allows validation with the Python standard library and no package installation.
+The manifest in `nix-os.yaml` is JSON, which is a strict YAML subset. This allows validation with the Python standard library and no package installation. `scripts/reconcile-discord-profile-routes.py` previews the manifest's non-secret routes and applies them through Hermes' supported config CLI; it refuses to overwrite unexpected existing routes.
 
 ## Safe start
 
@@ -37,6 +37,15 @@ scripts/reconcile-hermes-default.sh    # preview config/runtime reconciliation
 The apply mode creates only missing named profile directories with reviewed role contracts, then uses Hermes CLI for missing boards and projects. It deliberately avoids `hermes profile create`, because that command initializes unrelated active-profile state. Existing profile identity and configuration are preserved; only the requested missing profile directories, boards, and project records are added. The script never reads or writes credentials, memories, sessions, transcripts, or copied runtime data.
 
 After apply, configure Discord manually for the default profile as printed by the script. Keep the bot credential in Hermes' interactive secret setup, never in this repository.
+
+The shared LNX bot's three project-channel routes are declared in `nix-os.yaml`. Preview and apply them with:
+
+```bash
+python3 scripts/reconcile-discord-profile-routes.py
+python3 scripts/reconcile-discord-profile-routes.py --apply
+```
+
+After an apply, restart the active Hermes gateway and verify the three routes with `hermes config get gateway.profile_routes`; other Discord channels and DMs remain on LNX/default. The script refuses to replace any unexpected pre-existing route set.
 
 ## Hermes default-profile maintenance
 
@@ -97,7 +106,7 @@ python3 scripts/setup-skill-scouts.py --apply                  # local canary de
 python3 scripts/setup-skill-scouts.py --apply --enable-delivery # aggregator only, after canaries
 ```
 
-Only the aggregator's second-stage delivery target is `telegram:6926015052`. Runtime packets stay under `${HOME}/.local/share/hermes-scouts/` and never enter Git.
+Only the aggregator's second-stage delivery target is `discord`, which resolves to the configured Discord Home channel; Telegram gateway messaging is disabled. Runtime packets stay under `${HOME}/.local/share/hermes-scouts/` and never enter Git.
 
 ## Migration note
 
@@ -112,6 +121,7 @@ The previous Paperclip-based design remains preserved remotely at `archive/paper
 - `scripts/install-skills.py` — pinned, exact-subset NixKit role installation
 - `scripts/setup-skill-scouts.py` — preview-first per-profile cron reconciliation
 - `scripts/reconcile-hermes-default.sh` — preview-first default-profile config/runtime reconciliation
+- `scripts/reconcile-discord-profile-routes.py` — preview-first reconciliation for the three shared-bot project routes
 - `skills/` — role packs and proposal/approval schemas
 - `automation/skill-scout/` — declarative jobs, prompts, report schema, and collector
 - `scripts/verify.py` — dependency-free repository safety verifier

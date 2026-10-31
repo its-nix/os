@@ -3,7 +3,30 @@
   "system": "Nix OS",
   "description": "Lean Hermes operating model for the Nix portfolio",
   "orchestrator": "lnx",
-  "discord_visible_profiles": ["lnx"],
+  "discord_visible_profiles": ["lnx", "pulse", "algua", "meabeclick"],
+  "discord_profile_routes": [
+    {
+      "name": "pulse-channel",
+      "platform": "discord",
+      "guild_id": "1356588603517698169",
+      "chat_id": "1564218041603194950",
+      "profile": "pulse"
+    },
+    {
+      "name": "algua-channel",
+      "platform": "discord",
+      "guild_id": "1356588603517698169",
+      "chat_id": "1565055030413893762",
+      "profile": "algua"
+    },
+    {
+      "name": "meabeclick-channel",
+      "platform": "discord",
+      "guild_id": "1356588603517698169",
+      "chat_id": "1565055212006285353",
+      "profile": "meabeclick"
+    }
+  ],
   "skill_governance": {
     "packs": "skills/packs.json",
     "proposal_schema": "skills/proposal.schema.json",
@@ -92,6 +115,7 @@
   ],
   "planes": {
     "human_messaging": "discord",
+    "disabled_messaging": ["telegram"],
     "lior_commitments": "todoist",
     "delegated_execution": "hermes-kanban",
     "durable_evidence": ["github", "project-docs"]

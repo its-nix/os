@@ -25,6 +25,7 @@ REQUIRED_FILES = {
     "scripts/verify.py",
     "scripts/install-skills.py",
     "scripts/setup-skill-scouts.py",
+    "scripts/reconcile-discord-profile-routes.py",
     "skills/packs.json",
     "skills/host-native-approvals/lnx-preserve-host-native-v1.json",
     "skills/proposal.schema.json",
@@ -61,6 +62,11 @@ EXPECTED_PROFILES = {
     "meabeclickeng", "meabeclickgrowth",
 }
 EXPECTED_PROJECTS = {"pulse", "algua", "meabeclick"}
+EXPECTED_DISCORD_PROFILE_ROUTES = [
+    {"name": "pulse-channel", "platform": "discord", "guild_id": "1356588603517698169", "chat_id": "1564218041603194950", "profile": "pulse"},
+    {"name": "algua-channel", "platform": "discord", "guild_id": "1356588603517698169", "chat_id": "1565055030413893762", "profile": "algua"},
+    {"name": "meabeclick-channel", "platform": "discord", "guild_id": "1356588603517698169", "chat_id": "1565055212006285353", "profile": "meabeclick"},
+]
 NIXKIT_COMMIT = "10018867c2544948109ce46217a689e1db2a1495"
 NIXKIT_SNAPSHOT_COMMIT = "da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3"
 NIXKIT_SOURCES_SHA256 = "a23b87ae26784ac9571da5e7047f054d01ab3435b295c77b6c289bf5e4a3ec49"
@@ -192,7 +198,7 @@ EXPECTED_SCOUT_JOBS = [
     {"name": "nix-skill-scout-meabeclickeng", "kind": "scout", "profile": "meabeclickeng", "hermes_profile": "meabeclickeng", "schedule": "20 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
     {"name": "nix-skill-scout-meabeclickgrowth", "kind": "scout", "profile": "meabeclickgrowth", "hermes_profile": "meabeclickgrowth", "schedule": "40 19 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
     {"name": "nix-skill-scout-lnx", "kind": "scout", "profile": "lnx", "hermes_profile": "default", "schedule": "0 20 * * 6", "prompt_file": "scout-prompt.md", "delivery": "local"},
-    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "telegram:6926015052", "continuity": True},
+    {"name": "nix-skill-scout-aggregate", "kind": "aggregator", "profile": "lnx", "hermes_profile": "default", "schedule": "0 21 * * 6", "prompt_file": "aggregate-prompt.md", "script": "skill-scout-collect.py", "delivery": "local", "delivery_enabled": "discord", "continuity": True},
 ]
 EXPECTED_PROFILE_LAYOUT = {
     "lnx": ("default", "orchestrator", None, ["pulse", "algua", "meabeclick"]),
@@ -210,6 +216,7 @@ EXPECTED_PROJECT_LAYOUT = {
 }
 EXPECTED_PLANES = {
     "human_messaging": "discord",
+    "disabled_messaging": ["telegram"],
     "lior_commitments": "todoist",
     "delegated_execution": "hermes-kanban",
     "durable_evidence": ["github", "project-docs"],
@@ -319,8 +326,10 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], errors: list[str]) 
         errors.append(f"manifest projects must be exactly {sorted(EXPECTED_PROJECTS)}")
     if manifest.get("orchestrator") != "lnx":
         errors.append("manifest orchestrator must be lnx")
-    if manifest.get("discord_visible_profiles") != ["lnx"]:
-        errors.append("exactly one initial Discord-visible profile is required: lnx")
+    if manifest.get("discord_visible_profiles") != ["lnx", "pulse", "algua", "meabeclick"]:
+        errors.append("Discord-visible profiles must include LNX and the three directly routed project leads")
+    if manifest.get("discord_profile_routes") != EXPECTED_DISCORD_PROFILE_ROUTES:
+        errors.append("Discord profile routes must map the three project channels to their matching leads")
     todoist = manifest.get("todoist")
     if not isinstance(todoist, dict) or todoist.get("cli") != "td" or todoist.get("scope") != "lior-only":
         errors.append("Todoist must use td and scope lior-only")

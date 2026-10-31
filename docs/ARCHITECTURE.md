@@ -7,22 +7,23 @@ Nix is a six-human portfolio organization supported by seven role-isolated Herme
 ## Topology
 
 ```text
-Lior ⇄ Discord ⇄ LNX/default
-                     ├── Pulse Lead ───────── Pulse board
-                     ├── Algua Lead ───────── Algua board
-                     └── MeaBeclick Lead ──── MeaBeclick board
-                              ├── UX Specialist
-                              ├── Engineering Specialist
-                              └── Growth Specialist
+Lior ⇄ Discord (single shared bot identity)
+          ├── #pulse ─────────────── Pulse Lead ───── Pulse board
+          ├── #algua ─────────────── Algua Lead ───── Algua board
+          ├── #meabeclick ────────── MeaBeclick Lead ─ MeaBeclick board
+          │                              ├── UX Specialist
+          │                              ├── Engineering Specialist
+          │                              └── Growth Specialist
+          └── other channels/DMs ─── LNX/default
 ```
 
-LNX is the portfolio front door and the only initially exposed messaging identity. Leads own project decomposition and synthesis. Specialists operate only inside their stated duties and return evidence to the MeaBeclick Lead.
+The shared bot routes each project channel directly to its matching Lead; the portfolio channel routes to LNX. LNX is not a required intermediary for ordinary project work, decisions, status, or escalation. This changes the profile handling the channel, not the visible Discord account. Leads own their outcomes, decomposition, recovery, synthesis, and direct communication with Lior. Specialists report to their Lead and operate only within their stated duties.
 
 ## Planes and sources of truth
 
 ### Human communication plane
 
-Discord carries requests, alerts, decision prompts, and live voice. It is not the canonical task ledger or evidence store. Internal profiles do not need platform accounts.
+Discord carries requests, alerts, decision prompts, and live voice. It is not the canonical task ledger or evidence store. The three project channels are explicitly routed to their Leads, and the portfolio channel is routed to LNX. The bot's existing user allowlist remains unchanged; profile routing does not create new bot identities or grant new authority.
 
 ### Personal commitment plane
 
@@ -48,16 +49,15 @@ Weekly discovery is a proposal plane, not an authority plane. Seven profile-loca
 
 ## Control flow
 
-1. Lior sends a request to LNX.
-2. LNX decides whether it is a personal commitment, a direct answer, or delegated work.
-3. Delegated work is routed to the correct project board and lead.
-4. A lead decomposes work and assigns a specialist only when the specialist contract fits.
-5. Workers attach verifiable artifacts or references and identify blockers.
-6. The lead synthesizes; LNX escalates decisions or reports outcomes to Lior.
+1. Lior sends project requests and decision responses directly to the responsible Lead in that project's Discord channel; portfolio-wide matters go to LNX.
+2. The Lead owns the specification-level objective, acceptance criteria, project Kanban work, and verified outcome.
+3. The Lead decomposes work and assigns specialists only when their contracts fit; specialists report to that Lead.
+4. Workers attach verifiable artifacts or references and identify blockers. The Lead resumes on relevant events, recovers autonomously within granted authority, and proactively asks Lior directly only for a concrete human-only decision.
+5. The Lead verifies exact-head evidence and reports the outcome directly to Lior. LNX independently monitors portfolio health and cross-project risks without controlling project task state or claiming a Lead's completion.
 
 ## Deliberate non-goals
 
-The initial system has no external workflow engine, second team-chat plane, bespoke multi-agent runtime, or messaging bot for every internal role. Profiles and Kanban supply the required isolation and durable coordination.
+The system has no external workflow engine, second team-chat plane, bespoke multi-agent runtime, or separate messaging bot for every internal role. Hermes profile routing provides direct lead conversations in the three named project channels; profiles and Kanban supply the required role separation and durable coordination.
 
 ## Trust boundary
 
