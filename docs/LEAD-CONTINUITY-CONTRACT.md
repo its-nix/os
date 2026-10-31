@@ -1,6 +1,6 @@
 # Lead continuity contract (issue #49)
 
-Status: repository contract based on merged monitoring PR #48 and verified native Hermes interfaces. This does not claim runtime activation, live delivery, role execution, or successful wake.
+Status: repository-only preview contract based on merged monitoring PR #48. CLI help/source evidence is not proof of a live subscription, delivery, or wake; none is claimed.
 
 ## Authority and source of truth
 
@@ -8,7 +8,7 @@ The manifest-declared project Lead owns objective acceptance and every recovery 
 
 ## Native Kanban contract
 
-Use Hermes Kanban's durable parent/child links, task events and subscription cursor claims; the supported notifier mode is `notify+wake`. The subscription command contract is `hermes kanban notify-subscribe` with `--platform`, `--chat-id`, `--notifier-profile`, and `--delivery-mode notify+wake`. Route values are supplied by the repository manifest/configuration; do not bake project IDs or channel IDs into generic code. This is a supported interface contract, not evidence that any subscription is installed or a wake delivered. A notifier event is a hint: Lead rereads authoritative task state and avoids acting on stale/duplicate signals.
+Use Hermes Kanban's durable parent/child links, task events and subscription cursor claims; the supported notifier mode is `notify+wake`. The subscription command contract is `hermes kanban notify-subscribe` with `--platform`, `--chat-id`, `--notifier-profile`, and `--delivery-mode notify+wake`. Route values are supplied by the repository manifest/configuration; do not bake project IDs or channel IDs into generic code. Automated read-only `hermes kanban notify-subscribe --help` and source-contract checks establish CLI interface exposure only. They do not invoke the mutating subcommand or prove a subscription is installed, a notification delivered, or a wake received. A notifier event is a hint: Lead rereads authoritative task state and avoids acting on stale/duplicate signals.
 
 Webhook routing, if separately authorized and configured, uses the native `subscribe --route-profile <profile> --cron-job <existing job>` surface. This repository change does not activate it. Existing permissions, `approvals.mode=manual`, `approvals.cron_mode=deny`, and `kanban.dispatch_in_gateway=true` remain unchanged.
 
@@ -16,11 +16,11 @@ Webhook routing, if separately authorized and configured, uses the native `subsc
 
 PR #48's `automation/monitoring/collector.py` gathers aggregate PR check counts/failure identities, but does not collect each PR's current `headRefOid` or CI run/check IDs and conclusions for that exact SHA. Therefore exact-head GitHub evidence is unknown/not available from this collector; do not derive it from aggregate failures or fabricate a matching SHA. Preserve unknown/partial until a separate authorized read obtains PR head SHA and check evidence, and the Lead reads it back. The pure normalization helpers can validate an explicitly supplied SHA, but do not themselves establish evidence provenance.
 
-GitHub route envelope/event keys are deterministic correlation values only. `accept_once` is an in-process fixture helper; it loses state with the process. Neither hashing nor a preview envelope guarantees durable replay suppression, delivery, or wake. Native route/task-level idempotency and live behavior require separate verification.
+GitHub route envelope/event keys (including `correlation_key`) are deterministic correlation values only and do not enforce deduplication. `accept_once` is an in-process fixture helper; it loses state with the process. Neither hashing nor a preview envelope guarantees durable replay suppression, delivery, or wake. Native route/task-level idempotency and live behavior require separate verification.
 
 ## Tests and claims
 
-Tests here exercise sanitization, exact-head input validation, deterministic preview output, and mocked/in-process boundaries. They do not demonstrate a live webhook, listener, subscription, notification, Lead wake, decision, or recovery execution. Reuse PR #48's monitoring/recovery implementation; do not add another collector, recovery engine, store, or workflow.
+Tests here exercise sanitization, exact-head input validation, deterministic preview output, the read-only CLI help flags when Hermes CLI is available, and mocked/in-process boundaries. They do not demonstrate a live webhook, listener, subscription, notification, Lead wake, decision, or recovery execution. Reuse PR #48's monitoring/recovery implementation; do not add another collector, recovery engine, store, or workflow.
 
 ## Rollout gate
 

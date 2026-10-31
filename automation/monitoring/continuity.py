@@ -1,6 +1,11 @@
 """Normalize sanitized Kanban/GitHub observations into stable Lead signals.
 
 This module is deliberately policy-free: it never performs recovery actions.
+It normalizes bounded native Kanban terminal observations and GitHub checks into
+manifest-bound Lead signals. This is distinct from collector.stable_events,
+which stabilizes aggregate monitoring report events, and github_signals, which
+normalizes individual GitHub webhook evidence into preview route envelopes.
+This helper is not currently wired to a runtime route or delivery path.
 """
 from __future__ import annotations
 

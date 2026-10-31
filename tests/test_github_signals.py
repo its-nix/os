@@ -39,11 +39,11 @@ class GitHubSignalTests(unittest.TestCase):
         self.assertEqual(first["evidence"]["head_sha"], self.SHA)
         self.assertEqual(first["route_profile"], "pulse")
         self.assertTrue(first["preview_only"])
-        self.assertEqual(first["idempotency_key"], replay["idempotency_key"])
+        self.assertEqual(first["correlation_key"], replay["correlation_key"])
         other_parent = lead_route_envelope(
             signal, parent_task_id="objective-15", lead_profile="pulse", cron_job="lead-reconcile"
         )
-        self.assertNotEqual(first["idempotency_key"], other_parent["idempotency_key"])
+        self.assertNotEqual(first["correlation_key"], other_parent["correlation_key"])
 
     def test_rejects_unbound_or_malformed_evidence(self):
         with self.assertRaises(ValueError):

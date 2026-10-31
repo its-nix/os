@@ -74,8 +74,8 @@ def lead_route_envelope(
 ) -> dict:
     """Build a deterministic preview envelope; this does not enforce idempotency.
 
-    The key is a correlation hint for an existing native route/task path, not a
-    claim that duplicate delivery or work is suppressed here.
+    The correlation_key is a hint for an existing native route/task path. It does
+    not enforce dedupe or suppress duplicate delivery/work.
     """
     for value, field in ((parent_task_id, "parent_task_id"), (lead_profile, "lead_profile"), (cron_job, "cron_job")):
         if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value) is None:
@@ -86,13 +86,13 @@ def lead_route_envelope(
         raise ValueError("signal must identify an exact head SHA")
     if re.fullmatch(r"[0-9a-f]{64}", str(signal.get("event_key", ""))) is None:
         raise ValueError("invalid event_key")
-    action_key = hashlib.sha256(f"{parent_task_id}\\0{signal['event_key']}".encode()).hexdigest()
+    action_key = hashlib.sha256(f"{parent_task_id}\0{signal['event_key']}".encode()).hexdigest()
     return {
         "route_profile": lead_profile,
         "cron_job": cron_job,
         "parent_task_id": parent_task_id,
         "event_key": signal["event_key"],
-        "idempotency_key": action_key,
+        "correlation_key": action_key,
         "preview_only": True,
         "evidence": {
             key: signal[key]
@@ -111,4 +111,3 @@ def accept_once(signal: dict, seen: set[str]) -> bool:
         return False
     seen.add(key)
     return True
-
