@@ -47,6 +47,19 @@ python3 scripts/reconcile-discord-profile-routes.py --apply
 
 After an apply, restart the active Hermes gateway and verify the three routes with `hermes config get gateway.profile_routes`; other Discord channels and DMs remain on LNX/default. The script refuses to replace any unexpected pre-existing route set.
 
+## GitHub webhook route preview
+
+`automation/monitoring/github-webhook-routes.json` binds each project to its governed repository from `automation/monitoring/policy.json`, its Lead profile from `nix-os.yaml`, and a project-specific bounded stdin adapter. Preview only the native Hermes agent-mode subscription argv with `python3 scripts/preview-github-webhook-routes.py --preview`; the command never executes subscriptions. The wrappers in `scripts/` are repository sources, not directly runnable Hermes script paths. A future, separately authorized staging step must copy these exact sources under `$HERMES_HOME/scripts` (Hermes resolves relative `--script` paths from that directory):
+
+| Source | Target beneath `$HERMES_HOME/scripts/` |
+| --- | --- |
+| `scripts/github-webhook-pulse.py` | `nix-github-webhooks/github-webhook-pulse.py` |
+| `scripts/github-webhook-algua.py` | `nix-github-webhooks/github-webhook-algua.py` |
+| `scripts/github-webhook-meabeclick.py` | `nix-github-webhooks/github-webhook-meabeclick.py` |
+| `automation/monitoring/github_webhook.py` | `github_webhook.py` |
+
+Inspect this map without writing files using `python3 scripts/preview-github-webhook-routes.py --staging-plan`. The shared module is staged at the scripts root (`github_webhook.py`); wrappers in `nix-github-webhooks/` add that parent directory to their import path and, when run from this repository, import the package module instead. This repository change performs no staging or activation. The wrapper infers only check-run, review, or pull-request event families from payload shape because Hermes supplies JSON stdin, not GitHub headers. Native durable admission suppresses delivery retries, but this is not exactly-once Lead action; each Lead must reread canonical Kanban and live exact-head PR state. No subscriptions, secrets, public ingress/listener, or runtime changes are part of this repository contract. A separate public-ingress/listener/secret setup and live readback gate is required.
+
 ## Hermes default-profile maintenance
 
 `scripts/reconcile-hermes-default.sh` declares the non-secret settings that

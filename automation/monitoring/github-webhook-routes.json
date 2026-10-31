@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "status": "preview_contract_only",
+  "activation": "disabled",
+  "staging": {
+    "scripts_subdirectory": "nix-github-webhooks",
+    "shared_module_target": "github_webhook.py",
+    "source_to_target": {
+      "scripts/github-webhook-pulse.py": "nix-github-webhooks/github-webhook-pulse.py",
+      "scripts/github-webhook-algua.py": "nix-github-webhooks/github-webhook-algua.py",
+      "scripts/github-webhook-meabeclick.py": "nix-github-webhooks/github-webhook-meabeclick.py",
+      "automation/monitoring/github_webhook.py": "github_webhook.py"
+    }
+  },
+  "route_mode": "agent",
+  "profile_binding_source": "nix-os.yaml discord_profile_routes joined to projects.lead and profiles.hermes_profile",
+  "routes": [
+    {
+      "project": "pulse",
+      "lead": "pulse",
+      "repository": "its-nix/pulse",
+      "route_name": "pulse-channel",
+      "script": "nix-github-webhooks/github-webhook-pulse.py"
+    },
+    {
+      "project": "algua",
+      "lead": "algua",
+      "repository": "its-nix/algua",
+      "route_name": "algua-channel",
+      "script": "nix-github-webhooks/github-webhook-algua.py"
+    },
+    {
+      "project": "meabeclick",
+      "lead": "meabeclick",
+      "repository": "its-nix/meabeclick",
+      "route_name": "meabeclick-channel",
+      "script": "nix-github-webhooks/github-webhook-meabeclick.py"
+    }
+  ],
+  "events": {
+    "check_run": [
+      "completed"
+    ],
+    "pull_request_review": [
+      "submitted",
+      "dismissed"
+    ],
+    "pull_request": [
+      "opened",
+      "reopened",
+      "synchronize",
+      "closed"
+    ]
+  },
+  "delivery_semantics": "native durable admission suppresses delivery retries; not exactly-once Lead action or side effects",
+  "action_requirement": "Lead rereads canonical Kanban and live exact-head PR state before action",
+  "forbidden_modes": [
+    "cron_job",
+    "coalesce",
+    "deliver_only"
+  ]
+}
