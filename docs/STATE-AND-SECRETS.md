@@ -29,6 +29,8 @@ Hermes resolves state under `$HERMES_HOME`; when unset, it uses `${HOME}/.hermes
 
 Existing local profile directories are treated as user-owned. If a directory or identity file already exists, bootstrap reports it and makes no profile-level changes. Configuration remains a deliberate manual operation through Hermes CLI commands.
 
+For a separately authorized future SOUL reconciliation, `scripts/reconcile-live-lead-contracts.py` is preview-only by default and prints a unified diff. It targets only the three existing project Lead SOUL files, refuses missing/unsafe/changed targets and non-unique expected anchors, preserves unrelated content and modes, writes owner-only backups outside Git, atomically replaces files, and verifies exact readback. `--apply` is explicit and must not be used without authorization; this repository task does not apply it to live profiles. Never treat canonical `ROLE.md` as proof of live SOUL activation and never bulk-copy it over an existing SOUL.
+
 ## Skill and scout state
 
 Role-pack manifests and schemas are reviewable Git state. Installed skill copies belong to each exact local profile home and are never imported back into the repository. NixKit checkouts and authentication stores remain user-owned. The installation wrapper reads only Git metadata, the pinned source manifest, and destination paths; it never reads secrets.
