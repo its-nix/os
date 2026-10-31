@@ -18,21 +18,35 @@ class SimulatedAdmission:
         self.ids.add(delivery_id); return True
 
 
+class InMemoryFixtureStore:
+    """Synthetic test fixtures only; not native Kanban/GitHub canonical state."""
+    def __init__(self, task, evidence):
+        self.task, self.evidence = task, evidence
+        self.task_reads = self.evidence_reads = 0
+    def read_task(self, task_id):
+        self.task_reads += 1
+        return json.loads(json.dumps(self.task)) if self.task.get('id') == task_id else None
+    def read_evidence(self):
+        self.evidence_reads += 1
+        return json.loads(json.dumps(self.evidence))
+
+
 class SimulatedLead:
-    """Test-only Lead session rereading canonical task/evidence fixtures."""
-    def __init__(self, lead, profile, task, evidence):
-        self.lead, self.profile, self.task, self.evidence = lead, profile, task, evidence
-        self.wakes = []
+    """Test-only Lead wake capture and fixture reread, not a Hermes session."""
+    def __init__(self, lead, profile, store):
+        self.lead, self.profile, self.store = lead, profile, store
+        self.wakes, self.planner_calls = [], 0
     def wake(self, payload): self.wakes.append(payload)
-    def reread_and_consider(self, expected_sha):
-        task = json.loads(json.dumps(self.task)); evidence = json.loads(json.dumps(self.evidence))
-        if task.get('id') not in ('objective-1', 'task-1') or task['status'] not in ('open', 'blocked') or evidence.get('head_sha') != expected_sha:
-            return False
-        if (evidence.get('fresh') is not True or len(expected_sha) != 40
-                or evidence.get('pr_number') != 49 or evidence.get('check_id') != 77
-                or evidence.get('check_conclusion') != 'failure'):
-            return False
-        return True
+    def reread(self, task_id, expected):
+        task = self.store.read_task(task_id); evidence = self.store.read_evidence()
+        keys = ('project', 'repo', 'pr_number', 'check_id', 'head_sha', 'fresh')
+        return bool(task and task.get('id') == expected['task_id'] and task.get('status') in ('open','blocked')
+                    and all(evidence.get(k) == expected[k] for k in keys)
+                    and len(expected['head_sha']) == 40 and evidence.get('fresh') is True)
+    def plan_after_reread(self, task_id, expected, request, manifest, policy):
+        if not self.reread(task_id, expected): return None
+        self.planner_calls += 1
+        return recovery.prepare(request, manifest, policy)
 
 
 class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
@@ -40,65 +54,74 @@ class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
         self.manifest = json.loads((ROOT/'nix-os.yaml').read_text())
         self.routes = json.loads((ROOT/'automation/monitoring/github-webhook-routes.json').read_text())
 
-    def test_simulated_delivery_replay_route_reread_and_approval_boundary(self):
+    def test_simulated_replay_fallback_wake_reread_and_approval_boundary(self):
         route = next(r for r in self.routes['routes'] if r['project'] == 'pulse')
         project = next(p for p in self.manifest['projects'] if p['id'] == route['project'])
         board, lead = recovery.governed(self.manifest, project['id'])
         profile = next(p['hermes_profile'] for p in self.manifest['profiles'] if p['id'] == lead)
         self.assertEqual((lead, profile, board), ('pulse', 'pulse', 'pulse'))
         sha = 'a'*40
-        signal = adapt_payload('check_run', {'action':'completed', 'repository':{'full_name':route['repository']},
-            'check_run':{'id':77,'status':'completed','conclusion':'failure','head_sha':sha,
-                         'pull_requests':[{'number':49}]}}, approved_repository=route['repository'])
-        self.assertIsNotNone(signal)
-        assert signal is not None
         admission = SimulatedAdmission()
-        self.assertTrue(admission.admit('delivery-1')); self.assertFalse(admission.admit('delivery-1'))
-        lead_session = SimulatedLead(lead, profile, {'id':'objective-1','status':'open'},
-                                     {'head_sha':signal['head_sha'],'fresh':True,'pr_number':49,'check_id':77,'check_conclusion':'failure'})
-        # Captured wake is an in-process test double, not a sent/woken Hermes session.
-        lead_session.wake({'project':project['id'], 'lead':lead, 'profile':profile, 'signal':signal})
-        self.assertEqual(len(lead_session.wakes), 1)
-        self.assertTrue(lead_session.reread_and_consider(sha))
-        for bad_task, bad_evidence in [
-            ({'id':'objective-1','status':'done'}, {'head_sha':sha,'fresh':True,'pr_number':49,'check_id':77,'check_conclusion':'failure'}),
-            ({'id':'objective-1','status':'open'}, {'head_sha':'b'*40,'fresh':True,'pr_number':49,'check_id':77,'check_conclusion':'failure'}),
-            ({'id':'unknown','status':'open'}, {'head_sha':sha,'fresh':True,'pr_number':49,'check_id':77,'check_conclusion':'failure'}),
-            ({'id':'objective-1','status':'open'}, {'head_sha':sha,'fresh':False,'pr_number':49,'check_id':77,'check_conclusion':'failure'}),
-        ]:
-            self.assertFalse(SimulatedLead(lead,profile,bad_task,bad_evidence).reread_and_consider(sha))
-        # Simulation only: a missed-event fallback routes a canonical synthetic
-        # event through the very same capture path used above; no Hermes API.
-        def simulated_capture(canonical_event):
-            signal = adapt_payload('check_run', canonical_event, approved_repository=route['repository'])
-            if signal is None or not admission.admit(canonical_event['delivery_id']):
-                return False
-            lead_session.wake({'project':project['id'], 'lead':lead, 'profile':profile, 'signal':signal})
+        store = InMemoryFixtureStore({'id':'objective-1','status':'open'}, {
+            'task_id':'objective-1', 'project':'pulse', 'repo':route['repository'], 'pr_number':49,
+            'check_id':77, 'head_sha':sha, 'fresh':True, 'check_name':'CI', 'check_conclusion':'failure'})
+        session = SimulatedLead(lead, profile, store)
+        expected = {'task_id':'objective-1','project':'pulse','repo':route['repository'],'pr_number':49,
+                    'check_id':77,'head_sha':sha,'fresh':True}
+
+        def pipeline(delivery_id, payload):
+            if not admission.admit(delivery_id): return False
+            signal = adapt_payload('check_run', payload, approved_repository=route['repository'])
+            if signal is None: return False
+            session.wake({'project':project['id'], 'lead':lead, 'profile':profile, 'signal':signal})
             return True
+
+        initial = {'action':'completed','repository':{'full_name':route['repository']},
+          'check_run':{'id':77,'status':'completed','conclusion':'failure','head_sha':sha,'pull_requests':[{'number':49}]}}
+        self.assertTrue(pipeline('delivery-1', initial))
+        self.assertFalse(pipeline('delivery-1', initial))
+        self.assertEqual(len(session.wakes), 1)
+        self.assertEqual(session.wakes[0]['lead'], lead)
+        self.assertTrue(session.reread('objective-1', expected))
+        self.assertEqual((store.task_reads, store.evidence_reads), (1,1))
+
+        # Test-only fallback scans a synthetic snapshot for an outstanding event.
+        # No production fallback function exists; this is not runtime proof.
+        def test_only_fallback(snapshot):
+            for event in snapshot:
+                if event.get('outstanding') and pipeline(event['delivery_id'], event['payload']):
+                    return True
+            return False
         missed = {'action':'completed','repository':{'full_name':route['repository']},
-          'check_run':{'id':78,'status':'completed','conclusion':'failure','head_sha':sha,'pull_requests':[{'number':49}]},
-          'delivery_id':'synthetic-missed-event'}
-        before_wakes = len(lead_session.wakes)
-        self.assertTrue(simulated_capture(missed))
-        self.assertEqual(len(lead_session.wakes), before_wakes + 1)
-        self.assertEqual(lead_session.wakes[-1]['lead'], 'pulse')
-        self.assertEqual(lead_session.wakes[-1]['signal']['head_sha'], sha)
-        # Pure planner can propose only; protected action still stops at approval.
-        request = {'plan':{'project_id':'pulse','source_task_id':'task-1','source_kind':'blocked_task',
-          'event_key':'c'*64,'action':'repair-worker','title':'Inspect failure','summary':'Inspect exact-head failure.',
-          'acceptance_check':'Fresh checks pass.'}, 'source_evidence':{'id':'task-1','status':'blocked','source':'immutable_checkpoint_sqlite','complete':True,'observed_at':datetime.now(timezone.utc).isoformat()},
-          'recovery_history':{'board_id':'pulse','event_key':'c'*64,'source':'immutable_checkpoint_sqlite',
-             'observed_at':datetime.now(timezone.utc).isoformat(),'complete':True,'tasks':[]}}
-        # Use policy fixture governed for real repo/project; planner stays pure.
+          'check_run':{'id':78,'status':'completed','conclusion':'failure','head_sha':sha,'pull_requests':[{'number':49}]}}
+        snapshot = [{'outstanding':True,'delivery_id':'synthetic-missed-event','payload':missed}]
+        self.assertTrue(test_only_fallback(snapshot))
+        self.assertEqual(len(session.wakes), 2)
+        self.assertEqual(session.wakes[-1]['lead'], lead)
+        self.assertFalse(test_only_fallback(snapshot))
+        self.assertEqual(len(session.wakes), 2)
+
         policy = json.loads((ROOT/'automation/monitoring/policy.json').read_text())
-        proposal = recovery.prepare(request, self.manifest, policy)
+        now = datetime.now(timezone.utc).isoformat()
+        request = {'plan':{'project_id':'pulse','source_kind':'repo_check','repo':route['repository'],
+          'pr_number':49,'check_name':'CI','event_key':'c'*64,'action':'deploy','title':'Deploy verified fix',
+          'summary':'Review exact-head check evidence before deployment.', 'acceptance_check':'Human approves deployment.'},
+          'source_evidence':{'complete':True,'source':'github_checks_read','observed_at':now,'repo':route['repository'],
+            'repo':route['repository'],'pr_number':49,'state':'OPEN', 'checks':[{'name':'CI','conclusion':'FAILURE'}]},
+          'recovery_history':{'board_id':'pulse','event_key':'c'*64,'source':'immutable_checkpoint_sqlite','observed_at':now,'complete':True,'tasks':[]}}
+        proposal = session.plan_after_reread('objective-1', expected, request, self.manifest, policy)
         self.assertEqual(proposal['result'], 'approval_required')
         self.assertTrue(proposal['requires_human_approval'])
         self.assertEqual(proposal['assignee'], lead)
-        self.assertEqual(proposal['creation_channel'], 'approval_gated_native_kanban')
-        side_effects = []  # simulation assertion: prepare is a pure proposal only
-        self.assertEqual(side_effects, [])
         self.assertNotIn('task_id', proposal)
         self.assertNotIn('created', proposal)
+        self.assertEqual(session.planner_calls, 1)
+
+        for bad in [dict(expected, project='other'), dict(expected, repo='other/repo'),
+                    dict(expected, pr_number=50), dict(expected, check_id=999),
+                    dict(expected, head_sha='b'*40), dict(expected, fresh=False)]:
+            before = session.planner_calls
+            self.assertIsNone(session.plan_after_reread('objective-1', bad, request, self.manifest, policy))
+            self.assertEqual(session.planner_calls, before)
 
 if __name__ == '__main__': unittest.main()
