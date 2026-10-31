@@ -131,11 +131,24 @@ class ExactHeadEvidenceTests(unittest.TestCase):
                 self.assertEqual(evidence[0]["checks"], [])
 
     def test_started_at_null_only_for_not_yet_started_status(self):
-        runtime, _ = self.capture({"total_count": 1, "check_runs": [runrow(
-            status="queued", conclusion=None, started_at=None, completed_at=None)]})
-        check = runtime["repo_collection"]["base"]["exact_head_evidence"][0]["checks"][0]
-        self.assertIsNone(check["started_at"])
-        self.assertEqual(check["conclusion"], "unknown")
+        for status in ("queued", "waiting", "requested", "pending"):
+            runtime, _ = self.capture({"total_count": 1, "check_runs": [runrow(
+                status=status, conclusion=None, started_at=None, completed_at=None)]})
+            check = runtime["repo_collection"]["base"]["exact_head_evidence"][0]["checks"][0]
+            self.assertIsNone(check["started_at"])
+            self.assertEqual(check["conclusion"], "unknown")
+
+    def test_completed_null_completion_and_stale_conclusion(self):
+        runtime, _ = self.capture({"total_count": 1, "check_runs": [runrow(completed_at=None)]})
+        self.assertEqual(runtime["repo_collection"]["base"]["exact_head_evidence"][0]["checks"], [])
+        runtime, _ = self.capture({"total_count": 1, "check_runs": [runrow(conclusion="stale")]})
+        self.assertEqual(runtime["repo_collection"]["base"]["exact_head_evidence"][0]["status"], "available")
+
+    def test_duplicate_set_fails_closed_without_any_ids(self):
+        runtime, _ = self.capture({"total_count": 2, "check_runs": [runrow(), runrow()]})
+        evidence = runtime["repo_collection"]["base"]["exact_head_evidence"][0]
+        self.assertEqual(evidence["checks"], [])
+        self.assertEqual(evidence["status"], "partial")
 
 
 if __name__ == "__main__":
