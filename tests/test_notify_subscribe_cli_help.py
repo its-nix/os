@@ -15,10 +15,13 @@ class NotifySubscribeCliHelpTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         help_text = result.stdout + result.stderr
-        for flag in ("--platform", "--chat-id", "--notifier-profile", "--delivery-mode"):
+        for flag in ("--platform", "--chat-id", "--thread-id", "--chat-type", "--parent-chat-id", "--guild-id", "--notifier-profile", "--delivery-mode"):
             with self.subTest(flag=flag):
                 self.assertIn(flag, help_text)
         self.assertIn("notify+wake", help_text)
+        listing = subprocess.run([hermes, "kanban", "notify-list", "--help"], check=False, capture_output=True, text=True, timeout=15)
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertIn("--json", listing.stdout + listing.stderr)
 
 
 if __name__ == "__main__":
