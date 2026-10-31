@@ -105,6 +105,7 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
                                  check=True, text=True, capture_output=True)
         commands = json.loads(preview.stdout)
         self.assertEqual(len(commands), 3)
+        expected_chat_ids = {r["profile"]: r["chat_id"] for r in manifest["discord_profile_routes"]}
         for route, argv in zip(contract["routes"], commands):
             self.assertEqual(argv[:4], ["hermes", "webhook", "subscribe", route["route_name"]])
             self.assertIn("--route-profile", argv)
@@ -114,10 +115,36 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
             self.assertFalse(staged_relative.is_absolute())
             self.assertNotIn("..", staged_relative.parts)
             self.assertIn("--events", argv)
+            self.assertEqual(argv[argv.index("--deliver") + 1], "discord")
+            self.assertEqual(argv[argv.index("--deliver-chat-id") + 1], expected_chat_ids[route["lead"]])
             self.assertNotIn("--cron-job", argv)
             self.assertNotIn("--coalesce", argv)
             self.assertNotIn("--deliver-only", argv)
+            self.assertNotIn("log", argv)
         self.assertIn("not exactly-once", contract["delivery_semantics"])
+
+    def test_route_preview_refuses_missing_or_duplicate_bindings(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("preview_routes", ROOT / "scripts/preview-github-webhook-routes.py")
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
+        manifest = json.loads((ROOT / "nix-os.yaml").read_text())
+        pulse_binding = next(r for r in manifest["discord_profile_routes"] if r["profile"] == "pulse")
+        for mutate in (
+            lambda m: m["discord_profile_routes"].remove(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")),
+            lambda m: m["discord_profile_routes"].append(dict(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse"))),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "platform": "telegram"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "name": "wrong-route"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "chat_id": "１２３"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "chat_id": "not-a-number"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "chat_id": "0"}),
+        ):
+            changed = json.loads(json.dumps(manifest))
+            mutate(changed)
+            with self.assertRaises(ValueError):
+                module.render(contract, changed)
 
     def test_staged_wrappers_and_module_work_in_isolated_hermes_home(self):
         contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
