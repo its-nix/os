@@ -1,6 +1,6 @@
 import unittest
 
-from automation.monitoring.github_signals import accept_once, lead_route_envelope, normalize_signal
+from automation.monitoring.github_signals import normalize_signal
 
 
 class GitHubSignalTests(unittest.TestCase):
@@ -13,37 +13,13 @@ class GitHubSignalTests(unittest.TestCase):
         next_head = normalize_signal({**base, "head_sha": "b" * 40, "conclusion": "success"}, repository="its-nix/os", pr_number=49)
         self.assertEqual(queued["head_sha"], self.SHA)
         self.assertEqual(success["status"], "success")
-        self.assertNotEqual(queued["event_key"], success["event_key"])
-        self.assertNotEqual(success["event_key"], next_head["event_key"])
+        self.assertNotEqual(queued["head_sha"], next_head["head_sha"])
 
-    def test_review_status_and_repeated_delivery_dedupe(self):
+    def test_review_status_is_normalized_without_claiming_delivery_deduplication(self):
         payload = {"kind": "review", "review_id": 77, "state": "approved", "head_sha": self.SHA}
         first = normalize_signal(payload, repository="its-nix/os", pr_number=49)
-        repeated = normalize_signal(dict(payload), repository="its-nix/os", pr_number=49)
-        seen = set()
-        self.assertEqual(first, repeated)
-        self.assertTrue(accept_once(first, seen))
-        self.assertFalse(accept_once(repeated, seen))
-
-    def test_profile_route_envelope_is_exact_head_parent_scoped_and_idempotent(self):
-        payload = {"kind": "review", "review_id": 77, "state": "approved", "head_sha": self.SHA}
-        signal = normalize_signal(payload, repository="example/repo", pr_number=14)
-        first = lead_route_envelope(
-            signal, parent_task_id="objective-14", lead_profile="pulse", cron_job="lead-reconcile"
-        )
-        replay = lead_route_envelope(
-            normalize_signal(dict(payload), repository="example/repo", pr_number=14),
-            parent_task_id="objective-14", lead_profile="pulse", cron_job="lead-reconcile"
-        )
-        self.assertEqual(first, replay)
-        self.assertEqual(first["evidence"]["head_sha"], self.SHA)
-        self.assertEqual(first["route_profile"], "pulse")
-        self.assertTrue(first["preview_only"])
-        self.assertEqual(first["correlation_key"], replay["correlation_key"])
-        other_parent = lead_route_envelope(
-            signal, parent_task_id="objective-15", lead_profile="pulse", cron_job="lead-reconcile"
-        )
-        self.assertNotEqual(first["correlation_key"], other_parent["correlation_key"])
+        self.assertEqual(first["review_id"], "77")
+        self.assertNotIn("event_key", first)
 
     def test_rejects_unbound_or_malformed_evidence(self):
         with self.assertRaises(ValueError):
