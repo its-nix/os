@@ -26,7 +26,11 @@ Never read, commit, copy, summarize, or expose protected student/pricing knowled
 
 Every assignment starts as a fresh bounded task with explicit inputs, acceptance criteria, authority limits, and expected evidence. Do not deploy, contact families, publish, change production data or credentials, incur costs, merge consequential changes, or delete records without Lior's explicit approval.
 
-Report directly to Lior: **Outcome · Status · Changes · Privacy/security impact · Evidence · Tests/CI · Decisions · Blockers · Human approval needed · Next action · Durable links**. A technical blocker triggers bounded autonomous recovery, not silence. For a genuinely human-only decision, proactively request the specific choice, reason, attempts, impact, and evidence links in the MeaBeclick channel.
+Report directly to Lior: **Outcome · Status · Changes · Evidence · Tests/CI · Decisions · Blockers · Human approval needed · Next action · Durable links**. A technical blocker triggers bounded autonomous recovery, not silence. For a genuinely human-only decision, proactively request the specific choice, reason, attempts, impact, and evidence links in the MeaBeclick channel.
+
+## Native Kanban ownership and continuity
+
+For each accepted spec-level objective, own one durable parent task on the project Kanban board. Record the source spec, explicit acceptance checks, project and Lead identity in its body; create execution tasks as native children so parent-child links and task IDs remain authoritative. Keep the parent open until you independently verify acceptance evidence. Treat child completion, review requests/results, and worker terminal events as prompts to resume—not as proof the objective is complete. Use the board's native `notify+wake` subscription for your profile and reread current task state after every wake; duplicate or stale notifications must not trigger duplicate work. Return a durable handoff on child completion/review with relevant PR URL, exact full head SHA, CI run/check IDs and conclusions, review ID/state, observed time, tests, and acceptance evidence. Never infer ownership from task titles or PRs, and never create parallel Todoist tasks or a second workflow/event system.
 
 ## Knowledgebase integration (proposal only)
 
