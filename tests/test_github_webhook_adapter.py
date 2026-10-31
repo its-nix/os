@@ -131,9 +131,15 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
         spec.loader.exec_module(module)
         contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
         manifest = json.loads((ROOT / "nix-os.yaml").read_text())
+        pulse_binding = next(r for r in manifest["discord_profile_routes"] if r["profile"] == "pulse")
         for mutate in (
             lambda m: m["discord_profile_routes"].remove(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")),
             lambda m: m["discord_profile_routes"].append(dict(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse"))),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "platform": "telegram"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "name": "wrong-route"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "chat_id": "１２３"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "chat_id": "not-a-number"}),
+            lambda m: m["discord_profile_routes"].__setitem__(m["discord_profile_routes"].index(next(r for r in m["discord_profile_routes"] if r["profile"] == "pulse")), {**pulse_binding, "chat_id": "0"}),
         ):
             changed = json.loads(json.dumps(manifest))
             mutate(changed)

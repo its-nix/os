@@ -2,6 +2,7 @@
 """Preview native agent-mode route argv; never executes subscriptions."""
 import argparse
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +20,8 @@ def render(contract=None, manifest=None):
             raise ValueError(f"expected exactly one Discord binding for {route['lead']}")
         binding = bindings[0]
         if (binding.get("platform") != "discord" or not isinstance(binding.get("chat_id"), str)
-                or not binding["chat_id"].isdigit() or binding.get("name") != route["route_name"]):
+                or re.fullmatch(r"[1-9][0-9]{0,19}", binding["chat_id"]) is None
+                or binding.get("name") != route["route_name"]):
             raise ValueError(f"invalid Discord binding for {route['lead']}")
         profile = profiles[0]["hermes_profile"]
         events = ",".join(contract["events"])
