@@ -4,6 +4,7 @@ import re
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 
 from automation.monitoring import recovery
 from automation.monitoring.github_webhook import adapt_payload
@@ -34,15 +35,21 @@ class InMemoryFixtureStore:
 
 class SimulatedLead:
     """Test-only Lead wake capture and fixture reread, not a Hermes session."""
-    def __init__(self, lead, profile, store):
+    def __init__(self, lead, profile, store, objective_contract):
         self.lead, self.profile, self.store = lead, profile, store
+        self.objective_contract = objective_contract
         self.wakes, self.planner_calls = [], 0
     def wake(self, payload): self.wakes.append(payload)
     def reread(self, task_id, expected):
         task = self.store.read_task(task_id); evidence = self.store.read_evidence()
         keys = ('project', 'repo', 'pr_number', 'check_id', 'head_sha', 'fresh')
-        return bool(task and task.get('id') == expected['task_id'] and task.get('project') == expected['project']
+        objective = self.objective_contract
+        return bool(task and task_id == objective['task_id'] and expected['task_id'] == objective['task_id']
+                    and expected['project'] == objective['project_id']
+                    and task.get('id') == objective['task_id'] and task.get('project') == objective['project_id']
                     and task.get('status') in ('open','blocked')
+                    and evidence.get('task_id') == objective['task_id']
+                    and evidence.get('project') == objective['project_id']
                     and all(evidence.get(k) == expected[k] for k in keys)
                     and re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})', evidence.get('head_sha', ''))
                     and evidence.get('fresh') is True)
@@ -65,10 +72,11 @@ class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
         self.assertEqual((lead, profile, board), ('pulse', 'pulse', 'pulse'))
         sha = 'a'*40
         admission = SimulatedAdmission()
+        objective_contract = MappingProxyType({'task_id':'objective-1', 'project_id':'pulse'})
         store = InMemoryFixtureStore({'id':'objective-1','project':'pulse','status':'open'}, {
             'task_id':'objective-1', 'project':'pulse', 'repo':route['repository'], 'pr_number':49,
             'check_id':77, 'head_sha':sha, 'fresh':True, 'check_name':'CI', 'check_conclusion':'failure'})
-        session = SimulatedLead(lead, profile, store)
+        session = SimulatedLead(lead, profile, store, objective_contract)
         expected = {'task_id':'objective-1','project':project['id'],'repo':route['repository'],'pr_number':49,
                     'check_id':77,'head_sha':sha,'fresh':True}
 
@@ -144,5 +152,11 @@ class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
                 self.assertEqual(session.planner_calls, before)
         store.task.clear(); store.task.update(original_task)
         store.evidence.clear(); store.evidence.update(original_evidence)
+        # Both mutable records agree with each other, but conflict with the fixed objective.
+        store.task['project'] = 'algua'
+        store.evidence['project'] = 'algua'
+        before = session.planner_calls
+        self.assertIsNone(session.plan_after_reread('objective-1', expected, request, self.manifest, policy))
+        self.assertEqual(session.planner_calls, before)
 
 if __name__ == '__main__': unittest.main()
