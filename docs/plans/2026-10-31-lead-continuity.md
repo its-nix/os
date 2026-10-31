@@ -12,11 +12,17 @@
 
 ## Verified runtime constraints
 
-- Installed Hermes is `v0.22.5+1714.g9c36150` at `/home/liornisimov/.hermes/hermes-agent`, clean working tree and one local commit ahead of origin. Its CLI supports `kanban notify-subscribe --delivery-mode notify+wake --notifier-profile <profile>` and webhook routes bound with `--route-profile <profile>`.
+- Installed Hermes is `v0.22.5+1714.g9c36150` under `${HOME}/.hermes/hermes-agent`, clean working tree and one local commit ahead of origin. Read-only CLI help exposes `kanban notify-subscribe --delivery-mode notify+wake --notifier-profile <profile>`; this proves interface flags only, not subscription or wake delivery.
 - Native Kanban task creation auto-subscribes the originating gateway session by default; subscriptions are task-specific, durable, and can wake the source profile. Worker lifecycle events are durable; observer hooks are best-effort and are not the delivery guarantee.
-- Hermes webhooks can run a named profile and deliver its response to Discord, but webhook is currently disabled. Do not enable it, bind a listener, open a port, install a timer, or send live Discord test messages as part of repository implementation. Any runtime rollout must bind loopback only and be separately previewed/read back with approval.
+- Hermes source/CLI exposes profile-bound webhook routes, but no live webhook-to-Discord delivery has been verified. `platforms.webhook.enabled` is unset/not enabled. Do not enable it, bind any listener (including loopback), open a port, install a timer, or send live Discord test messages as part of repository implementation. Any later listener/service rollout needs separate approval, preview/readback, and network-security review; prefer a supported local polling path when it avoids inbound exposure.
 - `approvals.mode=manual`, `approvals.cron_mode=deny`, and `kanban.dispatch_in_gateway=true` must remain unchanged. Never let monitoring directly create tasks, alter code, merge, deploy, or cross finance/privacy/credential boundaries.
 - The OS source now includes merged PR #48 (`cf8dd8bb798c71caf05fa4ca9bb8550780ac3bc4`) and PR #52 (`f0f00cd7b5e403e108db93bba1ab66e77467e986`). #50 and #51 remain open pending live delivery/runtime proof.
+
+## Current implementation snapshot (2026-10-31)
+
+The candidate branch is a limited, repository-only preview contract—not completion of #49. It adds Lead role guidance for native Kanban parent/child evidence, pure exact-head check/review normalization and a preview envelope, a read-only CLI-help check, and explicit non-delivery/deduplication boundaries. It does not collect exact-head GitHub evidence, install subscriptions, deliver events or wakes, implement durable replay suppression/retries or missed-event reconciliation, prove direct proactive Discord delivery, or execute Lead-owned recovery. These acceptance items remain open.
+
+Read-only active-runtime observations: manifest and `gateway.profile_routes` match the three project-channel→Lead mappings; webhook enablement is unset/not enabled; no Kanban continuity subscriptions are installed for #49; `approvals.mode=manual`, `approvals.cron_mode=deny`, and `kanban.dispatch_in_gateway=true`; the existing MeaBeclick profile Cron job's latest run did not deliver because that profile has no enabled Discord platform. These observations do not authorize runtime changes.
 
 ## Task 1: Define durable Lead objective and event evidence contract
 
