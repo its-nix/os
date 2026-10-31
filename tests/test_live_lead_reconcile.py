@@ -11,9 +11,9 @@ mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 
 class ReconcileTests(unittest.TestCase):
     def setUp(self):
-        test_tmp = os.environ.get("HERMES_TEST_TMPDIR")
-        self.tmp = tempfile.TemporaryDirectory(dir=test_tmp) if test_tmp else tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=Path.home())
         self.root = Path(self.tmp.name)
+        self.root.chmod(0o700)
         self.paths = {}
         for name in mod.PROFILES:
             p = self.root / name / "SOUL.md"; p.parent.mkdir(); p.parent.chmod(0o700)
