@@ -4,18 +4,18 @@ Nix OS is a lean, declarative operating repository for the Nix portfolio. It des
 
 ## Current topology
 
-- **LNX (`default`)** is Lior's portfolio orchestrator and the sole Discord bot identity. The shared bot routes `#pulse`, `#algua`, and `#meabeclick` to their project lead profiles; other channels continue to LNX.
-- **Leads:** Pulse, Algua, and MeaBeclick.
+- **LNX (`default`)** owns company OS/infrastructure, cross-project coordination, portfolio priorities, and independent monitoring. It is not the routine project request router or required delivery messenger.
+- **Leads:** Pulse, Algua, and MeaBeclick own their project objectives, execution, recovery, and verified outcomes; Lior communicates with each directly in its dedicated channel.
 - **MeaBeclick specialists:** UX, Engineering, and Growth, routed through the MeaBeclick Lead.
 - **Boards/projects:** `pulse`, `algua`, and `meabeclick`.
 
-Internal profiles do not get separate messaging identities. The three named project channels are explicit exceptions to LNX handling the conversation: Hermes routes each channel to its matching lead profile while preserving the same LNX Discord account and LNX handling elsewhere. Leads still use Hermes Kanban for durable execution state and handoffs.
+The shared Discord bot routes each named project channel directly to its matching Lead profile and the portfolio channel to LNX. There are no extra bot identities. Leads use Hermes Kanban for durable execution state and handoffs; specialists report to their Lead. A Lead proactively contacts Lior directly when a human-only decision is required.
 
 ## Authority by plane
 
 | Plane | Authority |
 | --- | --- |
-| Discord | Human messaging, alerts, and live voice through LNX only |
+| Discord | Direct human-to-Lead project conversation; company/portfolio matters to LNX |
 | Todoist (`td`) | Tasks personally assigned to Lior; never delegated-agent work |
 | Hermes Kanban | Durable delegated execution, ownership, status, and handoffs |
 | GitHub and project docs | Durable technical artifacts, decisions, reviews, and evidence |

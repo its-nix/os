@@ -7,7 +7,7 @@ Nix is a six-human portfolio organization supported by seven role-isolated Herme
 ## Topology
 
 ```text
-Lior ⇄ Discord (single LNX bot identity)
+Lior ⇄ Discord (single shared bot identity)
           ├── #pulse ─────────────── Pulse Lead ───── Pulse board
           ├── #algua ─────────────── Algua Lead ───── Algua board
           ├── #meabeclick ────────── MeaBeclick Lead ─ MeaBeclick board
@@ -17,13 +17,13 @@ Lior ⇄ Discord (single LNX bot identity)
           └── other channels/DMs ─── LNX/default
 ```
 
-LNX is the sole Discord bot identity and portfolio front door. Three explicit channel routes let Lior talk directly with the matching project lead through that same bot; other Discord conversations continue to LNX. This changes the profile handling the channel, not the visible Discord account. Leads own project decomposition and synthesis. Specialists operate only inside their stated duties and return evidence to the MeaBeclick Lead.
+The shared bot routes each project channel directly to its matching Lead; the portfolio channel routes to LNX. LNX is not a required intermediary for ordinary project work, decisions, status, or escalation. This changes the profile handling the channel, not the visible Discord account. Leads own their outcomes, decomposition, recovery, synthesis, and direct communication with Lior. Specialists report to their Lead and operate only within their stated duties.
 
 ## Planes and sources of truth
 
 ### Human communication plane
 
-Discord carries requests, alerts, decision prompts, and live voice. It is not the canonical task ledger or evidence store. The three project text channels are explicitly routed to their leads; the bot's existing user allowlist remains unchanged, and internal profiles do not need separate platform accounts.
+Discord carries requests, alerts, decision prompts, and live voice. It is not the canonical task ledger or evidence store. The three project channels are explicitly routed to their Leads, and the portfolio channel is routed to LNX. The bot's existing user allowlist remains unchanged; profile routing does not create new bot identities or grant new authority.
 
 ### Personal commitment plane
 
@@ -49,12 +49,11 @@ Weekly discovery is a proposal plane, not an authority plane. Seven profile-loca
 
 ## Control flow
 
-1. Lior sends a request to LNX.
-2. LNX decides whether it is a personal commitment, a direct answer, or delegated work.
-3. Delegated work is routed to the correct project board and lead.
-4. A lead decomposes work and assigns a specialist only when the specialist contract fits.
-5. Workers attach verifiable artifacts or references and identify blockers.
-6. The lead synthesizes; LNX escalates decisions or reports outcomes to Lior.
+1. Lior sends project requests and decision responses directly to the responsible Lead in that project's Discord channel; portfolio-wide matters go to LNX.
+2. The Lead owns the specification-level objective, acceptance criteria, project Kanban work, and verified outcome.
+3. The Lead decomposes work and assigns specialists only when their contracts fit; specialists report to that Lead.
+4. Workers attach verifiable artifacts or references and identify blockers. The Lead resumes on relevant events, recovers autonomously within granted authority, and proactively asks Lior directly only for a concrete human-only decision.
+5. The Lead verifies exact-head evidence and reports the outcome directly to Lior. LNX independently monitors portfolio health and cross-project risks without controlling project task state or claiming a Lead's completion.
 
 ## Deliberate non-goals
 

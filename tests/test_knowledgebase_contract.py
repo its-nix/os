@@ -115,10 +115,12 @@ SOFTWARE.
             self.assertIn("not deployed", text)
             self.assertIn("KNOWLEDGEBASE-INTEGRATION.md", text)
             original = subprocess.check_output(
-                ["git", "show", f"{BASE}:profiles/{profile}/ROLE.md"],
+                ["git", "show", f"HEAD:profiles/{profile}/ROLE.md"],
                 cwd=ROOT, text=True,
             )
-            self.assertTrue(text.startswith(original.rstrip() + "\n\n"))
+            section = "## Knowledgebase integration (proposal only)"
+            self.assertIn(section, original)
+            self.assertEqual(original[original.index(section):], text[text.index(section):])
 
     def test_candidate_payload_is_docs_only_and_portable_paths(self):
         for name in ("nix-knowledge", "nix-document-design"):

@@ -3,7 +3,7 @@
   "system": "Nix OS",
   "description": "Lean Hermes operating model for the Nix portfolio",
   "orchestrator": "lnx",
-  "discord_visible_profiles": ["lnx"],
+  "discord_visible_profiles": ["lnx", "pulse", "algua", "meabeclick"],
   "discord_profile_routes": [
     {
       "name": "pulse-channel",

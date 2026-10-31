@@ -326,8 +326,8 @@ def _validate_manifest(root: Path, manifest: dict[str, Any], errors: list[str]) 
         errors.append(f"manifest projects must be exactly {sorted(EXPECTED_PROJECTS)}")
     if manifest.get("orchestrator") != "lnx":
         errors.append("manifest orchestrator must be lnx")
-    if manifest.get("discord_visible_profiles") != ["lnx"]:
-        errors.append("the sole Discord bot identity must remain lnx")
+    if manifest.get("discord_visible_profiles") != ["lnx", "pulse", "algua", "meabeclick"]:
+        errors.append("Discord-visible profiles must include LNX and the three directly routed project leads")
     if manifest.get("discord_profile_routes") != EXPECTED_DISCORD_PROFILE_ROUTES:
         errors.append("Discord profile routes must map the three project channels to their matching leads")
     todoist = manifest.get("todoist")

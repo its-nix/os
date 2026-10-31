@@ -350,7 +350,7 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertEqual("default", profiles["lnx"]["hermes_profile"])
         self.assertEqual("lnx", manifest["orchestrator"])
-        self.assertEqual(["lnx"], manifest["discord_visible_profiles"])
+        self.assertEqual(["lnx", "pulse", "algua", "meabeclick"], manifest["discord_visible_profiles"])
         self.assertEqual(
             {"pulse": "1564218041603194950", "algua": "1565055030413893762", "meabeclick": "1565055212006285353"},
             {route["profile"]: route["chat_id"] for route in manifest["discord_profile_routes"]},
