@@ -118,7 +118,7 @@ class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
           'pr_number':49,'check_name':'CI','event_key':'c'*64,'action':'deploy','title':'Deploy verified fix',
           'summary':'Review exact-head check evidence before deployment.', 'acceptance_check':'Human approves deployment.'},
           'source_evidence':{'complete':True,'source':'github_checks_read','observed_at':now,'repo':route['repository'],
-            'repo':route['repository'],'pr_number':49,'state':'OPEN', 'checks':[{'name':'CI','conclusion':'FAILURE'}]},
+            'pr_number':49,'state':'OPEN', 'checks':[{'name':'CI','conclusion':'FAILURE'}]},
           'recovery_history':{'board_id':'pulse','event_key':'c'*64,'source':'immutable_checkpoint_sqlite','observed_at':now,'complete':True,'tasks':[]}}
         proposal = session.plan_after_reread('objective-1', expected, request, self.manifest, policy)
         self.assertEqual(proposal['result'], 'approval_required')
