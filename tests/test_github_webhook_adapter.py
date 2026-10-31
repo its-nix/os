@@ -1,9 +1,11 @@
 import json
-import unittest
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
-import shutil
+import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from automation.monitoring.github_webhook import MAX_OUTPUT_BYTES, adapt_payload
@@ -154,6 +156,38 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
                 proc = subprocess.run([sys.executable, str(script)], input="x" * 256_001, text=True, capture_output=True)
                 self.assertEqual(proc.returncode, 0)
                 self.assertEqual(proc.stdout.strip(), "[SILENT]")
+
+    def test_staged_routes_resolve_with_hermes_script_resolver(self):
+        hermes_source = Path(os.environ.get(
+            "HERMES_AGENT_SOURCE", str(Path.home() / ".hermes/hermes-agent")
+        ))
+        resolver_file = hermes_source / "gateway/platforms/webhook_filters.py"
+        constants_file = hermes_source / "hermes_constants.py"
+        if not resolver_file.is_file() or not constants_file.is_file():
+            self.skipTest("Hermes source unavailable; set HERMES_AGENT_SOURCE to its checkout")
+        sys.path.insert(0, str(hermes_source))
+        try:
+            from gateway.platforms.webhook_filters import _resolve_script_path
+
+            contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
+            mapping = contract["staging"]["source_to_target"]
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HERMES_HOME": tmp}):
+                scripts_root = Path(tmp) / "scripts"
+                for source, target in mapping.items():
+                    destination = scripts_root / target
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(ROOT / source, destination)
+                for route in contract["routes"]:
+                    with self.subTest(route=route["route_name"]):
+                        resolved, error = _resolve_script_path(route["script"])
+                        self.assertIsNone(error)
+                        expected = (scripts_root / route["script"]).resolve()
+                        self.assertEqual(resolved, expected)
+                        if resolved is not None:
+                            self.assertTrue(resolved.is_file())
+                            self.assertTrue(resolved.is_relative_to(scripts_root.resolve()))
+        finally:
+            sys.path.remove(str(hermes_source))
 
     def test_project_wrapper_binds_repo_and_silences_irrelevant_payload(self):
         payload = event_payload("pull_request", "opened")
