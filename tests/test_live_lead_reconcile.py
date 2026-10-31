@@ -24,6 +24,18 @@ class ReconcileTests(unittest.TestCase):
         self.backups.mkdir(mode=0o700)
         self.backups.chmod(0o700)
     def tearDown(self): self.tmp.cleanup()
+    def test_invalid_directory_and_target_validation_do_not_leak_fds(self):
+        if not Path("/proc/self/fd").is_dir(): self.skipTest("/proc/self/fd unavailable")
+        def count_fds(): return len(list(Path("/proc/self/fd").iterdir()))
+        parent = self.root / "unsafe-parent"; parent.mkdir(); parent.chmod(0o777)
+        target = self.root / "hardlink-target"; target.write_text("x"); target.chmod(0o600)
+        alias = self.root / "hardlink-alias"; alias.hardlink_to(target)
+        for _ in range(100):
+            before = count_fds()
+            with self.assertRaises(ValueError): mod._open_dir(parent)
+            self.assertEqual(before, count_fds())
+            with self.assertRaises(ValueError): mod._open_target(alias)
+            self.assertEqual(before, count_fds())
     def test_preview_is_pure_and_diff_exact(self):
         originals = {n:p.read_bytes() for n,p in self.paths.items()}
         diffs = mod.reconcile(self.paths, backup_dir=self.backups)
@@ -262,8 +274,10 @@ class ReconcileTests(unittest.TestCase):
         real_fstat = os.fstat
         try:
             with mock.patch.object(mod.os, "fstat", side_effect=OSError("injected fstat failure")):
-                with self.assertRaisesRegex(OSError, "injected fstat failure"):
+                with self.assertRaisesRegex(RuntimeError, "temporary file retained") as caught:
                     mod._write_temp(fd, ".probe.", b"payload", 0o600)
+            self.assertRegex(str(caught.exception.__cause__), "injected fstat failure")
+            self.assertTrue(any(p.name in str(caught.exception) for p in self.root.iterdir()))
             leaked = [p for p in self.root.iterdir() if p.name.startswith(".probe.")]
             self.assertEqual(1, len(leaked))
             leaked[0].unlink()  # No verified inode identity: test removes its own fixture artifact.

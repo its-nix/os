@@ -51,6 +51,7 @@ def _open_dir(path: Path) -> int:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError(f"unsafe non-absolute or traversing path: {path}")
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    nxt = None
     try:
         parts = path.parts[1:]
         for index, component in enumerate(parts):
@@ -61,12 +62,14 @@ def _open_dir(path: Path) -> int:
                 raise ValueError(f"unsafe writable directory component: {path}")
             if st.st_uid not in (os.getuid(), 0) or (st.st_uid == 0 and st.st_mode & 0o022 and not sticky_tmp):
                 raise ValueError(f"untrusted directory ownership: {path}")
-            os.close(fd); fd = nxt
+            os.close(fd); fd = nxt; nxt = None
         return fd
     except OSError as exc:
+        if nxt is not None: os.close(nxt)
         os.close(fd)
         raise ValueError(f"unsafe directory ancestry: {path}: {exc}") from exc
     except BaseException:
+        if nxt is not None: os.close(nxt)
         os.close(fd); raise
 
 def _open_backup_dir(path: Path) -> int:
@@ -104,6 +107,7 @@ def _open_target(path: Path):
     if not path.is_absolute() or ".." in path.parts or path.name in ("", "."):
         raise ValueError(f"unsafe target path: {path}")
     parent = _open_dir(path.parent)
+    fd = None
     try:
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
         st = os.fstat(fd)
@@ -111,9 +115,11 @@ def _open_target(path: Path):
             raise ValueError(f"unsafe target type, owner, link count, or mode: {path}")
         return parent, fd, st
     except OSError as exc:
+        if fd is not None: os.close(fd)
         os.close(parent)
         raise ValueError(f"unsafe target path component: {path}: {exc}") from exc
     except BaseException:
+        if fd is not None: os.close(fd)
         os.close(parent); raise
 
 def _read_fd(fd: int) -> str:
@@ -147,6 +153,8 @@ def _write_temp(dirfd: int, prefix: str, data: bytes, mode: int) -> tuple[str, t
         if cleanup_errors:
             details = "; ".join(repr(exc) for exc in cleanup_errors)
             raise RuntimeError(f"temporary cleanup failed for {name}: {details}") from error
+        if identity is None:
+            raise RuntimeError(f"temporary file retained because its identity could not be verified: {name}") from error
         raise
 
 def _unlink_owned(dirfd: int, name: str, identity: tuple[int, int]) -> None:
