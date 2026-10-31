@@ -1,5 +1,6 @@
 """Synthetic-only continuity contract simulation; never live delivery proof."""
 import json
+import re
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,9 +41,11 @@ class SimulatedLead:
     def reread(self, task_id, expected):
         task = self.store.read_task(task_id); evidence = self.store.read_evidence()
         keys = ('project', 'repo', 'pr_number', 'check_id', 'head_sha', 'fresh')
-        return bool(task and task.get('id') == expected['task_id'] and task.get('status') in ('open','blocked')
+        return bool(task and task.get('id') == expected['task_id'] and task.get('project') == expected['project']
+                    and task.get('status') in ('open','blocked')
                     and all(evidence.get(k) == expected[k] for k in keys)
-                    and len(expected['head_sha']) == 40 and evidence.get('fresh') is True)
+                    and re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})', evidence.get('head_sha', ''))
+                    and evidence.get('fresh') is True)
     def plan_after_reread(self, task_id, expected, request, manifest, policy):
         if not self.reread(task_id, expected): return None
         self.planner_calls += 1
@@ -62,11 +65,11 @@ class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
         self.assertEqual((lead, profile, board), ('pulse', 'pulse', 'pulse'))
         sha = 'a'*40
         admission = SimulatedAdmission()
-        store = InMemoryFixtureStore({'id':'objective-1','status':'open'}, {
+        store = InMemoryFixtureStore({'id':'objective-1','project':'pulse','status':'open'}, {
             'task_id':'objective-1', 'project':'pulse', 'repo':route['repository'], 'pr_number':49,
             'check_id':77, 'head_sha':sha, 'fresh':True, 'check_name':'CI', 'check_conclusion':'failure'})
         session = SimulatedLead(lead, profile, store)
-        expected = {'task_id':'objective-1','project':'pulse','repo':route['repository'],'pr_number':49,
+        expected = {'task_id':'objective-1','project':project['id'],'repo':route['repository'],'pr_number':49,
                     'check_id':77,'head_sha':sha,'fresh':True}
 
         def pipeline(delivery_id, payload):
@@ -117,11 +120,29 @@ class LeadContinuityIntegrationFixtureTests(unittest.TestCase):
         self.assertNotIn('created', proposal)
         self.assertEqual(session.planner_calls, 1)
 
-        for bad in [dict(expected, project='other'), dict(expected, repo='other/repo'),
-                    dict(expected, pr_number=50), dict(expected, check_id=999),
-                    dict(expected, head_sha='b'*40), dict(expected, fresh=False)]:
-            before = session.planner_calls
-            self.assertIsNone(session.plan_after_reread('objective-1', bad, request, self.manifest, policy))
-            self.assertEqual(session.planner_calls, before)
+        # Mutate only the synthetic in-memory fixture store; expected event stays fixed.
+        original_task = dict(store.task)
+        original_evidence = dict(store.evidence)
+        negative_cases = [
+            ('wrong task ID', 'task', 'id', 'objective-other'),
+            ('wrong project', 'task', 'project', 'other'),
+            ('wrong evidence project', 'evidence', 'project', 'other'),
+            ('wrong repository', 'evidence', 'repo', 'other/repo'),
+            ('wrong PR', 'evidence', 'pr_number', 50),
+            ('wrong check', 'evidence', 'check_id', 999),
+            ('stale evidence', 'evidence', 'fresh', False),
+            ('valid but wrong head', 'evidence', 'head_sha', 'b'*40),
+            ('malformed non-hex SHA', 'evidence', 'head_sha', 'g'*40),
+        ]
+        for label, target, key, value in negative_cases:
+            with self.subTest(case=label):
+                store.task.clear(); store.task.update(original_task)
+                store.evidence.clear(); store.evidence.update(original_evidence)
+                (store.task if target == 'task' else store.evidence)[key] = value
+                before = session.planner_calls
+                self.assertIsNone(session.plan_after_reread('objective-1', expected, request, self.manifest, policy))
+                self.assertEqual(session.planner_calls, before)
+        store.task.clear(); store.task.update(original_task)
+        store.evidence.clear(); store.evidence.update(original_evidence)
 
 if __name__ == '__main__': unittest.main()
