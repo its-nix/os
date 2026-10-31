@@ -2,6 +2,8 @@ import json
 import unittest
 import subprocess
 import sys
+import tempfile
+import shutil
 from pathlib import Path
 
 from automation.monitoring.github_webhook import MAX_OUTPUT_BYTES, adapt_payload
@@ -95,8 +97,8 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
         policy = json.loads((ROOT / "automation/monitoring/policy.json").read_text())["repos"]
         self.assertEqual({r["project"]: r["repository"] for r in contract["routes"]}, policy)
         for route in contract["routes"]:
-            self.assertTrue((ROOT / route["script"]).is_file())
-            self.assertEqual(route["script"], f"scripts/github-webhook-{route['project']}.py")
+            self.assertTrue((ROOT / f"scripts/github-webhook-{route['project']}.py").is_file())
+            self.assertEqual(route["script"], f"nix-github-webhooks/github-webhook-{route['project']}.py")
         preview = subprocess.run([sys.executable, str(ROOT / "scripts/preview-github-webhook-routes.py"), "--preview"],
                                  check=True, text=True, capture_output=True)
         commands = json.loads(preview.stdout)
@@ -106,11 +108,52 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
             self.assertIn("--route-profile", argv)
             self.assertIn("--script", argv)
             self.assertIn(route["script"], argv)
+            staged_relative = Path(argv[argv.index("--script") + 1])
+            self.assertFalse(staged_relative.is_absolute())
+            self.assertNotIn("..", staged_relative.parts)
             self.assertIn("--events", argv)
             self.assertNotIn("--cron-job", argv)
             self.assertNotIn("--coalesce", argv)
             self.assertNotIn("--deliver-only", argv)
         self.assertIn("not exactly-once", contract["delivery_semantics"])
+
+    def test_staged_wrappers_and_module_work_in_isolated_hermes_home(self):
+        contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
+        mapping = contract["staging"]["source_to_target"]
+        preview_commands = json.loads(subprocess.run(
+            [sys.executable, str(ROOT / "scripts/preview-github-webhook-routes.py"), "--preview"],
+            check=True, text=True, capture_output=True).stdout)
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts_root = Path(tmp) / "scripts"
+            for source, target in mapping.items():
+                destination = scripts_root / target
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / source, destination)
+            for route in contract["routes"]:
+                script = scripts_root / route["script"]
+                self.assertTrue(script.resolve().is_relative_to(scripts_root.resolve()))
+                argv = next(args for args in preview_commands if args[3] == route["route_name"])
+                rendered_script = scripts_root / argv[argv.index("--script") + 1]
+                self.assertEqual(rendered_script.resolve(), script.resolve())
+                good = event_payload("pull_request", "opened")
+                good["repository"]["full_name"] = route["repository"]
+                mismatch = event_payload("pull_request", "opened")
+                mismatch["repository"]["full_name"] = "other/repo"
+                for payload, expected in ((good, route["repository"]), (mismatch, None)):
+                    proc = subprocess.run([sys.executable, str(script)], input=json.dumps(payload), text=True, capture_output=True)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    if expected:
+                        output = json.loads(proc.stdout)
+                        self.assertEqual(output["repository"], expected)
+                        self.assertLessEqual(len(proc.stdout.strip().encode()), MAX_OUTPUT_BYTES)
+                    else:
+                        self.assertEqual(proc.stdout.strip(), "[SILENT]")
+                proc = subprocess.run([sys.executable, str(script)], input="not-json", text=True, capture_output=True)
+                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout.strip(), "[SILENT]")
+                proc = subprocess.run([sys.executable, str(script)], input="x" * 256_001, text=True, capture_output=True)
+                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout.strip(), "[SILENT]")
 
     def test_project_wrapper_binds_repo_and_silences_irrelevant_payload(self):
         payload = event_payload("pull_request", "opened")

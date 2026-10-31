@@ -3,8 +3,14 @@
 import json
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from automation.monitoring.github_webhook import adapt_payload, infer_event
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from automation.monitoring.github_webhook import adapt_payload, infer_event
+except ModuleNotFoundError as exc:
+    if exc.name != "automation":
+        raise
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from github_webhook import adapt_payload, infer_event
 
 try:
     raw = sys.stdin.buffer.read(256_001)

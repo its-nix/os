@@ -20,5 +20,12 @@ def render():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preview", action="store_true", help="print argv only (default and only mode)")
-    parser.parse_args()
-    print(json.dumps(render(), indent=2))
+    parser.add_argument("--staging-plan", action="store_true", help="print source-to-HERMES_HOME/scripts staging map")
+    args = parser.parse_args()
+    contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
+    if args.staging_plan:
+        print(json.dumps({"activation": "disabled", "writes_performed": False,
+                          "target_root": "$HERMES_HOME/scripts",
+                          "source_to_target": contract["staging"]["source_to_target"]}, indent=2))
+    else:
+        print(json.dumps(render(), indent=2))
