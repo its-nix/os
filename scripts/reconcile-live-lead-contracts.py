@@ -124,19 +124,29 @@ def _read_fd(fd: int) -> str:
 def _write_temp(dirfd: int, prefix: str, data: bytes, mode: int) -> tuple[str, tuple[int, int]]:
     name = f"{prefix}{os.getpid()}-{os.urandom(12).hex()}"
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dirfd)
-    st = os.fstat(fd)
-    identity = (st.st_dev, st.st_ino)
+    identity = None
     try:
+        st = os.fstat(fd)
+        identity = (st.st_dev, st.st_ino)
         with os.fdopen(fd, "wb", closefd=True) as f:
             fd = -1
             f.write(data); f.flush(); os.fsync(f.fileno())
         return name, identity
     except BaseException as error:
-        if fd >= 0: os.close(fd)
-        try:
-            _unlink_owned(dirfd, name, identity)
-        except BaseException as cleanup:
-            raise RuntimeError(f"temporary cleanup failed for {name}: {cleanup}") from error
+        cleanup_errors = []
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except BaseException as cleanup:
+                cleanup_errors.append(cleanup)
+        if identity is not None:
+            try:
+                _unlink_owned(dirfd, name, identity)
+            except BaseException as cleanup:
+                cleanup_errors.append(cleanup)
+        if cleanup_errors:
+            details = "; ".join(repr(exc) for exc in cleanup_errors)
+            raise RuntimeError(f"temporary cleanup failed for {name}: {details}") from error
         raise
 
 def _unlink_owned(dirfd: int, name: str, identity: tuple[int, int]) -> None:

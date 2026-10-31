@@ -11,7 +11,8 @@ mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 
 class ReconcileTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
+        test_tmp = os.environ.get("HERMES_TEST_TMPDIR")
+        self.tmp = tempfile.TemporaryDirectory(dir=test_tmp) if test_tmp else tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.paths = {}
         for name in mod.PROFILES:
@@ -133,16 +134,25 @@ class ReconcileTests(unittest.TestCase):
     def test_readback_failure_rolls_back(self):
         from unittest import mock
         originals = {n: p.read_bytes() for n, p in self.paths.items()}
-        real_read = mod._read_fd
-        calls = 0
-        def fail_readback(fd):
-            nonlocal calls
-            calls += 1
-            if calls == 5: raise OSError("injected readback failure")
-            return real_read(fd)
-        with mock.patch.object(mod, "_read_fd", side_effect=fail_readback):
+        real_open = mod.os.open
+        real_replace = mod.os.replace
+        replaced = False
+        failed = False
+        def track_replace(*args, **kwargs):
+            nonlocal replaced
+            result = real_replace(*args, **kwargs)
+            replaced = True
+            return result
+        def fail_readback(path, flags, *args, **kwargs):
+            nonlocal failed
+            if replaced and not failed and path == self.paths['pulse'].name:
+                failed = True
+                raise OSError("injected readback failure")
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(mod.os, "replace", side_effect=track_replace), mock.patch.object(mod.os, "open", side_effect=fail_readback):
             with self.assertRaisesRegex(OSError, "readback failure"):
                 mod.reconcile(self.paths, True, self.backups)
+        self.assertTrue(replaced)
         self.assertEqual(originals, {n: p.read_bytes() for n, p in self.paths.items()})
         self.assertEqual([], list(self.backups.iterdir()))
 
@@ -195,21 +205,27 @@ class ReconcileTests(unittest.TestCase):
         from unittest import mock
         original = self.paths['pulse'].read_bytes()
         real_open_target = mod._open_target
-        pulse_calls = 0
         pulse_dir = self.paths['pulse'].parent
+        backups_staged = False
+        real_fsync = os.fsync
+        def note_backup_stage(fd):
+            nonlocal backups_staged
+            result = real_fsync(fd)
+            if os.fstat(fd).st_ino == self.backups.stat().st_ino:
+                backups_staged = True
+            return result
         def redirect_before_commit(path):
-            nonlocal pulse_calls
-            if path == self.paths['pulse']:
-                pulse_calls += 1
-                if pulse_calls == 3:
-                    moved = self.root / "pulse-moved"
-                    pulse_dir.rename(moved)
-                    pulse_dir.mkdir(mode=0o700); pulse_dir.chmod(0o700)
-                    (pulse_dir / "SOUL.md").write_bytes(original)
-                    (pulse_dir / "SOUL.md").chmod(0o640)
+            nonlocal backups_staged
+            if path == self.paths['pulse'] and backups_staged:
+                moved = self.root / "pulse-moved"
+                pulse_dir.rename(moved)
+                pulse_dir.mkdir(mode=0o700); pulse_dir.chmod(0o700)
+                (pulse_dir / "SOUL.md").write_bytes(original)
+                (pulse_dir / "SOUL.md").chmod(0o640)
+                backups_staged = False
             return real_open_target(path)
-        with mock.patch.object(mod, "_open_target", side_effect=redirect_before_commit):
-            with self.assertRaisesRegex(ValueError, "parent redirected"):
+        with mock.patch.object(mod.os, "fsync", side_effect=note_backup_stage), mock.patch.object(mod, "_open_target", side_effect=redirect_before_commit):
+            with self.assertRaisesRegex(ValueError, "^target parent redirected before commit:"):
                 mod.reconcile(self.paths, True, self.backups)
         self.assertEqual(original, self.paths['pulse'].read_bytes())
         self.assertEqual([], list(self.backups.iterdir()))
@@ -224,6 +240,36 @@ class ReconcileTests(unittest.TestCase):
             self.assertEqual([], [p for p in self.root.iterdir() if p.name.startswith(".probe.")])
         finally:
             os.close(fd)
+
+    def test_write_temp_attempts_unlink_after_close_failure(self):
+        from unittest import mock
+        fd = mod._open_dir(self.root)
+        real_close = os.close
+        def close_fails(_fd): raise OSError("injected close cleanup failure")
+        try:
+            with mock.patch.object(mod.os, "fdopen", side_effect=OSError("primary fdopen failure")), mock.patch.object(mod.os, "close", side_effect=close_fails):
+                with self.assertRaisesRegex(RuntimeError, "close cleanup failure") as caught:
+                    mod._write_temp(fd, ".probe.", b"payload", 0o600)
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertIn("primary fdopen failure", str(caught.exception.__cause__))
+            self.assertEqual([], [p for p in self.root.iterdir() if p.name.startswith(".probe.")])
+        finally:
+            real_close(fd)
+
+    def test_write_temp_fstat_failure_does_not_unlink_unverified_name(self):
+        from unittest import mock
+        fd = mod._open_dir(self.root)
+        real_fstat = os.fstat
+        try:
+            with mock.patch.object(mod.os, "fstat", side_effect=OSError("injected fstat failure")):
+                with self.assertRaisesRegex(OSError, "injected fstat failure"):
+                    mod._write_temp(fd, ".probe.", b"payload", 0o600)
+            leaked = [p for p in self.root.iterdir() if p.name.startswith(".probe.")]
+            self.assertEqual(1, len(leaked))
+            leaked[0].unlink()  # No verified inode identity: test removes its own fixture artifact.
+        finally:
+            os.close(fd)
+
     def test_unexpected_managed_section_refused(self):
         mod.reconcile(self.paths, True, self.backups)
         p = self.paths['pulse']; p.write_text(p.read_text().replace("CLI support", "different wording"))
