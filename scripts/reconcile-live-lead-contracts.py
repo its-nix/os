@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import hashlib
 from pathlib import Path
 import stat
 import sys
@@ -68,6 +69,37 @@ def _open_dir(path: Path) -> int:
     except BaseException:
         os.close(fd); raise
 
+def _open_backup_dir(path: Path) -> int:
+    """Safely create missing owner-only backup components, never following links."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"unsafe backup directory: {path}")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        components = path.parts[1:]
+        for index, component in enumerate(components):
+            try:
+                nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                os.mkdir(component, 0o700, dir_fd=fd)
+                os.fsync(fd)
+                nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            st = os.fstat(nxt)
+            final = index == len(components) - 1
+            if (not stat.S_ISDIR(st.st_mode)
+                    or st.st_uid not in (0, os.getuid())
+                    or st.st_mode & 0o022
+                    or (final and (st.st_uid != os.getuid() or st.st_mode & 0o077))):
+                os.close(nxt)
+                raise ValueError(f"unsafe backup directory ancestry or final mode: {path}")
+            os.close(fd); fd = nxt
+        return fd
+    except OSError as exc:
+        os.close(fd)
+        raise ValueError(f"unsafe backup directory ancestry: {path}: {exc}") from exc
+    except BaseException:
+        os.close(fd)
+        raise
+
 def _open_target(path: Path):
     if not path.is_absolute() or ".." in path.parts or path.name in ("", "."):
         raise ValueError(f"unsafe target path: {path}")
@@ -92,13 +124,19 @@ def _read_fd(fd: int) -> str:
 def _write_temp(dirfd: int, prefix: str, data: bytes, mode: int) -> tuple[str, tuple[int, int]]:
     name = f"{prefix}{os.getpid()}-{os.urandom(12).hex()}"
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dirfd)
+    st = os.fstat(fd)
+    identity = (st.st_dev, st.st_ino)
     try:
-        with os.fdopen(fd, "wb") as f:
+        with os.fdopen(fd, "wb", closefd=True) as f:
+            fd = -1
             f.write(data); f.flush(); os.fsync(f.fileno())
-        st = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
-        return name, (st.st_dev, st.st_ino)
-    except BaseException:
-        os.close(fd)
+        return name, identity
+    except BaseException as error:
+        if fd >= 0: os.close(fd)
+        try:
+            _unlink_owned(dirfd, name, identity)
+        except BaseException as cleanup:
+            raise RuntimeError(f"temporary cleanup failed for {name}: {cleanup}") from error
         raise
 
 def _unlink_owned(dirfd: int, name: str, identity: tuple[int, int]) -> None:
@@ -116,25 +154,26 @@ def reconcile(paths: dict[str, Path], apply: bool = False, backup_dir: Path | No
         parent, fd, st = _open_target(path)
         try:
             before = _read_fd(fd)
+            parent_id = (os.fstat(parent).st_dev, os.fstat(parent).st_ino)
         finally:
             os.close(fd); os.close(parent)
         after = transform(name, before)
-        plans.append((name, path, st, before, after))
-    diffs = ["".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), fromfile=str(p), tofile=str(p)+" (proposed)")) or f"{p}: already reconciled\\n" for _, p, _, a, b in plans]
-    if not apply or all(a == b for _, _, _, a, b in plans):
+        plans.append((name, path, st, before, after, parent_id))
+    diffs = ["".join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), fromfile=str(p), tofile=str(p)+" (proposed)")) or f"{p}: already reconciled\\n" for _, p, _, a, b, _ in plans]
+    if not apply or all(a == b for _, _, _, a, b, _ in plans):
         return diffs
     if backup_dir is None:
-        backup_dir = Path.home() / ".hermes" / "backups" / "lead-soul-reconcile"
-    backup_fd = _open_dir(backup_dir.absolute())
-    if os.fstat(backup_fd).st_uid != os.getuid() or os.fstat(backup_fd).st_mode & 0o077:
-        os.close(backup_fd); raise ValueError(f"backup directory must be current-user-owned and owner-only: {backup_dir}")
+        backup_dir = Path.home() / ".hermes" / "lead-soul-reconcile-backups"
+    backup_fd = _open_backup_dir(backup_dir.absolute())
     transaction = []
     committed = []
     try:
         # Stage all original backups first; each basename is exclusive and descriptor-bound.
-        for name, path, expected, before, after in plans:
+        for name, path, expected, before, after, parent_id in plans:
             parent, fd, now = _open_target(path)
             try:
+                if (os.fstat(parent).st_dev, os.fstat(parent).st_ino) != parent_id:
+                    raise ValueError(f"target parent redirected since preview: {path}")
                 if (now.st_dev, now.st_ino, now.st_mtime_ns) != (expected.st_dev, expected.st_ino, expected.st_mtime_ns) or _read_fd(fd) != before:
                     raise ValueError(f"target changed since preview: {path}")
             finally:
@@ -149,13 +188,15 @@ def reconcile(paths: dict[str, Path], apply: bool = False, backup_dir: Path | No
                 try: os.unlink(bname, dir_fd=backup_fd)
                 except OSError: pass
                 raise
-            transaction.append({"name":name,"path":path,"st":expected,"before":before,"after":after,"backup":bname,"backup_id":(bst.st_dev,bst.st_ino)})
+            transaction.append({"name":name,"path":path,"st":expected,"before":before,"after":after,"parent_id":parent_id,"backup":bname,"backup_id":(bst.st_dev,bst.st_ino),"backup_size":bst.st_size,"backup_digest":hashlib.sha256(before.encode("utf-8")).digest()})
         os.fsync(backup_fd)
         # Stage one replacement at a time; pinned parent fd defeats path redirection.
         for item in transaction:
             parent, fd, now = _open_target(item["path"])
             staged = None
             try:
+                if (os.fstat(parent).st_dev, os.fstat(parent).st_ino) != item["parent_id"]:
+                    raise ValueError(f"target parent redirected before commit: {item['path']}")
                 if (now.st_dev, now.st_ino, now.st_mtime_ns) != (item["st"].st_dev,item["st"].st_ino,item["st"].st_mtime_ns) or _read_fd(fd) != item["before"]:
                     raise ValueError(f"target changed before commit: {item['path']}")
                 staged = _write_temp(parent, ".SOUL.stage.", item["after"].encode("utf-8"), stat.S_IMODE(item["st"].st_mode))
@@ -163,12 +204,15 @@ def reconcile(paths: dict[str, Path], apply: bool = False, backup_dir: Path | No
                 if (current.st_dev,current.st_ino)!=(item["st"].st_dev,item["st"].st_ino) or _read_fd(fd)!=item["before"]:
                     raise ValueError(f"target replaced during commit: {item['path']}")
                 os.replace(staged[0], item["path"].name, src_dir_fd=parent, dst_dir_fd=parent)
-                os.fsync(parent); committed.append(item)
+                item["installed_id"] = staged[1]
+                committed.append(item)
+                os.fsync(parent)
                 check = os.open(item["path"].name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
                 try:
                     got = _read_fd(check)
                     if got != item["after"]: raise ValueError(f"exact readback failed: {item['path']}")
-                    item["installed_id"] = (os.fstat(check).st_dev, os.fstat(check).st_ino)
+                    if (os.fstat(check).st_dev, os.fstat(check).st_ino) != item["installed_id"]:
+                        raise ValueError(f"installed identity changed: {item['path']}")
                 finally: os.close(check)
             finally:
                 if staged is not None: _unlink_owned(parent, staged[0], staged[1])
@@ -179,11 +223,19 @@ def reconcile(paths: dict[str, Path], apply: bool = False, backup_dir: Path | No
             parent = None
             try:
                 parent = _open_dir(item["path"].parent)
+                if (os.fstat(parent).st_dev, os.fstat(parent).st_ino) != item["parent_id"]:
+                    raise RuntimeError(f"rollback refused redirected parent: {item['path']}")
                 current = os.stat(item["path"].name, dir_fd=parent, follow_symlinks=False)
                 if (current.st_dev,current.st_ino) != item.get("installed_id"):
                     raise RuntimeError(f"rollback refused replaced target: {item['path']}")
                 bfd = os.open(item["backup"], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=backup_fd)
-                try: original = os.read(bfd, max(1, os.fstat(bfd).st_size + 1))
+                try:
+                    bst = os.fstat(bfd)
+                    if (bst.st_dev, bst.st_ino) != item["backup_id"] or bst.st_size != item["backup_size"]:
+                        raise RuntimeError(f"backup identity/size changed: {backup_dir / item['backup']}")
+                    original = os.read(bfd, bst.st_size + 1)
+                    if len(original) != item["backup_size"] or hashlib.sha256(original).digest() != item["backup_digest"]:
+                        raise RuntimeError(f"backup content changed: {backup_dir / item['backup']}")
                 finally: os.close(bfd)
                 temp = _write_temp(parent, ".SOUL.rollback.", original, stat.S_IMODE(item["st"].st_mode))
                 try: os.replace(temp[0], item["path"].name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent)
@@ -191,12 +243,14 @@ def reconcile(paths: dict[str, Path], apply: bool = False, backup_dir: Path | No
             except BaseException as exc: rollback_errors.append(f"{item['path']}: {exc}")
             finally:
                 if parent is not None: os.close(parent)
-        # Remove only transaction-owned backups, and report cleanup/rollback failures.
-        for item in transaction:
-            try: _unlink_owned(backup_fd, item["backup"], item["backup_id"])
-            except BaseException as exc: rollback_errors.append(f"backup cleanup {item['backup']}: {exc}")
+        # Keep every recovery artifact if any rollback failed.
+        if not rollback_errors:
+            for item in transaction:
+                try: _unlink_owned(backup_fd, item["backup"], item["backup_id"])
+                except BaseException as exc: rollback_errors.append(f"backup cleanup {backup_dir / item['backup']}: {exc}")
         if rollback_errors:
-            raise RuntimeError(f"apply failed ({error}); rollback/cleanup failed: {'; '.join(rollback_errors)}") from error
+            recovery = ", ".join(str(backup_dir / item["backup"]) for item in transaction)
+            raise RuntimeError(f"apply failed ({error}); rollback/cleanup failed: {'; '.join(rollback_errors)}; recovery backups retained: {recovery}") from error
         raise
     finally:
         os.close(backup_fd)
