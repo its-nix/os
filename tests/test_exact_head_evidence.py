@@ -82,8 +82,43 @@ class ExactHeadEvidenceTests(unittest.TestCase):
         self.assertGreater(sum(1 for c in calls if len(c)>1 and c[1]=="api"),0)
         self.assertLessEqual(sum(1 for c in calls if len(c)>1 and c[1]=="pr"),3)
         self.assertTrue(all(runtime["repo_collection"][r]["exact_head_cap_reached"] for r in repos))
-        self.assertTrue(any(v in {"partial","unknown"} for v in runtime["repo_status"].values()))
-        self.assertTrue(any(v in {"partial","unknown"} for v in report["repo_status"].values()))
+        for repo in repos:
+            self.assertIn(runtime["repo_status"][repo], {"partial", "unknown"})
+            self.assertIn(report["repo_status"][repo], {"partial", "unknown"})
+
+    def test_aggregate_byte_cap_stops_before_all_prs(self):
+        repos = {"base": "owner/repo"}
+        prs = json.dumps([{"number": n, "state": "OPEN", "headRefOid": SHA,
+                           "statusCheckRollup": []} for n in range(1, 51)])
+        runs = {"total_count": 1, "check_runs": [runrow()]}
+        calls = []
+        def fake(args, **kwargs):
+            calls.append(tuple(args))
+            if args[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(args, 0, prs, "")
+            if args[:2] == ["gh", "api"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps(runs), "")
+            if args[:4] == ["hermes", "kanban", "boards", "list"]:
+                return subprocess.CompletedProcess(args, 0, "[]", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with (patch.object(collector, "load_json", return_value={"repos": repos}),
+              patch.object(collector.subprocess, "run", side_effect=fake)):
+            runtime = collector.run_readonly_live()
+            manifest = {"projects": [{"id": "base"}], "profiles": [], "metrics": []}
+            report = collector.discover(manifest, runtime)
+        api_calls = [c for c in calls if len(c) > 1 and c[1] == "api"]
+        evidence = report["repo_collection"]["base"]["exact_head_evidence"]
+        encoded_evidence = json.dumps(evidence, separators=(",", ":")).encode()
+        self.assertLess(len(api_calls), 50)
+        self.assertGreater(len(api_calls), 0)
+        self.assertLess(sum(len(row.get("checks", [])) for row in evidence) + len(evidence), 300)
+        self.assertGreater(len(evidence), 0)
+        self.assertEqual(len(evidence[0]["checks"]), 1)
+        self.assertGreater(len(json.dumps([evidence[0]] * 50, separators=(",", ":")).encode()), 8_000)
+        self.assertIn(runtime["repo_status"]["base"], {"partial", "unknown"})
+        self.assertIn(report["repo_status"]["base"], {"partial", "unknown"})
+        self.assertLessEqual(len(encoded_evidence), 8_000)
+        self.assertLessEqual(len(json.dumps(monitor_snapshot.compact(report), separators=(",", ":")).encode()), 98_304)
 
     def test_rest_uses_exact_sha_and_survives_full_path(self):
         runtime, calls = self.capture({"total_count": 1, "check_runs": [runrow()]})
