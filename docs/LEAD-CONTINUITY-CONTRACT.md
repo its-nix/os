@@ -4,7 +4,9 @@ Status: repository-only preview contract based on merged monitoring PR #48. CLI 
 
 ## Authority and source of truth
 
-The manifest-declared project Lead owns objective acceptance and every recovery decision. Monitoring may collect bounded observations and PR #48's existing recovery planner may produce a preview; neither selects an action, creates a task, or substitutes for Lead judgment. The Lead rereads native Kanban/GitHub evidence, decides the next step, and records durable evidence on the native parent task. No independent decision ledger, event store, or workflow engine is introduced. Preserve manual approvals, cron denial, and gateway dispatch settings.
+Native dependency direction matters: link each execution task as parent/blocker and the still-open objective as child/dependent (`hermes kanban link <execution_task_id> <objective_task_id>`). Native task links are blocking dependencies, not containment: model conceptual execution children as prerequisites of the acceptance objective. Thus execution remains dispatchable while the objective stays open downstream. Record execution IDs on the objective and subscribe independently to the objective and each execution task. This models a dependency DAG; it does not prove native containment.
+
+The manifest-declared project Lead owns objective acceptance and every recovery decision. Monitoring may collect bounded observations and PR #48's existing recovery planner may produce a preview; neither selects an action, creates a task, or substitutes for Lead judgment. In production, the Lead rereads native Kanban/GitHub evidence, decides the next step, and records durable evidence on the native objective task. The continuity fixture's in-memory store is a synthetic test double only: it does not read canonical Kanban or GitHub state. No independent decision ledger, event store, or workflow engine is introduced. Preserve manual approvals, cron denial, and gateway dispatch settings.
 
 ## Native Kanban contract
 
@@ -20,7 +22,7 @@ GitHub route envelope/event keys (including `correlation_key`) are deterministic
 
 ## Tests and claims
 
-Tests here exercise sanitization, exact-head input validation, deterministic preview output, the read-only CLI help flags when Hermes CLI is available, and mocked/in-process boundaries. They do not demonstrate a live webhook, listener, subscription, notification, Lead wake, decision, or recovery execution. Reuse PR #48's monitoring/recovery implementation; do not add another collector, recovery engine, store, or workflow.
+Tests here exercise sanitization, exact-head input validation, deterministic preview output, the read-only CLI help flags when Hermes CLI is available, and mocked/in-process boundaries. The continuity integration fixture is an explicitly synthetic contract simulation: admission, payload routing, fallback snapshot discovery, wake capture, fixture reread, and Lead session are test doubles. The fixture composes the payload adapter, governed mapping, in-memory fixture store, and pure recovery planner; its dictionary fixtures are not a canonical reread of native Kanban/GitHub state. No production fallback function is asserted to exist, and this test is not runtime proof. It does not establish Hermes delivery/admission durability or an actual wake. It does not demonstrate a live webhook, listener, subscription, notification, Lead decision, or recovery execution. Reuse PR #48's monitoring/recovery implementation; do not add another collector, recovery engine, store, or workflow.
 
 ## Rollout gate
 

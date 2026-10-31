@@ -17,13 +17,15 @@ class LeadContinuityContractTests(unittest.TestCase):
                 self.assertEqual("lead", lead["kind"])
                 role = (ROOT / "profiles" / lead["id"] / "ROLE.md").read_text(encoding="utf-8")
                 for required in (
-                    "durable parent task", "native children", "worker terminal events",
+                    "durable parent task", "worker terminal events", "directly to Lior", "proactively request",
                     "notify+wake", "duplicate or stale notifications", "exact full head SHA",
                     "CI run/check IDs", "review ID/state", "never create parallel Todoist tasks",
                     "hermes kanban notify-subscribe", "subscription cursor claims",
                     "unknown/partial", "decisions belong to you as Lead",
                 ):
                     self.assertIn(required, role)
+                self.assertIn("A technical blocker triggers bounded autonomous recovery, not silence", role)
+                self.assertIn("independent portfolio observer, not a relay", role)
 
     def test_exact_head_evidence_is_collected_from_sha_bound_check_runs(self):
         collector = (ROOT / "automation/monitoring/collector.py").read_text(encoding="utf-8")
