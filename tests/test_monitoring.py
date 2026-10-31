@@ -160,6 +160,7 @@ class MonitorEndToEnd(unittest.TestCase):
   seen=[]
   def fake(args,**kwargs):
    seen.append(tuple(args))
+   if args[0]=='gh' and len(args)>1 and args[1]=='api':return subprocess.CompletedProcess(args,0,json.dumps({'total_count':1,'check_runs':[{'id':987,'head_sha':'a'*40,'status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','completed_at':'2026-01-01T00:01:00Z'}]}),'')
    if args[0]=='gh':return subprocess.CompletedProcess(args,0,payload,'')
    if tuple(args)==('hermes','kanban','boards','list','--json','--all'):return subprocess.CompletedProcess(args,0,'[]','')
    return subprocess.CompletedProcess(args,0,'','')

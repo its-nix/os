@@ -14,7 +14,7 @@ Webhook routing, if separately authorized and configured, uses the native `subsc
 
 ## Evidence boundaries
 
-PR #48's `automation/monitoring/collector.py` gathers aggregate PR check counts/failure identities, but does not collect each PR's current `headRefOid` or CI run/check IDs and conclusions for that exact SHA. Therefore exact-head GitHub evidence is unknown/not available from this collector; do not derive it from aggregate failures or fabricate a matching SHA. Preserve unknown/partial until a separate authorized read obtains PR head SHA and check evidence, and the Lead reads it back. The pure normalization helpers can validate an explicitly supplied SHA, but do not themselves establish evidence provenance.
+The collector obtains each PR's check-run records from GitHub REST at the immutable `headRefOid`, and includes numeric check-run IDs only when every record validates against that exact SHA. Exact-head evidence is available only when the bounded REST response is complete and contains non-empty valid records; API errors, malformed or mismatched records, empty runs, invalid timestamps, or caps remain partial/unknown. Review evidence remains unknown/not collected. Event-to-wake, delivery, recovery, and issue closure are not verified.
 
 GitHub route envelope/event keys (including `correlation_key`) are deterministic correlation values only and do not enforce deduplication. `accept_once` is an in-process fixture helper; it loses state with the process. Neither hashing nor a preview envelope guarantees durable replay suppression, delivery, or wake. Native route/task-level idempotency and live behavior require separate verification.
 
