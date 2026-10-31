@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Hermes monitoring watchdog periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=hermes-monitoring-watchdog.service
+
+[Install]
+WantedBy=timers.target

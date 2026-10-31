@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "interval_hours": 12,
+  "stale_after_hours": 72,
+  "max_fix_attempts": 2,
+  "retry_window_hours": 72,
+  "approvals_required": true,
+  "cron_mode": "deny",
+  "paused_projects_excluded": true,
+  "alert_severity": [
+    "critical"
+  ],
+  "weekly_summary": true,
+  "collector_read_only": true,
+  "task_read_mode": "immutable_checkpoint_only",
+  "worker_diagnostics_mode": "unavailable_unknown",
+  "recovery_mode": "approval_required_proposal_only",
+  "recovery_requires_native_approval": true,
+  "max_retries_semantics": "consecutive_spawn_failures",
+  "include_private_content": false,
+  "repos": {
+    "pulse": "its-nix/pulse",
+    "algua": "its-nix/algua",
+    "meabeclick": "its-nix/meabeclick"
+  }
+}

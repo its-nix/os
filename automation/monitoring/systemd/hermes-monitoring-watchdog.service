@@ -1,0 +1,19 @@
+[Unit]
+Description=Gateway-independent Hermes monitoring watchdog
+After=default.target
+
+[Service]
+Type=oneshot
+StateDirectory=hermes-monitoring
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 %h/os/automation/monitoring/watchdog.py --monitor-heartbeat %h/.local/state/hermes-monitoring/monitor-cycle-heartbeat
+Environment="HOME=%h"
+Environment="HERMES_HOME=%h/.hermes"
+Environment="GOOGLE_WORKSPACE_PROJECT_ID=lclaw-487508"
+Environment="PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/hermes-monitoring
