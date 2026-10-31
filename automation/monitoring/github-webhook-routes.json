@@ -14,6 +14,7 @@
   },
   "route_mode": "agent",
   "profile_binding_source": "nix-os.yaml discord_profile_routes joined to projects.lead and profiles.hermes_profile",
+  "delivery_target_source": "unique discord_profile_routes entry matching route.lead; render --deliver discord and its manifest chat_id; refuse missing, duplicate, or invalid bindings",
   "routes": [
     {
       "project": "pulse",

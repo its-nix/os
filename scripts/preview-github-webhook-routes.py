@@ -6,15 +6,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-def render():
-    contract = json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
-    manifest = json.loads((ROOT / "nix-os.yaml").read_text())
+def render(contract=None, manifest=None):
+    contract = contract or json.loads((ROOT / "automation/monitoring/github-webhook-routes.json").read_text())
+    manifest = manifest or json.loads((ROOT / "nix-os.yaml").read_text())
     output = []
     for route in contract["routes"]:
-        profile = next(p["hermes_profile"] for p in manifest["profiles"] if p["id"] == route["lead"] and p["kind"] == "lead")
+        profiles = [p for p in manifest["profiles"] if p.get("id") == route["lead"] and p.get("kind") == "lead"]
+        bindings = [r for r in manifest["discord_profile_routes"] if r.get("profile") == route["lead"]]
+        if len(profiles) != 1 or not isinstance(profiles[0].get("hermes_profile"), str) or not profiles[0]["hermes_profile"]:
+            raise ValueError(f"expected exactly one valid Lead profile for {route['lead']}")
+        if len(bindings) != 1:
+            raise ValueError(f"expected exactly one Discord binding for {route['lead']}")
+        binding = bindings[0]
+        if (binding.get("platform") != "discord" or not isinstance(binding.get("chat_id"), str)
+                or not binding["chat_id"].isdigit() or binding.get("name") != route["route_name"]):
+            raise ValueError(f"invalid Discord binding for {route['lead']}")
+        profile = profiles[0]["hermes_profile"]
         events = ",".join(contract["events"])
         output.append(["hermes", "webhook", "subscribe", route["route_name"], "--route-profile", profile,
-                       "--script", route["script"], "--events", events])
+                       "--script", route["script"], "--events", events,
+                       "--deliver", "discord", "--deliver-chat-id", binding["chat_id"]])
     return output
 
 if __name__ == "__main__":
