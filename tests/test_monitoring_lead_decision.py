@@ -1,41 +1,19 @@
-import tempfile
+"""Lead decisions stay in the owning Lead; no parallel decision engine."""
 import unittest
 from pathlib import Path
 
-from automation.monitoring.lead_decision import reconcile, Refusal
-
-MANIFEST = {"projects": [{"id": "p", "lead": "lead", "recovery_action": "retry"}],
-            "profiles": [{"id": "lead", "kind": "lead"}]}
-ROUTES = {"lead": {"profile": "lead", "platform": "discord", "chat_id": "12345"}}
-OBS = {"observed_at": "2026-10-31T13:30:00+00:00", "tasks": [],
-       "exited_workers": [{"project_id": "p", "id": "worker-1", "status": "crashed", "stderr": "secret"}]}
+ROOT = Path(__file__).resolve().parents[1]
 
 
-class LeadDecisionTests(unittest.TestCase):
-    def test_missed_event_reconciles_worker_exit_and_deduplicates(self):
-        with tempfile.TemporaryDirectory() as d:
-            state = Path(d) / "state.db"
-            first = reconcile(OBS, MANIFEST, routes=ROUTES, state_path=state)
-            second = reconcile(OBS, MANIFEST, routes=ROUTES, state_path=state)
-            self.assertEqual(len(first), 1)
-            self.assertEqual(first[0]["decision"]["kind"], "approval_escalation")
-            self.assertEqual(first[0]["decision"]["evidence"]["type"], "worker_exit")
-            self.assertNotIn("secret", str(first))
-            self.assertEqual(second, [])
+class LeadDecisionBoundaryTests(unittest.TestCase):
+    def test_custom_decision_engine_is_absent(self):
+        self.assertFalse((ROOT / "automation/monitoring/lead_decision.py").exists())
 
-    def test_only_explicit_allowlist_yields_proposal_never_execution(self):
-        with tempfile.TemporaryDirectory() as d:
-            out = reconcile(OBS, MANIFEST, routes=ROUTES, state_path=Path(d) / "s.db",
-                            authorized_actions={"p": ["retry"]})
-            self.assertEqual(out[0]["decision"], {"kind": "authorized_recovery_proposal", "action": "retry", "requires_human": False})
-            self.assertTrue(out[0]["preview_only"])
-
-    def test_bad_route_and_unbounded_retry_refuse_closed(self):
-        with tempfile.TemporaryDirectory() as d:
-            with self.assertRaises(Refusal):
-                reconcile(OBS, MANIFEST, routes={}, state_path=Path(d) / "s.db")
-            with self.assertRaises(Refusal):
-                reconcile(OBS, MANIFEST, routes=ROUTES, state_path=Path(d) / "s.db", retry_limit=99)
+    def test_existing_recovery_is_only_a_pure_monitoring_planner(self):
+        source = (ROOT / "automation/monitoring/recovery.py").read_text(encoding="utf-8")
+        self.assertIn("approval_required", source)
+        self.assertIn("requires_human_approval", source)
+        self.assertNotIn("sqlite3.connect", source)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
 """Normalize GitHub check and review updates for profile-bound Lead routes.
 
-Pure, preview-only adapter core: the caller routes the bounded envelope through
-Hermes' existing profile-bound webhook/Cron integration. The owning Lead is
-responsible for durable evidence in the native parent task; this module does
-not create an auxiliary store or activate routes.
+Pure normalization and preview helpers only. Constructing a deterministic
+route envelope does not subscribe, deliver, wake a Lead, or suppress replays.
+The owning Lead decides and records evidence in native Kanban. Durable replay
+suppression/delivery must be provided by the native route/task path and verified
+separately; this module neither creates state nor activates routes.
 """
 from __future__ import annotations
 
@@ -71,11 +72,10 @@ def normalize_signal(payload: dict, *, repository: str, pr_number: int) -> dict:
 def lead_route_envelope(
     signal: dict, *, parent_task_id: str, lead_profile: str, cron_job: str
 ) -> dict:
-    """Build the sanitized idempotent context for an existing Lead Cron route.
+    """Build a deterministic preview envelope; this does not enforce idempotency.
 
-    The route target is explicit and the event/action identity is parent-scoped;
-    replaying the same exact-head status cannot create a second parent action.
-    The Lead job records accepted evidence through native Kanban comments/fields.
+    The key is a correlation hint for an existing native route/task path, not a
+    claim that duplicate delivery or work is suppressed here.
     """
     for value, field in ((parent_task_id, "parent_task_id"), (lead_profile, "lead_profile"), (cron_job, "cron_job")):
         if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value) is None:
@@ -103,7 +103,7 @@ def lead_route_envelope(
 
 
 def accept_once(signal: dict, seen: set[str]) -> bool:
-    """In-memory preview helper; production replay suppression uses route idempotency."""
+    """In-process test helper only; not durable replay protection."""
     key = signal.get("event_key") if isinstance(signal, dict) else None
     if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
         raise ValueError("invalid event_key")

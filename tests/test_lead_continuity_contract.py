@@ -20,8 +20,18 @@ class LeadContinuityContractTests(unittest.TestCase):
                     "durable parent task", "native children", "worker terminal events",
                     "notify+wake", "duplicate or stale notifications", "exact full head SHA",
                     "CI run/check IDs", "review ID/state", "never create parallel Todoist tasks",
+                    "hermes kanban notify-subscribe", "subscription cursor claims",
+                    "unknown/partial", "decisions belong to you as Lead",
                 ):
                     self.assertIn(required, role)
+
+    def test_exact_head_evidence_remains_unknown_in_current_collector_contract(self):
+        collector = (ROOT / "automation/monitoring/collector.py").read_text(encoding="utf-8")
+        contract = (ROOT / "docs/LEAD-CONTINUITY-CONTRACT.md").read_text(encoding="utf-8")
+        self.assertIn("statusCheckRollup", collector)
+        self.assertNotIn("headRefOid", collector)
+        self.assertIn("unknown/not available from this collector", contract)
+        self.assertIn("CI run/check IDs and conclusions for that exact SHA", contract)
 
     def test_native_notifier_supports_review_and_worker_terminal_wakes(self):
         """Guard against role contracts drifting from supported Hermes event names."""
