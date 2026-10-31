@@ -329,6 +329,12 @@ def run_readonly_live():
     policy=load_json(Path(__file__).with_name('policy.json'))
     repo_map=policy.get('repos',{}) if isinstance(policy,dict) else {}
     prs={};repo_status={};repo_collection={};repo_failures={}
+    exact_global={'bytes':0,'rows':0,'calls':0}
+    exact_global_byte_cap=8_000
+    exact_global_row_cap=300
+    exact_global_call_cap=100
+    status_values={'queued','in_progress','completed','waiting','requested','pending'}
+    conclusion_values={'action_required','cancelled','failure','neutral','success','skipped','stale','timed_out'}
     if isinstance(repo_map,dict):
         for project,repo in repo_map.items():
             if not safe_id(project) or not valid_repo(repo):continue
@@ -349,7 +355,7 @@ def run_readonly_live():
             counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0,'checks_unknown':0}
             invalid=0;failure_records={};ambiguous=set();failure_cap=False
             exact_heads=[]; exact_cap=False
-            api_calls=0; api_cap=100; exact_incomplete=False; exact_rows=0; exact_row_cap=1000; exact_bytes=0; exact_byte_cap=48_000
+            exact_incomplete=False; exact_cap=False
             for pr in rows:
                 if not isinstance(pr,dict):
                     invalid+=1; continue
@@ -362,8 +368,10 @@ def run_readonly_live():
                 if valid_head and type(number) is int and number > 0:
                     if len(exact_heads)<100:
                         evidence={'pr_number':number,'head_sha':head.lower(),'status':'unknown','checks':[]}
-                        if api_calls < api_cap:
-                            api_calls+=1
+                        if (exact_global['calls'] < exact_global_call_cap
+                                and exact_global['bytes'] < exact_global_byte_cap
+                                and exact_global['rows'] < exact_global_row_cap):
+                            exact_global['calls']+=1
                             api_args=['gh','api',f'repos/{repo}/commits/{head.lower()}/check-runs?per_page=100']
                             api_text,api_status=run_result(api_args)
                             try: payload=json.loads(api_text) if api_status=='available' else None
@@ -371,30 +379,53 @@ def run_readonly_live():
                             runs=payload.get('check_runs') if isinstance(payload,dict) else None
                             total=payload.get('total_count') if isinstance(payload,dict) else None
                             if (api_status!='available' or not isinstance(payload,dict) or not isinstance(runs,list)
-                                    or type(total) is not int or total<0 or not runs):
+                                    or type(total) is not int or total<0 or total!=len(runs) or len(runs)>100 or not runs):
                                 exact_incomplete=True
                             else:
-                                clean=[]; bad=total>len(runs) or len(runs)>100 or exact_rows+len(runs)>exact_row_cap
+                                clean=[]; bad=len(runs)>exact_global_row_cap-exact_global['rows']
+                                ids=set()
                                 for item in runs[:100]:
                                     if not isinstance(item,dict): bad=True;continue
                                     rid=item.get('id'); sha=item.get('head_sha'); status=item.get('status'); conclusion=item.get('conclusion')
                                     created=safe_time(item.get('started_at')); completed=safe_time(item.get('completed_at'))
-                                    if (type(rid) is not int or rid<1 or sha!=head.lower() or status not in {'queued','in_progress','completed'}
-                                            or (conclusion is not None and (not isinstance(conclusion,str) or conclusion not in {'success','failure','neutral','cancelled','skipped','timed_out','action_required'}))
-                                            or not created or item.get('started_at') is None or (item.get('completed_at') is not None and not completed)
-                                            or (status=='completed' and not completed)):
+                                    if (not {'id','head_sha','status','conclusion','started_at','completed_at'}<=item.keys()
+                                            or type(rid) is not int or rid<1 or sha!=head.lower() or status not in status_values
+                                            or (conclusion is not None and (not isinstance(conclusion,str) or conclusion not in conclusion_values))
+                                            or (item.get('started_at') is None and status not in {'queued','waiting','requested','pending'})
+                                            or (item.get('started_at') is not None and not created) or (item.get('completed_at') is not None and not completed)
+                                            or (status=='completed' and (not completed or conclusion is None))
+                                            or rid in ids):
                                         bad=True;continue
+                                    ids.add(rid)
                                     clean.append({'check_run_id':rid,'status':status,'conclusion':conclusion or 'unknown','started_at':created,'completed_at':completed})
                                 candidate={'pr_number':number,'head_sha':head.lower(),'status':'available','checks':clean}
-                                size=len(json.dumps(candidate,separators=(',',':')).encode())
-                                if exact_bytes+size>exact_byte_cap: bad=True; exact_cap=True; clean=[]
-                                else: exact_bytes+=size; exact_rows+=len(clean)
+                                size=len(json.dumps(candidate,separators=(',',':')).encode('utf-8'))
+                                if exact_global['bytes']+size>exact_global_byte_cap or exact_global['rows']+len(clean)>exact_global_row_cap:
+                                    bad=True; exact_cap=True; clean=[]
+                                else:
+                                    exact_global['bytes']+=size; exact_global['rows']+=len(clean)
                                 if not clean: bad=True
                                 evidence.update({'status':'partial' if bad else 'available','checks':clean})
                                 if bad: exact_incomplete=True
                         else:
                             exact_incomplete=True;exact_cap=True
-                        exact_heads.append(evidence)
+                        serialized_size=len(json.dumps(evidence,separators=(',',':')).encode('utf-8'))
+                        if exact_global['rows'] < exact_global_row_cap:
+                            exact_global['rows'] += 1
+                        else:
+                            evidence={'pr_number':number,'head_sha':head.lower(),'status':'partial','checks':[]}
+                            exact_incomplete=True;exact_cap=True
+                            serialized_size=len(json.dumps(evidence,separators=(',',':')).encode('utf-8'))
+                        if exact_global['bytes']+serialized_size>exact_global_byte_cap:
+                            evidence={'pr_number':number,'head_sha':head.lower(),'status':'partial','checks':[]}
+                            exact_incomplete=True;exact_cap=True
+                            serialized_size=len(json.dumps(evidence,separators=(',',':')).encode('utf-8'))
+                        if exact_global['bytes']+serialized_size<=exact_global_byte_cap:
+                            exact_global['bytes']+=serialized_size
+                            exact_heads.append(evidence)
+                        else:
+                            exact_incomplete=True;exact_cap=True
+                            exact_global['bytes']=exact_global_byte_cap
                     else: exact_cap=True;exact_incomplete=True
 
                 checks=pr.get('statusCheckRollup')
@@ -503,6 +534,11 @@ def _sanitize_recovery_history(raw, board):
 
 
 def discover(manifest,runtime,now=None):
+    status_values={'queued','in_progress','completed','waiting','requested','pending'}
+    conclusion_values={'action_required','cancelled','failure','neutral','success','skipped','stale','timed_out'}
+    sanitized_global=0
+    sanitized_bytes=0
+    sanitized_rows=0
     now=now or datetime.now(timezone.utc); now=now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now; projects={}; roles={}
     policy=load_json(Path(__file__).with_name('policy.json'))
     stale_after=policy.get('stale_after_hours',72) if isinstance(policy,dict) else 72
@@ -599,16 +635,26 @@ def discover(manifest,runtime,now=None):
                 checks=row.get('checks'); clean_checks=[]
                 if not isinstance(checks,list) or len(checks)>100: exact_bad=True; checks=[]
                 for check in checks[:100]:
-                    if not isinstance(check,dict) or type(check.get('check_run_id')) is not int or check['check_run_id']<1 or check.get('status') not in {'queued','in_progress','completed'} or check.get('conclusion') not in {'success','failure','neutral','cancelled','skipped','timed_out','action_required','unknown'}:
+                    if (sanitized_global>=300 or not isinstance(check,dict) or type(check.get('check_run_id')) is not int or check['check_run_id']<1 or check.get('status') not in status_values or check.get('conclusion') not in conclusion_values|{'unknown'}):
                         exact_bad=True;continue
                     started=safe_time(check.get('started_at')); completed=safe_time(check.get('completed_at'))
-                    if (not started or (check.get('completed_at') is not None and not completed)
-                            or (check.get('status')=='completed' and not completed)):
+                    if (not {'check_run_id','status','conclusion','started_at','completed_at'}<=check.keys()
+                            or (check.get('started_at') is None and check.get('status') not in {'queued','waiting','requested','pending'})
+                            or (check.get('started_at') is not None and not started) or (check.get('completed_at') is not None and not completed)
+                            or (check.get('status')=='completed' and (not completed or check.get('conclusion') in (None,'unknown')))):
                         exact_bad=True;continue
+                    if any(c['check_run_id']==check['check_run_id'] for c in clean_checks): exact_bad=True;continue
+                    sanitized_global+=1
                     clean_checks.append({'check_run_id':check['check_run_id'],'status':check['status'],'conclusion':check['conclusion'],'started_at':started,'completed_at':completed})
                 row_status=row.get('status') if row.get('status') in {'available','partial','unknown'} else 'unknown'
                 if not clean_checks: row_status='unknown'
-                exact_clean.append({'pr_number':row['pr_number'],'head_sha':row['head_sha'],'status':row_status,'checks':clean_checks})
+                exact_row={'pr_number':row['pr_number'],'head_sha':row['head_sha'],'status':row_status,'checks':clean_checks}
+                row_bytes=len(json.dumps(exact_row,separators=(',',':')).encode('utf-8'))
+                if sanitized_global+len(clean_checks)<=300 and sanitized_rows<300 and row_bytes<=8_000 and sanitized_bytes+row_bytes<=8_000:
+                    exact_clean.append(exact_row)
+                    sanitized_rows+=1
+                    sanitized_bytes+=row_bytes
+                else: exact_bad=True
             clean_record['exact_head_evidence']=exact_clean
             if exact_bad or any(x['status']!='available' for x in exact_clean):
                 repo_status[project]='partial' if exact_clean else 'unknown';clean_record['status']=repo_status[project]
