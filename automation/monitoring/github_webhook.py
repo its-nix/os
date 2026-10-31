@@ -26,6 +26,19 @@ def _sha(value: object, name: str) -> str:
     return value.lower()
 
 
+def infer_event(payload: object) -> str | None:
+    """Infer only GitHub event families unambiguously represented by payload shape."""
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("check_run"), dict):
+        return "check_run" if "pull_request" not in payload else None
+    if isinstance(payload.get("review"), dict) and isinstance(payload.get("pull_request"), dict):
+        return "pull_request_review"
+    if isinstance(payload.get("pull_request"), dict):
+        return "pull_request"
+    return None
+
+
 def adapt_payload(event: str, payload: dict, *, approved_repository: str) -> dict | None:
     """Return only allowlisted fields, or None for irrelevant/ambiguous events."""
     if not isinstance(payload, dict):

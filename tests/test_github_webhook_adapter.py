@@ -1,11 +1,13 @@
 import json
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 
 from automation.monitoring.github_webhook import MAX_OUTPUT_BYTES, adapt_payload
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "its-nix/os"
+REPO = "its-nix/pulse"
 SHA = "a" * 40
 
 
@@ -90,7 +92,42 @@ class GitHubWebhookAdapterTests(unittest.TestCase):
         self.assertNotIn("cron_job", contract)
         self.assertNotIn("coalesce", contract)
         self.assertNotIn("deliver_only", contract)
+        policy = json.loads((ROOT / "automation/monitoring/policy.json").read_text())["repos"]
+        self.assertEqual({r["project"]: r["repository"] for r in contract["routes"]}, policy)
+        for route in contract["routes"]:
+            self.assertTrue((ROOT / route["script"]).is_file())
+            self.assertEqual(route["script"], f"scripts/github-webhook-{route['project']}.py")
+        preview = subprocess.run([sys.executable, str(ROOT / "scripts/preview-github-webhook-routes.py"), "--preview"],
+                                 check=True, text=True, capture_output=True)
+        commands = json.loads(preview.stdout)
+        self.assertEqual(len(commands), 3)
+        for route, argv in zip(contract["routes"], commands):
+            self.assertEqual(argv[:4], ["hermes", "webhook", "subscribe", route["route_name"]])
+            self.assertIn("--route-profile", argv)
+            self.assertIn("--script", argv)
+            self.assertIn(route["script"], argv)
+            self.assertIn("--events", argv)
+            self.assertNotIn("--cron-job", argv)
+            self.assertNotIn("--coalesce", argv)
+            self.assertNotIn("--deliver-only", argv)
         self.assertIn("not exactly-once", contract["delivery_semantics"])
+
+    def test_project_wrapper_binds_repo_and_silences_irrelevant_payload(self):
+        payload = event_payload("pull_request", "opened")
+        wrapper = ROOT / "scripts/github-webhook-pulse.py"
+        result = subprocess.run([sys.executable, str(wrapper)], input=json.dumps(payload), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["repository"], "its-nix/pulse")
+        payload["repository"]["full_name"] = "its-nix/algua"
+        result = subprocess.run([sys.executable, str(wrapper)], input=json.dumps(payload), text=True, capture_output=True)
+        self.assertEqual(result.stdout.strip(), "[SILENT]")
+
+    def test_infer_event_from_shapes_without_external_headers(self):
+        from automation.monitoring.github_webhook import infer_event
+        self.assertEqual(infer_event({"check_run": {}}), "check_run")
+        self.assertEqual(infer_event({"review": {}, "pull_request": {}}), "pull_request_review")
+        self.assertEqual(infer_event({"pull_request": {}}), "pull_request")
+        self.assertIsNone(infer_event({"action": "opened"}))
 
 
 if __name__ == "__main__":

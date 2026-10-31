@@ -47,6 +47,10 @@ python3 scripts/reconcile-discord-profile-routes.py --apply
 
 After an apply, restart the active Hermes gateway and verify the three routes with `hermes config get gateway.profile_routes`; other Discord channels and DMs remain on LNX/default. The script refuses to replace any unexpected pre-existing route set.
 
+## GitHub webhook route preview
+
+`automation/monitoring/github-webhook-routes.json` binds each project to its governed repository from `automation/monitoring/policy.json`, its Lead profile from `nix-os.yaml`, and a project-specific bounded stdin adapter. Preview only the native Hermes agent-mode subscription argv with `python3 scripts/preview-github-webhook-routes.py --preview`; the command never executes subscriptions. The wrapper infers only check-run, review, or pull-request event families from payload shape because Hermes supplies JSON stdin, not GitHub headers. Native durable admission suppresses delivery retries, but this is not exactly-once Lead action; each Lead must reread canonical Kanban and live exact-head PR state. No subscriptions, secrets, public ingress/listener, or runtime changes are part of this repository contract. A separate public-ingress/listener/secret setup and live readback gate is required.
+
 ## Hermes default-profile maintenance
 
 `scripts/reconcile-hermes-default.sh` declares the non-secret settings that

@@ -5,16 +5,48 @@
   "route_mode": "agent",
   "profile_binding_source": "nix-os.yaml discord_profile_routes joined to projects.lead and profiles.hermes_profile",
   "routes": [
-    {"project": "pulse", "lead": "pulse", "repository": "its-nix/os", "route_name": "pulse-channel"},
-    {"project": "algua", "lead": "algua", "repository": "its-nix/os", "route_name": "algua-channel"},
-    {"project": "meabeclick", "lead": "meabeclick", "repository": "its-nix/os", "route_name": "meabeclick-channel"}
+    {
+      "project": "pulse",
+      "lead": "pulse",
+      "repository": "its-nix/pulse",
+      "route_name": "pulse-channel",
+      "script": "scripts/github-webhook-pulse.py"
+    },
+    {
+      "project": "algua",
+      "lead": "algua",
+      "repository": "its-nix/algua",
+      "route_name": "algua-channel",
+      "script": "scripts/github-webhook-algua.py"
+    },
+    {
+      "project": "meabeclick",
+      "lead": "meabeclick",
+      "repository": "its-nix/meabeclick",
+      "route_name": "meabeclick-channel",
+      "script": "scripts/github-webhook-meabeclick.py"
+    }
   ],
   "events": {
-    "check_run": ["completed"],
-    "pull_request_review": ["submitted", "dismissed"],
-    "pull_request": ["opened", "reopened", "synchronize", "closed"]
+    "check_run": [
+      "completed"
+    ],
+    "pull_request_review": [
+      "submitted",
+      "dismissed"
+    ],
+    "pull_request": [
+      "opened",
+      "reopened",
+      "synchronize",
+      "closed"
+    ]
   },
   "delivery_semantics": "native durable admission suppresses delivery retries; not exactly-once Lead action or side effects",
   "action_requirement": "Lead rereads canonical Kanban and live exact-head PR state before action",
-  "forbidden_modes": ["cron_job", "coalesce", "deliver_only"]
+  "forbidden_modes": [
+    "cron_job",
+    "coalesce",
+    "deliver_only"
+  ]
 }
