@@ -628,16 +628,16 @@ def discover(manifest,runtime,now=None):
                 if not isinstance(row,dict) or type(row.get('pr_number')) is not int or row['pr_number']<1 or not isinstance(row.get('head_sha'),str) or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})',row['head_sha']):
                     exact_bad=True;continue
                 checks=row.get('checks'); clean_checks=[]; row_bad=False
-                if not isinstance(checks,list) or len(checks)>100: exact_bad=True; checks=[]
+                if not isinstance(checks,list) or len(checks)>100: exact_bad=True; row_bad=True; checks=[]
                 for check in checks[:100]:
                     if (sanitized_global>=300 or not isinstance(check,dict) or type(check.get('check_run_id')) is not int or check['check_run_id']<1 or not isinstance(check.get('status'),str) or check.get('status') not in status_values or not isinstance(check.get('conclusion'),str) or check.get('conclusion') not in conclusion_values|{'unknown'}):
-                        exact_bad=True;continue
+                        exact_bad=True;row_bad=True;continue
                     started=safe_time(check.get('started_at')); completed=safe_time(check.get('completed_at'))
                     if (not {'check_run_id','status','conclusion','started_at','completed_at'}<=check.keys()
                             or (check.get('started_at') is None and check.get('status') not in {'queued','waiting','requested','pending'})
                             or (check.get('started_at') is not None and not started) or (check.get('completed_at') is not None and not completed)
                             or (check.get('status')=='completed' and (not completed or check.get('conclusion') in (None,'unknown')))):
-                        exact_bad=True;continue
+                        exact_bad=True;row_bad=True;continue
                     if any(c['check_run_id']==check['check_run_id'] for c in clean_checks): exact_bad=True;row_bad=True;continue
                     sanitized_global+=1
                     clean_checks.append({'check_run_id':check['check_run_id'],'status':check['status'],'conclusion':check['conclusion'],'started_at':started,'completed_at':completed})

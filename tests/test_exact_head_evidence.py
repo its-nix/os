@@ -185,6 +185,22 @@ class ExactHeadEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["checks"], [])
         self.assertEqual(evidence["status"], "partial")
 
+    def test_malformed_check_discards_all_ids_in_pr_row(self):
+        manifest = {"projects": [{"id": "base"}], "profiles": [], "metrics": []}
+        valid = {"check_run_id": 1, "status": "completed", "conclusion": "success",
+                 "started_at": STAMP, "completed_at": STAMP}
+        malformed = {"check_run_id": [], "status": "completed", "conclusion": "success",
+                     "started_at": STAMP, "completed_at": STAMP}
+        runtime = {"repo_status": {"base": "available"}, "repo_collection": {"base": {
+            "exact_head_evidence": [{"pr_number": 7, "head_sha": SHA, "status": "available",
+                                     "checks": [valid, malformed]}]}}}
+        with patch.object(collector, "load_json", return_value={"repos": {"base": "owner/repo"}}):
+            report = collector.discover(manifest, runtime)
+        evidence = report["repo_collection"]["base"]["exact_head_evidence"][0]
+        self.assertEqual(evidence["checks"], [])
+        self.assertIn(evidence["status"], {"partial", "unknown"})
+        self.assertIn(report["repo_status"]["base"], {"partial", "unknown"})
+
 
 if __name__ == "__main__":
     unittest.main()
