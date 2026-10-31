@@ -38,7 +38,7 @@ class ExactHeadEvidenceTests(unittest.TestCase):
 
     def test_rest_failures_mismatch_empty_and_caps_are_not_available(self):
         for payload, rc in [({"total_count": 1, "check_runs": [runrow(head_sha="b" * 40)]}, 0),
-                            ({"total_count": 0, "check_runs": []}, 0),
+
                             ({"total_count": 2, "check_runs": [runrow()]}, 0),
                             ({"total_count": 1, "check_runs": [runrow(started_at="bad")]}, 0),
                             ({"total_count": 1, "check_runs": [{k:v for k,v in runrow().items() if k!="id"}]}, 0),
@@ -54,6 +54,21 @@ class ExactHeadEvidenceTests(unittest.TestCase):
                 runtime, _ = self.capture(payload, rc)
                 self.assertEqual(runtime["repo_status"]["base"], "partial")
                 self.assertNotEqual(runtime["repo_collection"]["base"]["exact_head_evidence"][0]["status"], "available")
+
+    def test_zero_check_runs_are_complete_but_not_ci_success(self):
+        runtime, _ = self.capture({"total_count": 0, "check_runs": []})
+        evidence = runtime["repo_collection"]["base"]["exact_head_evidence"][0]
+        self.assertEqual(evidence, {"pr_number": 7, "head_sha": SHA, "status": "available", "checks": []})
+        self.assertEqual(runtime["repo_status"]["base"], "available")
+        manifest = {"projects": [{"id": "base"}], "profiles": [], "metrics": []}
+        with patch.object(collector, "load_json", return_value={"repos": {"base": "owner/repo"}}):
+            report = collector.discover(manifest, runtime)
+        final = report["repo_collection"]["base"]["exact_head_evidence"][0]
+        self.assertEqual(final["status"], "available")
+        self.assertEqual(final["checks"], [])
+        self.assertEqual(report["repo_status"]["base"], "available")
+        self.assertEqual(report["repos"]["base"]["checks_unknown"], 1)
+        self.assertEqual(report["repos"]["base"]["checks_passing"], 0)
 
     def test_aggregate_three_repo_full_path_is_bounded(self):
         repos={f"r{i}":f"owner/r{i}" for i in range(3)}

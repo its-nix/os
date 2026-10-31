@@ -380,7 +380,7 @@ def run_readonly_live():
                             runs=payload.get('check_runs') if isinstance(payload,dict) else None
                             total=payload.get('total_count') if isinstance(payload,dict) else None
                             if (api_status!='available' or not isinstance(payload,dict) or not isinstance(runs,list)
-                                    or type(total) is not int or total<0 or total!=len(runs) or len(runs)>100 or not runs):
+                                    or type(total) is not int or total<0 or total!=len(runs) or len(runs)>100):
                                 exact_incomplete=True
                             else:
                                 clean=[]; bad=len(runs)>exact_global_row_cap-exact_global['check_rows']
@@ -402,7 +402,7 @@ def run_readonly_live():
                                 if exact_global['check_rows']+len(clean)>exact_global_row_cap:
                                     bad=True; exact_cap=True; clean=[]
                                 if bad: clean=[]
-                                if not clean: bad=True
+                                if runs and not clean: bad=True
                                 evidence.update({'status':'partial' if bad else 'available','checks':clean})
                                 if bad: exact_incomplete=True
                         else:
@@ -645,7 +645,8 @@ def discover(manifest,runtime,now=None):
                 if row_bad:
                     clean_checks=[]
                     row_status='partial'
-                if not clean_checks: row_status='unknown' if not row_bad else 'partial'
+                if not clean_checks and row_status=='available' and row_bad: row_status='partial'
+                elif not clean_checks and row_status=='unknown': row_status='unknown'
                 exact_row={'pr_number':row['pr_number'],'head_sha':row['head_sha'],'status':row_status,'checks':clean_checks}
                 row_bytes=len(json.dumps(exact_row,separators=(',',':')).encode('utf-8'))
                 if sanitized_global+len(clean_checks)<=300 and sanitized_rows<300 and row_bytes<=8_000 and sanitized_bytes+row_bytes<=8_000:

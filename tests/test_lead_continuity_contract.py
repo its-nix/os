@@ -31,7 +31,7 @@ class LeadContinuityContractTests(unittest.TestCase):
         self.assertIn("check-runs?per_page=100", collector)
         self.assertIn("sha!=head.lower()", collector)
         self.assertIn("exact_head_evidence", collector)
-        self.assertIn("Exact-head evidence is available only", contract)
+        self.assertIn("Exact-head evidence is available", contract)
         self.assertIn("Review evidence remains unknown/not collected", contract)
 
     def test_native_notifier_supports_review_and_worker_terminal_wakes(self):
