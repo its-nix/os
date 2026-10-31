@@ -29,7 +29,7 @@ class LeadContinuityContractTests(unittest.TestCase):
         collector = (ROOT / "automation/monitoring/collector.py").read_text(encoding="utf-8")
         contract = (ROOT / "docs/LEAD-CONTINUITY-CONTRACT.md").read_text(encoding="utf-8")
         self.assertIn("statusCheckRollup", collector)
-        self.assertNotIn("headRefOid", collector)
+        self.assertIn("headRefOid", collector)
         self.assertIn("unknown/not available from this collector", contract)
         self.assertIn("CI run/check IDs and conclusions for that exact SHA", contract)
 

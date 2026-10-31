@@ -333,7 +333,7 @@ def run_readonly_live():
         for project,repo in repo_map.items():
             if not safe_id(project) or not valid_repo(repo):continue
             repo_status[project]='unavailable'
-            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','number,state,statusCheckRollup']
+            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','number,state,headRefOid,statusCheckRollup']
             ptext,query_status=run_result(args)
             if query_status!='available':
                 repo_status[project]=query_status
@@ -348,6 +348,7 @@ def run_readonly_live():
                 continue
             counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0,'checks_unknown':0}
             invalid=0;failure_records={};ambiguous=set();failure_cap=False
+            exact_heads=[]; exact_cap=False
             for pr in rows:
                 if not isinstance(pr,dict):
                     invalid+=1; continue
@@ -355,6 +356,22 @@ def run_readonly_live():
                 if state=='OPEN':counts['open']+=1
                 else:invalid+=1
                 number=pr.get('number')
+                head=pr.get('headRefOid')
+                valid_head=isinstance(head,str) and re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})',head)
+                if valid_head and type(number) is int and number > 0:
+                    if len(exact_heads)<100:
+                        checks_raw=pr.get('statusCheckRollup')
+                        checks_evidence=[]
+                        if isinstance(checks_raw,list):
+                            for check in checks_raw:
+                                if not isinstance(check,dict): continue
+                                run_id=check.get('databaseId') or check.get('id')
+                                conclusion=check.get('conclusion') or check.get('state') or check.get('status')
+                                if (type(run_id) is int and run_id>0 and isinstance(conclusion,str)
+                                        and len(conclusion)<=40 and re.fullmatch(r'[A-Za-z_]+',conclusion)):
+                                    checks_evidence.append({'check_run_id':str(run_id),'conclusion':conclusion.lower()})
+                        exact_heads.append({'pr_number':number,'head_sha':head.lower(),'checks':checks_evidence})
+                    else: exact_cap=True
                 checks=pr.get('statusCheckRollup')
                 if not isinstance(checks,list) or not checks:
                     counts['checks_unknown']+=1
@@ -386,8 +403,12 @@ def run_readonly_live():
             repo_collection[project]={'status':repo_status[project],'rows_observed':len(rows),'limit':1000,
                                       'cap_reached':cap_reached,'invalid_row_count':invalid,
                                       'failure_count':counts['checks_failing'],'failure_records_included':len(failure_records),
-                                      'failure_cap_reached':failure_cap}
+                                      'failure_cap_reached':failure_cap,'exact_head_limit':100,'exact_head_cap_reached':exact_cap}
             prs[project]=counts
+            repo_collection[project]['exact_head_evidence']=exact_heads
+            if exact_cap or any(not isinstance(row,dict) or not isinstance(row.get('headRefOid'),str)
+                    or re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})',row.get('headRefOid','')) is None for row in rows):
+                repo_status[project]='partial';repo_collection[project]['status']='partial'
             repo_failures[project]=sorted(failure_records.values(),key=lambda item:(item['pr_number'],item['check_name']))
     return {'profiles':profiles,'boards':boards,'board_list_status':board_list_status,'tasks':tasks,'task_collection_status':task_collection_status,
             'task_read_mode':'immutable_checkpoint_only','status':status,'repos':prs,'repo_status':repo_status,'repo_collection':repo_collection,
