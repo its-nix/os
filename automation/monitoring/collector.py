@@ -389,7 +389,7 @@ def run_readonly_live():
                                     rid=item.get('id'); sha=item.get('head_sha'); status=item.get('status'); conclusion=item.get('conclusion')
                                     created=safe_time(item.get('started_at')); completed=safe_time(item.get('completed_at'))
                                     if (not {'id','head_sha','status','conclusion','started_at','completed_at'}<=item.keys()
-                                            or type(rid) is not int or rid<1 or sha!=head.lower() or status not in status_values
+                                            or type(rid) is not int or rid<1 or sha!=head.lower() or not isinstance(status,str) or status not in status_values
                                             or (conclusion is not None and (not isinstance(conclusion,str) or conclusion not in conclusion_values))
                                             or (item.get('started_at') is None and status not in {'queued','waiting','requested','pending'})
                                             or (item.get('started_at') is not None and not created) or (item.get('completed_at') is not None and not completed)
@@ -635,7 +635,7 @@ def discover(manifest,runtime,now=None):
                 checks=row.get('checks'); clean_checks=[]
                 if not isinstance(checks,list) or len(checks)>100: exact_bad=True; checks=[]
                 for check in checks[:100]:
-                    if (sanitized_global>=300 or not isinstance(check,dict) or type(check.get('check_run_id')) is not int or check['check_run_id']<1 or check.get('status') not in status_values or check.get('conclusion') not in conclusion_values|{'unknown'}):
+                    if (sanitized_global>=300 or not isinstance(check,dict) or type(check.get('check_run_id')) is not int or check['check_run_id']<1 or not isinstance(check.get('status'),str) or check.get('status') not in status_values or not isinstance(check.get('conclusion'),str) or check.get('conclusion') not in conclusion_values|{'unknown'}):
                         exact_bad=True;continue
                     started=safe_time(check.get('started_at')); completed=safe_time(check.get('completed_at'))
                     if (not {'check_run_id','status','conclusion','started_at','completed_at'}<=check.keys()
@@ -646,7 +646,7 @@ def discover(manifest,runtime,now=None):
                     if any(c['check_run_id']==check['check_run_id'] for c in clean_checks): exact_bad=True;continue
                     sanitized_global+=1
                     clean_checks.append({'check_run_id':check['check_run_id'],'status':check['status'],'conclusion':check['conclusion'],'started_at':started,'completed_at':completed})
-                row_status=row.get('status') if row.get('status') in {'available','partial','unknown'} else 'unknown'
+                row_status=row.get('status') if isinstance(row.get('status'),str) and row.get('status') in {'available','partial','unknown'} else 'unknown'
                 if not clean_checks: row_status='unknown'
                 exact_row={'pr_number':row['pr_number'],'head_sha':row['head_sha'],'status':row_status,'checks':clean_checks}
                 row_bytes=len(json.dumps(exact_row,separators=(',',':')).encode('utf-8'))

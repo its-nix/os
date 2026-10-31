@@ -43,6 +43,10 @@ class ExactHeadEvidenceTests(unittest.TestCase):
                             ({"total_count": 1, "check_runs": [runrow(started_at="bad")]}, 0),
                             ({"total_count": 1, "check_runs": [{k:v for k,v in runrow().items() if k!="id"}]}, 0),
                             ({"total_count": 1, "check_runs": [runrow(status="made_up")]}, 0),
+                            ({"total_count": 1, "check_runs": [runrow(status=[])]}, 0),
+                            ({"total_count": 1, "check_runs": [runrow(status={})]}, 0),
+                            ({"total_count": 1, "check_runs": [runrow(conclusion=[])]}, 0),
+                            ({"total_count": 1, "check_runs": [runrow(conclusion={})]}, 0),
                             ({"total_count": 1, "check_runs": [runrow(status="completed", conclusion=None)]}, 0),
                             ({"total_count": 2, "check_runs": [runrow(), runrow()]}, 0),
                             ({}, 1)]:
@@ -97,6 +101,34 @@ class ExactHeadEvidenceTests(unittest.TestCase):
         self.assertEqual(found["checks"][0]["check_run_id"], 123)
         self.assertEqual(found["status"], "available")
         self.assertNotIn("secret stderr", json.dumps(compact))
+
+    def test_sanitizer_rejects_unhashable_exact_evidence_fields(self):
+        manifest = {"projects": [{"id": "base"}], "profiles": [], "metrics": []}
+        malformed = [
+            ({"status": [], "conclusion": "success"}, "available"),
+            ({"status": "completed", "conclusion": {}}, "available"),
+            ({"status": "completed", "conclusion": "success"}, []),
+            ({"status": "completed", "conclusion": "success"}, {}),
+        ]
+        for check_updates, row_status in malformed:
+            runtime = {
+                "repo_status": {"base": "available"},
+                "repo_collection": {"base": {"exact_head_evidence": [{
+                    "pr_number": 7, "head_sha": SHA, "status": row_status,
+                    "checks": [{"check_run_id": 1, "status": "completed",
+                                "conclusion": "success", "started_at": STAMP,
+                                "completed_at": STAMP, **check_updates}],
+                }]}}
+            }
+            with patch.object(collector, "load_json", return_value={"repos": {"base": "owner/repo"}}):
+                report = collector.discover(manifest, runtime)
+            self.assertIn(report["repo_status"]["base"], {"partial", "unknown"})
+            evidence = report["repo_collection"]["base"]["exact_head_evidence"]
+            self.assertTrue(evidence[0]["status"] in {"unknown", "partial"})
+            if isinstance(check_updates["status"], str) and isinstance(check_updates["conclusion"], str):
+                self.assertEqual(len(evidence[0]["checks"]), 1)
+            else:
+                self.assertEqual(evidence[0]["checks"], [])
 
     def test_started_at_null_only_for_not_yet_started_status(self):
         runtime, _ = self.capture({"total_count": 1, "check_runs": [runrow(
