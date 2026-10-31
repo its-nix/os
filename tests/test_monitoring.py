@@ -156,17 +156,18 @@ class MonitorEndToEnd(unittest.TestCase):
   from unittest.mock import patch
   root=Path(__file__).parents[1]; policy_path=root/'automation/monitoring/policy.json'; policy=json.loads(policy_path.read_text())
   original_policy=json.loads(json.dumps(policy));policy['repos']={'base':'owner/repo'}
-  payload=json.dumps([{'number':123,'state':'OPEN','title':'SECRET TITLE','url':'PRIVATE URL','statusCheckRollup':[{'conclusion':'FAILURE','name':'Lint'}]}])
+  payload=json.dumps([{'number':123,'state':'OPEN','headRefOid':'a'*40,'title':'SECRET TITLE','url':'PRIVATE URL','statusCheckRollup':[{'databaseId':456,'conclusion':'FAILURE','name':'Lint'}]}])
   seen=[]
   def fake(args,**kwargs):
    seen.append(tuple(args))
+   if args[0]=='gh' and len(args)>1 and args[1]=='api':return subprocess.CompletedProcess(args,0,json.dumps({'total_count':1,'check_runs':[{'id':987,'head_sha':'a'*40,'status':'completed','conclusion':'success','started_at':'2026-01-01T00:00:00Z','completed_at':'2026-01-01T00:01:00Z'}]}),'')
    if args[0]=='gh':return subprocess.CompletedProcess(args,0,payload,'')
    if tuple(args)==('hermes','kanban','boards','list','--json','--all'):return subprocess.CompletedProcess(args,0,'[]','')
    return subprocess.CompletedProcess(args,0,'','')
   try:
    policy_path.write_text(json.dumps(policy))
    with patch.object(collector.subprocess,'run',side_effect=fake):snap=run_readonly_live()
-   self.assertIn(('gh','pr','list','--repo','owner/repo','--state','open','--limit','1000','--json','number,state,statusCheckRollup'),seen)
+   self.assertIn(('gh','pr','list','--repo','owner/repo','--state','open','--limit','1000','--json','number,state,headRefOid,statusCheckRollup'),seen)
    self.assertEqual(snap['repos']['base']['open'],1);self.assertEqual(snap['repos']['base']['checks_failing'],1)
    runtime={'repos':{'base':snap['repos']['base'],'unmapped':{'title':'SECRET TITLE'}},'repo_status':snap['repo_status'],'repo_collection':snap['repo_collection'],'repo_failures':snap['repo_failures']}
    report=discover({'projects':[{'id':'base'}],'profiles':[],'metrics':[]},runtime)

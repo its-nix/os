@@ -329,11 +329,17 @@ def run_readonly_live():
     policy=load_json(Path(__file__).with_name('policy.json'))
     repo_map=policy.get('repos',{}) if isinstance(policy,dict) else {}
     prs={};repo_status={};repo_collection={};repo_failures={}
+    exact_global={'bytes':0,'check_rows':0,'evidence_rows':0,'calls':0}
+    exact_global_byte_cap=8_000
+    exact_global_row_cap=300
+    exact_global_call_cap=100
+    status_values={'queued','in_progress','completed','waiting','requested','pending'}
+    conclusion_values={'action_required','cancelled','failure','neutral','success','skipped','stale','timed_out'}
     if isinstance(repo_map,dict):
         for project,repo in repo_map.items():
             if not safe_id(project) or not valid_repo(repo):continue
             repo_status[project]='unavailable'
-            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','number,state,statusCheckRollup']
+            args=['gh','pr','list','--repo',repo,'--state','open','--limit','1000','--json','number,state,headRefOid,statusCheckRollup']
             ptext,query_status=run_result(args)
             if query_status!='available':
                 repo_status[project]=query_status
@@ -348,6 +354,8 @@ def run_readonly_live():
                 continue
             counts={'open':0,'checks_passing':0,'checks_failing':0,'checks_pending':0,'checks_unknown':0}
             invalid=0;failure_records={};ambiguous=set();failure_cap=False
+            exact_heads=[]; exact_cap=False
+            exact_incomplete=False; exact_cap=False
             for pr in rows:
                 if not isinstance(pr,dict):
                     invalid+=1; continue
@@ -355,6 +363,66 @@ def run_readonly_live():
                 if state=='OPEN':counts['open']+=1
                 else:invalid+=1
                 number=pr.get('number')
+                head=pr.get('headRefOid')
+                valid_head=isinstance(head,str) and re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})',head)
+                if valid_head and type(number) is int and number > 0:
+                    if len(exact_heads)<100:
+                        evidence={'pr_number':number,'head_sha':head.lower(),'status':'unknown','checks':[]}
+                        if (exact_global['calls'] < exact_global_call_cap
+                                and exact_global['bytes'] < exact_global_byte_cap
+                                and exact_global['evidence_rows'] < exact_global_row_cap
+                                and exact_global['check_rows'] < exact_global_row_cap):
+                            exact_global['calls']+=1
+                            api_args=['gh','api',f'repos/{repo}/commits/{head.lower()}/check-runs?per_page=100']
+                            api_text,api_status=run_result(api_args)
+                            try: payload=json.loads(api_text) if api_status=='available' else None
+                            except (ValueError,TypeError): payload=None
+                            runs=payload.get('check_runs') if isinstance(payload,dict) else None
+                            total=payload.get('total_count') if isinstance(payload,dict) else None
+                            if (api_status!='available' or not isinstance(payload,dict) or not isinstance(runs,list)
+                                    or type(total) is not int or total<0 or total!=len(runs) or len(runs)>100):
+                                exact_incomplete=True
+                            else:
+                                clean=[]; bad=len(runs)>exact_global_row_cap-exact_global['check_rows']
+                                ids=set()
+                                for item in runs[:100]:
+                                    if not isinstance(item,dict): bad=True;continue
+                                    rid=item.get('id'); sha=item.get('head_sha'); status=item.get('status'); conclusion=item.get('conclusion')
+                                    created=safe_time(item.get('started_at')); completed=safe_time(item.get('completed_at'))
+                                    if (not {'id','head_sha','status','conclusion','started_at','completed_at'}<=item.keys()
+                                            or type(rid) is not int or rid<1 or sha!=head.lower() or not isinstance(status,str) or status not in status_values
+                                            or (conclusion is not None and (not isinstance(conclusion,str) or conclusion not in conclusion_values))
+                                            or (item.get('started_at') is None and status not in {'queued','waiting','requested','pending'})
+                                            or (item.get('started_at') is not None and not created) or (item.get('completed_at') is not None and not completed)
+                                            or (status=='completed' and (not completed or conclusion is None))
+                                            or rid in ids):
+                                        bad=True;continue
+                                    ids.add(rid)
+                                    clean.append({'check_run_id':rid,'status':status,'conclusion':conclusion or 'unknown','started_at':created,'completed_at':completed})
+                                if exact_global['check_rows']+len(clean)>exact_global_row_cap:
+                                    bad=True; exact_cap=True; clean=[]
+                                if bad: clean=[]
+                                if runs and not clean: bad=True
+                                evidence.update({'status':'partial' if bad else 'available','checks':clean})
+                                if bad: exact_incomplete=True
+                        else:
+                            exact_incomplete=True;exact_cap=True
+                        serialized_size=len(json.dumps(evidence,separators=(',',':')).encode('utf-8'))
+                        if exact_global['bytes']+serialized_size>exact_global_byte_cap:
+                            evidence={'pr_number':number,'head_sha':head.lower(),'status':'partial','checks':[]}
+                            exact_incomplete=True;exact_cap=True
+                            serialized_size=len(json.dumps(evidence,separators=(',',':')).encode('utf-8'))
+                        if (exact_global['bytes']+serialized_size<=exact_global_byte_cap
+                                and exact_global['evidence_rows']<exact_global_row_cap):
+                            exact_global['bytes']+=serialized_size
+                            exact_global['evidence_rows']+=1
+                            exact_global['check_rows']+=len(evidence['checks'])
+                            exact_heads.append(evidence)
+                        else:
+                            exact_incomplete=True;exact_cap=True
+                            exact_global['bytes']=exact_global_byte_cap
+                    else: exact_cap=True;exact_incomplete=True
+
                 checks=pr.get('statusCheckRollup')
                 if not isinstance(checks,list) or not checks:
                     counts['checks_unknown']+=1
@@ -386,8 +454,12 @@ def run_readonly_live():
             repo_collection[project]={'status':repo_status[project],'rows_observed':len(rows),'limit':1000,
                                       'cap_reached':cap_reached,'invalid_row_count':invalid,
                                       'failure_count':counts['checks_failing'],'failure_records_included':len(failure_records),
-                                      'failure_cap_reached':failure_cap}
+                                      'failure_cap_reached':failure_cap,'exact_head_limit':100,'exact_head_cap_reached':exact_cap}
             prs[project]=counts
+            repo_collection[project]['exact_head_evidence']=exact_heads
+            if exact_cap or exact_incomplete or len(exact_heads)<min(len(rows),100) or any(not isinstance(row,dict) or not isinstance(row.get('headRefOid'),str)
+                    or re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})',row.get('headRefOid','')) is None for row in rows):
+                repo_status[project]='partial';repo_collection[project]['status']='partial'
             repo_failures[project]=sorted(failure_records.values(),key=lambda item:(item['pr_number'],item['check_name']))
     return {'profiles':profiles,'boards':boards,'board_list_status':board_list_status,'tasks':tasks,'task_collection_status':task_collection_status,
             'task_read_mode':'immutable_checkpoint_only','status':status,'repos':prs,'repo_status':repo_status,'repo_collection':repo_collection,
@@ -457,6 +529,11 @@ def _sanitize_recovery_history(raw, board):
 
 
 def discover(manifest,runtime,now=None):
+    status_values={'queued','in_progress','completed','waiting','requested','pending'}
+    conclusion_values={'action_required','cancelled','failure','neutral','success','skipped','stale','timed_out'}
+    sanitized_global=0
+    sanitized_bytes=0
+    sanitized_rows=0
     now=now or datetime.now(timezone.utc); now=now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now; projects={}; roles={}
     policy=load_json(Path(__file__).with_name('policy.json'))
     stale_after=policy.get('stale_after_hours',72) if isinstance(policy,dict) else 72
@@ -541,11 +618,45 @@ def discover(manifest,runtime,now=None):
         record=raw_repo_collection.get(project,{})
         if isinstance(record,dict):
             clean_record={'status':status}
-            for key in ('rows_observed','limit','invalid_row_count','failure_count','failure_records_included'):
+            for key in ('rows_observed','limit','invalid_row_count','failure_count','failure_records_included','exact_head_limit'):
                 value=record.get(key)
                 if isinstance(value,int) and not isinstance(value,bool) and value>=0:clean_record[key]=value
             if isinstance(record.get('cap_reached'),bool):clean_record['cap_reached']=record['cap_reached']
             if isinstance(record.get('failure_cap_reached'),bool):clean_record['failure_cap_reached']=record['failure_cap_reached']
+            exact=record.get('exact_head_evidence',[]); exact_clean=[]; exact_bad=not isinstance(exact,list) or len(exact)>100
+            for row in exact[:100] if isinstance(exact,list) else []:
+                if not isinstance(row,dict) or type(row.get('pr_number')) is not int or row['pr_number']<1 or not isinstance(row.get('head_sha'),str) or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})',row['head_sha']):
+                    exact_bad=True;continue
+                checks=row.get('checks'); clean_checks=[]; row_bad=False
+                if not isinstance(checks,list) or len(checks)>100: exact_bad=True; row_bad=True; checks=[]
+                for check in checks[:100]:
+                    if (sanitized_global>=300 or not isinstance(check,dict) or type(check.get('check_run_id')) is not int or check['check_run_id']<1 or not isinstance(check.get('status'),str) or check.get('status') not in status_values or not isinstance(check.get('conclusion'),str) or check.get('conclusion') not in conclusion_values|{'unknown'}):
+                        exact_bad=True;row_bad=True;continue
+                    started=safe_time(check.get('started_at')); completed=safe_time(check.get('completed_at'))
+                    if (not {'check_run_id','status','conclusion','started_at','completed_at'}<=check.keys()
+                            or (check.get('started_at') is None and check.get('status') not in {'queued','waiting','requested','pending'})
+                            or (check.get('started_at') is not None and not started) or (check.get('completed_at') is not None and not completed)
+                            or (check.get('status')=='completed' and (not completed or check.get('conclusion') in (None,'unknown')))):
+                        exact_bad=True;row_bad=True;continue
+                    if any(c['check_run_id']==check['check_run_id'] for c in clean_checks): exact_bad=True;row_bad=True;continue
+                    sanitized_global+=1
+                    clean_checks.append({'check_run_id':check['check_run_id'],'status':check['status'],'conclusion':check['conclusion'],'started_at':started,'completed_at':completed})
+                row_status=row.get('status') if isinstance(row.get('status'),str) and row.get('status') in {'available','partial','unknown'} else 'unknown'
+                if row_bad:
+                    clean_checks=[]
+                    row_status='partial'
+                if not clean_checks and row_status=='available' and row_bad: row_status='partial'
+                elif not clean_checks and row_status=='unknown': row_status='unknown'
+                exact_row={'pr_number':row['pr_number'],'head_sha':row['head_sha'],'status':row_status,'checks':clean_checks}
+                row_bytes=len(json.dumps(exact_row,separators=(',',':')).encode('utf-8'))
+                if sanitized_global+len(clean_checks)<=300 and sanitized_rows<300 and row_bytes<=8_000 and sanitized_bytes+row_bytes<=8_000:
+                    exact_clean.append(exact_row)
+                    sanitized_rows+=1
+                    sanitized_bytes+=row_bytes
+                else: exact_bad=True
+            clean_record['exact_head_evidence']=exact_clean
+            if exact_bad or any(x['status']!='available' for x in exact_clean):
+                repo_status[project]='partial' if exact_clean else 'unknown';clean_record['status']=repo_status[project]
             repo_collection[project]=clean_record
         if isinstance(counts,dict):
             clean={k:counts[k] for k in ('open','checks_passing','checks_failing','checks_pending','checks_unknown') if isinstance(counts.get(k),int) and not isinstance(counts.get(k),bool) and counts[k]>=0}

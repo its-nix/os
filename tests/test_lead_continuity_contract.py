@@ -25,13 +25,14 @@ class LeadContinuityContractTests(unittest.TestCase):
                 ):
                     self.assertIn(required, role)
 
-    def test_exact_head_evidence_remains_unknown_in_current_collector_contract(self):
+    def test_exact_head_evidence_is_collected_from_sha_bound_check_runs(self):
         collector = (ROOT / "automation/monitoring/collector.py").read_text(encoding="utf-8")
         contract = (ROOT / "docs/LEAD-CONTINUITY-CONTRACT.md").read_text(encoding="utf-8")
-        self.assertIn("statusCheckRollup", collector)
-        self.assertNotIn("headRefOid", collector)
-        self.assertIn("unknown/not available from this collector", contract)
-        self.assertIn("CI run/check IDs and conclusions for that exact SHA", contract)
+        self.assertIn("check-runs?per_page=100", collector)
+        self.assertIn("sha!=head.lower()", collector)
+        self.assertIn("exact_head_evidence", collector)
+        self.assertIn("Exact-head evidence is available", contract)
+        self.assertIn("Review evidence remains unknown/not collected", contract)
 
     def test_native_notifier_supports_review_and_worker_terminal_wakes(self):
         """Guard against role contracts drifting from supported Hermes event names."""

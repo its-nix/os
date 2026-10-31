@@ -158,6 +158,7 @@ def compact(report: dict, max_samples: int = MAX_SAMPLES_PER_PROJECT) -> dict:
         "repos": report.get("repos", {}),
         "repo_status": report.get("repo_status", {}),
         "repo_collection": report.get("repo_collection", {}),
+        "repo_failures": report.get("repo_failures", {}),
         "events": compact_events,
     }
 
