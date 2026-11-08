@@ -1,4 +1,6 @@
-# Knowledgebase integration — inert proposal
+# Historical knowledgebase integration preflight
+
+The findings below are the earlier proposal/audit record. The KB foundation is now present on its main branch. The clean integration follows [Clean company OS](CLEAN-COMPANY-OS.md) and the canonical KB contribution contract; earlier unmerged-state and task-plane references below are historical, not current deployment instructions.
 
 **Not approved, not installed, and not deployed.** This OS change contains original first-party skill candidates, role-template pointers, and static contract tests only. It changes no live identity, privileges, skills, config, memory, session, cron, credential, installer, or approval receipt. KB setup lives in a separate repository/branch; nothing here promotes its unmerged contents.
 

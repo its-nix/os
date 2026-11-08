@@ -1,4 +1,6 @@
-# Architecture
+# Previous deployment architecture
+
+This records the prior manifest. The clean deployment follows [Clean company OS](CLEAN-COMPANY-OS.md); do not use the previous task queue, communication assumptions or bootstrap as its configuration.
 
 ## Purpose
 
