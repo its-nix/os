@@ -67,5 +67,5 @@
 
 - [x] Run the OS suite/verifier, syntax and Compose checks; run the KB's existing checks.
 - [x] Obtain one fresh whole-branch review; fix consequential findings with regressions.
-- [ ] Open focused PRs and check CI. Document fresh state paths, access commands and exact remaining authenticated checks.
+- [x] Open focused PRs and check CI. Document fresh state paths, access commands and exact remaining authenticated checks.
 - [ ] After Codex is connected, prove a real three-agent task, connector read/write boundaries, knowledge proposal and container-native recovery before scheduling or broader rollout.
