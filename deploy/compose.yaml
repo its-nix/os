@@ -1,0 +1,59 @@
+name: nix-clean
+services:
+  hermes:
+    image: ${HERMES_IMAGE:?Prepare the pinned deployment environment first}
+    network_mode: host
+    restart: unless-stopped
+    command: [gateway, run]
+    stop_grace_period: 60s
+    mem_limit: 2g
+    pids_limit: 1024
+    environment:
+      HERMES_HOME: /opt/data
+      API_SERVER_ENABLED: 'true'
+      API_SERVER_HOST: 127.0.0.1
+      API_SERVER_PORT: '18642'
+      HERMES_DASHBOARD: '1'
+      HERMES_DASHBOARD_HOST: 127.0.0.1
+      HERMES_DASHBOARD_PORT: '19119'
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/hermes
+        target: /opt/data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/knowledge/company
+        target: /knowledge/company
+        read_only: true
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, /opt/hermes/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18642/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 4
+  paperclip:
+    image: ${PAPERCLIP_IMAGE:?Prepare the pinned deployment environment first}
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 90s
+    mem_limit: 2g
+    pids_limit: 2048
+    environment:
+      HOST: 127.0.0.1
+      PORT: '13100'
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_DEPLOYMENT_MODE: local_trusted
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_PUBLIC_URL: http://127.0.0.1:13100
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/paperclip
+        target: /paperclip
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:13100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 180s
+      retries: 4

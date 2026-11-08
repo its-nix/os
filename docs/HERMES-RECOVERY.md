@@ -1,5 +1,8 @@
 # Hermes recovery images
 
+The clean container-native pilot in `deploy/README.md` has a separate recovery activation gate. This implementation is not yet adapted or proven for that pilot's Hermes container and Paperclip database/state; merging it does not enable daily publication or establish full-system recoverability.
+
+
 Each recovery image embeds a native **full** Hermes backup in the matching Linux Hermes runtime. It includes portable memories, sessions, learned skills, all named profiles, configuration, credentials and SQLite databases. The archive is unencrypted by design and must stay in a **private** GHCR package. Neither the archive nor its contents belongs in Git, Actions artifacts or CI caches.
 
 The source host makes the backup. A hosted runner cannot reconstruct learning from this repository. Docker image commits also omit mounted volumes, so this workflow explicitly copies the native backup archive into the image.

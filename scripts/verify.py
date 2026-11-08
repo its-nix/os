@@ -236,7 +236,7 @@ UNSAFE_PARTS = {
 }
 MAX_REPOSITORY_FILE_BYTES = 1_000_000
 ABSOLUTE_HOME = re.compile(r"(?<![A-Za-z0-9_])/(?:home|Users)/[^\s`'\"/]+")
-LEGACY_TERMS = ("paper" + "clip", "n" + "8n", "s" + "lack")
+LEGACY_TERMS = ("n" + "8n", "s" + "lack")
 SECRET_PATTERNS = {
     "private key": re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
     "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
