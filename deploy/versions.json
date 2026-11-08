@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "hermes": {
+    "image": "nousresearch/hermes-agent@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002",
+    "revision": "2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19",
+    "version": "0.23.0"
+  },
+  "paperclip": {
+    "image": "ghcr.io/paperclipai/paperclip@sha256:d6584f05cf57a4b26c117eb083725f18c1fe69ddafa7d16c9f8cce83f6fa17da",
+    "revision": "d69631b01b9c658f80bf8bed389863dce82643e1",
+    "version": "2026.1106.0"
+  },
+  "knowledgebase": {
+    "repository": "https://github.com/its-nix/knowledgebase.git",
+    "revision": "39cc1aa7aa33f7d54b2ebd63dcff05acb8b1697a"
+  },
+  "kit": {
+    "repository": "https://github.com/its-nix/kit.git",
+    "revision": "6c72d91248dfa3a705dc855e45e6456e6a38a720"
+  },
+  "agency": {
+    "repository": "msitarzewski/agency-agents",
+    "revision": "b859c515d813efcfc4755d3471dd9e7686c7706d",
+    "files": {
+      "lead": {
+        "path": "project-management/project-management-project-shepherd.md",
+        "sha256": "0feb647366d78b61c1633b12e370ffb1dea52facb9d750ef6c952de1e996031c"
+      },
+      "engineer": {
+        "path": "engineering/engineering-minimal-change-engineer.md",
+        "sha256": "9999cc74e7b3936af892ef2c2793d105bb92f6c47789aa23db6df92bf68b45e5"
+      },
+      "reviewer": {
+        "path": "engineering/engineering-code-reviewer.md",
+        "sha256": "7509fcc3ea1dda46511b2801996305bf3d4a125576f9655ff0b63df25602f446"
+      },
+      "license": {
+        "path": "LICENSE",
+        "sha256": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f"
+      }
+    }
+  }
+}

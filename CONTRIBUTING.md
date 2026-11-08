@@ -2,7 +2,11 @@
 
 This repository is the safe, Git-tracked declaration of Nix's lean Hermes operating system.
 
-## Required boundaries
+## Clean deployment work
+
+The user-approved clean redesign is defined in [Clean company OS](docs/CLEAN-COMPANY-OS.md) and implemented under `deploy/`. It uses Paperclip for internal execution, Hermes native Bot Groups for specialist communication, Todoist for human–agent commitments, the company KB for reviewed organizational knowledge, GitHub for code and Drive for deliverable artifacts. Those choices supersede the previous task/communication-plane assumptions below for the clean stack. Keep old exact-revision approval evidence intact; it does not authorize or configure the new deployment. Use fresh native homes and upstream entrypoints, and do not reuse the stopped VPS stack.
+
+## Previous deployment boundaries
 
 - LNX owns company OS/infrastructure, cross-project coordination, portfolio priorities, and independent exception monitoring; it is not a required relay for project delivery.
 - Project Leads own their outcomes, decomposition, recovery, direct communication with Lior, and synthesis; specialists execute fresh bounded assignments and report to their Lead.

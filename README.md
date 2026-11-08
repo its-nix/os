@@ -1,5 +1,9 @@
 # Nix OS
 
+The clean redesign uses official Hermes and Paperclip images, native Bot Groups and the Git-backed company knowledgebase. See the [architecture](docs/CLEAN-COMPANY-OS.md) and [fresh VPS deployment](deploy/README.md). The three-agent pilot is staged with model authentication deferred to Lior; paused agents and healthy services are not completed live-task acceptance.
+
+The manifest, role packs and commands below document the previous deployment. They remain versioned for audit and must not be used to bootstrap the clean VPS stack.
+
 Nix OS is a lean, declarative operating repository for the Nix portfolio. It describes seven isolated Hermes profiles, three project boards, role boundaries, and the safe bootstrap path. It is an organizational operating system, not a Linux distribution.
 
 ## Current topology
@@ -123,7 +127,7 @@ Only the aggregator's second-stage delivery target is `discord`, which resolves 
 
 ## Migration note
 
-The previous Paperclip-based design remains preserved remotely at `archive/paperclip-os-2026-10-23`. This repository does not use Paperclip, n8n, Slack, a custom agent runtime, or one Discord bot per internal agent. The archive branch is historical evidence only and must not be modified by this bootstrap.
+The previous Paperclip-based design remains preserved remotely at `archive/paperclip-os-2026-10-23`. That archived experiment is historical evidence and is not an input to the clean deployment. The new design uses native upstream capabilities and excludes the old custom integration, n8n and Slack. Do not revive the archived stack or modify its evidence through the previous bootstrap.
 
 ## Repository map
 

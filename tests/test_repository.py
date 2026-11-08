@@ -666,6 +666,16 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertTrue(any("project algua layout" in error for error in errors), errors)
             self.assertTrue(any("authority planes must be exactly" in error for error in errors), errors)
 
+    def test_approved_clean_controller_design_is_not_rejected_as_legacy(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "repo"
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            (copy / "docs/clean-controller.md").write_text(
+                "Paperclip owns internal execution in the approved clean redesign.\n", encoding="utf-8")
+            errors = verifier.validate_repository(copy)
+            self.assertFalse(any("legacy architecture term 'paperclip'" in e for e in errors), errors)
+
     def test_verifier_rejects_legacy_architecture_outside_migration_note(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
