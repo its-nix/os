@@ -45,3 +45,18 @@ class CleanPreparationTests(unittest.TestCase):
             (fixture / 'deploy/pilot.json').write_text((ROOT / 'deploy/pilot.json').read_text())
             with patch.object(clean_os, 'REPO', fixture), self.assertRaises(clean_os.Refusal):
                 clean_os.inputs()
+
+    def test_every_worker_can_discover_the_pinned_knowledge_tools(self):
+        import json
+        with tempfile.TemporaryDirectory() as td, contextlib.redirect_stdout(io.StringIO()):
+            destination = Path(td) / 'deployment'
+            clean_os.prepare(destination, roles={key: 'Synthetic role/license' for key in ('lead', 'engineer', 'reviewer', 'license')})
+            versions = json.loads((ROOT / 'deploy/versions.json').read_text())
+            home = destination / 'hermes'
+            for rel in ('', 'profiles/engineer', 'profiles/reviewer'):
+                soul = (home / rel / 'SOUL.md').read_text()
+                self.assertIn('/knowledge/company/START-HERE.md', soul)
+                self.assertIn('/opt/data/nix/kb/.venv/bin/python /knowledge/company/scripts/retrieve.py', soul)
+                self.assertIn('--ref ' + versions['knowledgebase']['revision'], soul)
+                self.assertIn('--curate', soul)
+            self.assertEqual(versions, json.loads((home / 'nix/versions.json').read_text()))

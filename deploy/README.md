@@ -61,7 +61,7 @@ The KB entry is <https://github.com/its-nix/knowledgebase/blob/main/START-HERE.m
 /opt/data/nix/kb/.venv/bin/python /knowledge/company/scripts/retrieve.py --curate
 ```
 
-These commands run inside the Hermes container. Results are private company context: do not print note bodies into public CI or operator reports. Current results must carry source/authority links. Zero matches means no approved evidence found. The current lexical engine does not infer semantic matches or truth.
+Preparation embeds the exact local paths, retrieval/curation commands and pinned citation ref in every worker's SOUL, with non-secret pins at `/opt/data/nix/versions.json`. These commands run inside the Hermes container. Results are private company context: do not print note bodies into public CI or operator reports. Current results must carry source/authority links. Zero matches means no approved evidence found. The current lexical engine does not infer semantic matches or truth.
 
 Every significant outcome reports its knowledge-impact disposition on the originating Paperclip work item. The lead routes a focused company proposal through the curator and applicable human review. Proposal writes use a separately scoped working copy/credential later; the worker's read-only snapshot cannot publish or merge. Drive artifacts and project technical truth remain linked, not mirrored. The companion KB PR updates older task-plane references; until merged, that proposal is not promoted company truth.
 

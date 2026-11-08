@@ -59,6 +59,20 @@ def prepare(root, roles=None):
     roles = download_roles(versions) if roles is None else roles
     root.mkdir(mode=0o700, parents=True)
     home = root / 'hermes'
+    knowledge = f"""
+## Company knowledge access
+
+Read `/knowledge/company/START-HERE.md`, then its `AGENTS.md` and only the relevant notes/policies. This is the immutable, read-only company snapshot, not an artifacts or runtime-memory store. Its schema/lifecycle governs contributions; the Nix role boundaries above carry the approved clean task-board routing.
+
+Retrieve current evidence with canonical snapshot citations:
+
+```bash
+/opt/data/nix/kb/.venv/bin/python /knowledge/company/scripts/retrieve.py '<question>' --ref {versions['knowledgebase']['revision']}
+/opt/data/nix/kb/.venv/bin/python /knowledge/company/scripts/retrieve.py --curate
+```
+
+No current result means no approved evidence found. Curation reports issues and never promotes or rewrites knowledge. Route knowledge-impact proposals through the lead and human review. Non-secret source pins are available at `/opt/data/nix/versions.json`. Do not install tools or seek broader credentials to bypass this read-only boundary.
+"""
     for agent in pilot['agents']:
         profile = agent['profile']
         target = home if profile == 'default' else home / 'profiles' / profile
@@ -69,10 +83,11 @@ def prepare(root, roles=None):
             'terminal': {'cwd': '/opt/data/workspaces/' + profile},
         }
         write(target / 'config.yaml', json.dumps(config, indent=2) + '\n')
-        write(target / 'SOUL.md', boundaries + '\n## Agency role reference\n\n' + roles[agent['id']])
+        write(target / 'SOUL.md', boundaries + knowledge + '\n## Agency role reference\n\n' + roles[agent['id']])
         write(target / '.env', 'API_SERVER_KEY=' + secrets.token_hex(32) + '\n')
         (home / 'workspaces' / profile).mkdir(mode=0o700, parents=True)
     write(home / 'nix/licenses/agency-LICENSE', roles['license'])
+    write(home / 'nix/versions.json', json.dumps(versions, indent=2) + '\n')
     (root / 'paperclip').mkdir(mode=0o700)
     (root / 'knowledge').mkdir(mode=0o700)
     environment = {
