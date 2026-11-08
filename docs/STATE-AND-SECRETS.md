@@ -48,3 +48,7 @@ Student and payment records stay in their approved systems. Agents use the minim
 ## Incident response
 
 If sensitive state is accidentally added, stop; do not merely add it to `.gitignore`. Remove it from the index and history as appropriate, rotate affected credentials, document the incident in an approved private channel, then re-run repository verification.
+
+## Private recovery images
+
+The explicitly authorized full-state recovery workflow stores unencrypted native Hermes backup archives inside private GHCR images, outside Git. See [Hermes recovery](HERMES-RECOVERY.md) for source-host scheduling, private package checks, retention and fresh-volume restoration. Recovery automation sources and synthetic tests may be tracked; backup archives, build contexts and live state may not.
