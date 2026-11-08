@@ -4,7 +4,7 @@ The target architecture is [Clean company OS](../docs/CLEAN-COMPANY-OS.md). This
 
 ## Inputs and native ownership
 
-`versions.json` pins the official images, their source revisions, company KB, Kit and Agency role sources. `pilot.json` maps each controller identity to its exact Hermes profile and selected skills. Shared workflow skills include the upstream prerequisites; role-specific selections add focused expertise. Agency role bodies are hash-checked and combined with the small Nix boundary files; their MIT notice is installed into the native home.
+`versions.json` pins the official images, their source revisions, company KB, Kit and Agency role sources. `pilot.json` maps each controller identity to its exact Hermes profile and selected skills. Shared workflow skills include the upstream prerequisites; role-specific selections add focused expertise. The Agency references are Project Shepherd, Minimal Change Engineer and Code Reviewer. Role bodies are hash-checked and combined with the small Nix boundary files; their MIT notice is installed into the native home.
 
 | Role | Hermes home inside container | Adapter base URL |
 | --- | --- | --- |
