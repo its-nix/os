@@ -32,10 +32,10 @@
 **Files:** `docs/CLEAN-COMPANY-OS.md`, this plan, `scripts/verify.py`, `tests/test_repository.py`, `deploy/versions.json`.
 **Produces:** explicit design, immutable image/source/KB/Kit pins, and continued repository safety checks.
 
-- [ ] Add a failing verifier regression allowing the explicitly approved Paperclip design while retaining other legacy/secret rejection.
-- [ ] Update only the obsolete name prohibition; preserve historical receipts and existing deployment semantics.
-- [ ] Record image digests and source revisions from actual official registry readback; validate pins.
-- [ ] Run focused tests and repository verification; commit.
+- [x] Add a failing verifier regression allowing the explicitly approved Paperclip design while retaining other legacy/secret rejection.
+- [x] Update only the obsolete name prohibition; preserve historical receipts and existing deployment semantics.
+- [x] Record image digests and source revisions from actual official registry readback; validate pins.
+- [x] Run focused tests and repository verification; commit.
 
 ### Task 2: Prepare the fresh native stack
 
@@ -43,11 +43,11 @@
 **Consumes:** immutable pins and the approved design.
 **Produces:** preview-first preparation of fresh native homes and profile instructions; official Compose services on loopback.
 
-- [ ] Write a failing test for preview non-mutation and refusal to overwrite existing homes/credentials.
-- [ ] Implement minimal file preparation and validation; use native tools for profile/service/agent operations.
-- [ ] Verify Compose configuration, image startup and source revisions on the VPS under the fresh project.
-- [ ] Read back profile API scopes and native group capabilities. Preserve stopped old deployments and unrelated workloads.
-- [ ] Verify restart persistence. Keep provider-dependent work pending and unattended schedules disabled.
+- [x] Write a failing test for preview non-mutation and refusal to overwrite existing homes/credentials.
+- [x] Implement minimal file preparation and validation; use native tools for profile/service/agent operations.
+- [x] Verify Compose configuration, image startup and source revisions on the VPS under the fresh project.
+- [x] Read back profile API scopes and native group capabilities. Preserve stopped old deployments and unrelated workloads.
+- [x] Verify restart persistence. Keep provider-dependent work pending and unattended schedules disabled.
 
 ### Task 3: Integrate the knowledge contract and pilot identities
 
@@ -55,17 +55,17 @@
 **Consumes:** native runtime endpoints, exact profile names and pinned company KB.
 **Produces:** matching Paperclip/Hermes identities and native group plus current-only KB retrieval and explicit knowledge-impact handoff.
 
-- [ ] Use native controller APIs/CLI to register the pilot and group; verify identity readback.
-- [ ] Exercise existing KB unit tests, validation/retrieval and curation on the immutable read-only copy; do not print private note bodies.
-- [ ] Propose the focused KB terminology/ownership update without promoting provisional company claims.
-- [ ] Record ready/pending evidence. A missing native capability blocks that step without introducing a bridge.
+- [x] Use native controller APIs/CLI to register the pilot and group; verify identity readback.
+- [x] Exercise existing KB unit tests, validation/retrieval and curation on the immutable read-only copy; do not print private note bodies.
+- [x] Propose the focused KB terminology/ownership update without promoting provisional company claims.
+- [x] Record ready/pending evidence. A missing native capability blocks that step without introducing a bridge.
 
 ### Task 4: Verify, review and hand off staging
 
 **Files:** deployment guide and PR descriptions.
 **Produces:** verified staged deployment and reviewable OS/KB PRs; explicit Codex-dependent acceptance checklist.
 
-- [ ] Run the OS suite/verifier, syntax and Compose checks; run the KB's existing checks.
-- [ ] Obtain one fresh whole-branch review; fix consequential findings with regressions.
+- [x] Run the OS suite/verifier, syntax and Compose checks; run the KB's existing checks.
+- [x] Obtain one fresh whole-branch review; fix consequential findings with regressions.
 - [ ] Open focused PRs and check CI. Document fresh state paths, access commands and exact remaining authenticated checks.
 - [ ] After Codex is connected, prove a real three-agent task, connector read/write boundaries, knowledge proposal and container-native recovery before scheduling or broader rollout.

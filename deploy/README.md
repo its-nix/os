@@ -79,3 +79,9 @@ After Lior connects Codex through the native Hermes provider setup, verify each 
 Recovery is a separate pending gate: adapt PR 60 for native container capture, Paperclip's actual database/configuration/keys, group state and immutable input revisions. Test a fresh isolated restore before enabling daily private publication or unattended work. No additional backup encryption is requested. An old backup or a healthy container is not evidence that the complete redesigned system has passed recovery or real model execution.
 
 Stop only this project with the same Compose file and env file. It preserves both native homes. Do not remove volumes/state or revive the previous VPS stack as a rollback.
+
+## Observed staging evidence — 2026-11-08
+
+Official Hermes 0.23.0 and Paperclip 2026.1106.0 started healthy on fresh native homes. All three profile capability routes returned 200 for their own key and 401 for another profile's key. The native Group driver reported ready and its exact three-member room survived full container recreation, as did all three paused controller identities and native secret references. Installed role/prerequisite skill counts were 15/14/15. KB tests passed 27/27 inside the runtime; UID 10000 retrieval returned a sourced current result with the pinned immutable citation. The KB mount was read-only and all three listeners were loopback-only. No model turn or external connector acceptance was performed.
+
+Independent source review found a missing worker-local KB command/ref, which was reproduced and fixed with a preparation regression. The source-owned knowledge section was updated and read back in all three staged profiles. The old deployment remains stopped and no old state is mounted. Full Linux OS validation ran 258 tests with two optional checks skipped, plus the repository verifier and existing syntax/bootstrap/scout checks.
