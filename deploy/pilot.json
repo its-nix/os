@@ -3,11 +3,58 @@
   "company": "Nix clean pilot",
   "group": "Delivery pilot",
   "agents": [
-    {"id": "lead", "profile": "default", "title": "Delivery Lead", "kit_skills": ["brainstorming", "to-spec", "writing-plans", "write-product-spec", "verification-before-completion"]},
-    {"id": "engineer", "profile": "engineer", "title": "Engineer", "kit_skills": ["codebase-design", "writing-plans", "executing-plans", "test-driven-development", "systematic-debugging", "verification-before-completion"]},
-    {"id": "reviewer", "profile": "reviewer", "title": "Independent Reviewer", "kit_skills": ["verification-before-completion", "iterate-until-verified", "best-practices"]}
+    {
+      "id": "lead",
+      "profile": "default",
+      "title": "Delivery Lead",
+      "kit_skills": [
+        "brainstorming",
+        "to-spec",
+        "writing-plans",
+        "write-product-spec",
+        "verification-before-completion"
+      ]
+    },
+    {
+      "id": "engineer",
+      "profile": "engineer",
+      "title": "Engineer",
+      "kit_skills": [
+        "codebase-design",
+        "writing-plans",
+        "executing-plans",
+        "test-driven-development",
+        "systematic-debugging",
+        "verification-before-completion"
+      ]
+    },
+    {
+      "id": "reviewer",
+      "profile": "reviewer",
+      "title": "Independent Reviewer",
+      "kit_skills": [
+        "verification-before-completion",
+        "iterate-until-verified",
+        "best-practices"
+      ]
+    }
   ],
   "adapter_type": "hermes_gateway",
   "session_key_strategy": "issue",
-  "unattended_execution": false
+  "unattended_execution": false,
+  "shared_kit_skills": [
+    "using-superpowers",
+    "brainstorming",
+    "writing-plans",
+    "executing-plans",
+    "verification-before-completion",
+    "requesting-code-review",
+    "receiving-code-review",
+    "using-git-worktrees",
+    "finishing-a-development-branch",
+    "subagent-driven-development",
+    "dispatching-parallel-agents",
+    "test-driven-development",
+    "systematic-debugging"
+  ]
 }
