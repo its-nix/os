@@ -39,32 +39,34 @@ def native_inputs(source):
 def apply(revision, source, state, current, run=run):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
-    if not all((state / name).is_dir() and not (state / name).is_symlink()
-               for name in ('hermes', 'paperclip', 'knowledge/company')):
-        raise ValueError('Existing native state and KB are required')
-    if current.exists() and not current.is_symlink():
-        raise ValueError('Operator must adopt the existing source directory as a symlink first')
-    desired = native_inputs(source)
-    if json.loads((state / 'installed-inputs.json').read_text()) != desired:
-        raise ValueError('Native inputs changed; refresh KB, Kit, profiles or instructions explicitly first')
-    versions = json.loads((source / 'deploy/versions.json').read_text())
-    installed = json.loads((state / 'hermes/nix/versions.json').read_text())
-    if {k: v for k, v in installed.items() if k not in ('hermes', 'paperclip')} != desired['dependencies']:
-        raise ValueError('Installed native dependency pins do not match the reviewed source')
-    for name, repository in [('hermes', 'nousresearch/hermes-agent'), ('paperclip', 'ghcr.io/paperclipai/paperclip')]:
-        if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
-            raise ValueError('Only digest-pinned official images may deploy')
+    if not state.is_dir() or state.is_symlink():
+        raise ValueError('Existing native state root is required')
     candidate = state / ('.deployment-' + revision + '.env')
-    candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
-        'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
-        'PAPERCLIP_IMAGE': versions['paperclip']['image'],
-    }.items()))
-    candidate.chmod(0o600)
     attempt = {'revision': revision, 'started_at': datetime.now(timezone.utc).isoformat(), 'status': 'deploying'}
     write_json(state / 'deployment-attempt.json', attempt)
-    compose = ['docker', 'compose', '--project-name', 'nix-clean', '--env-file', str(candidate),
-               '--file', str(source / 'deploy/compose.yaml')]
     try:
+        if not all((state / name).is_dir() and not (state / name).is_symlink()
+                   for name in ('hermes', 'paperclip', 'knowledge/company')):
+            raise ValueError('Existing native state and KB are required')
+        if current.exists() and not current.is_symlink():
+            raise ValueError('Operator must adopt the existing source directory as a symlink first')
+        desired = native_inputs(source)
+        if json.loads((state / 'installed-inputs.json').read_text()) != desired:
+            raise ValueError('Native inputs changed; refresh KB, Kit, profiles or instructions explicitly first')
+        versions = json.loads((source / 'deploy/versions.json').read_text())
+        installed = json.loads((state / 'hermes/nix/versions.json').read_text())
+        if {k: v for k, v in installed.items() if k not in ('hermes', 'paperclip')} != desired['dependencies']:
+            raise ValueError('Installed native dependency pins do not match the reviewed source')
+        for name, repository in [('hermes', 'nousresearch/hermes-agent'), ('paperclip', 'ghcr.io/paperclipai/paperclip')]:
+            if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
+                raise ValueError('Only digest-pinned official images may deploy')
+        candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
+            'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
+            'PAPERCLIP_IMAGE': versions['paperclip']['image'],
+        }.items()))
+        candidate.chmod(0o600)
+        compose = ['docker', 'compose', '--project-name', 'nix-clean', '--env-file', str(candidate),
+                   '--file', str(source / 'deploy/compose.yaml')]
         run(compose + ['config', '--quiet'])
         run(compose + ['pull'])
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
@@ -82,6 +84,8 @@ def apply(revision, source, state, current, run=run):
         run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nix-clean-hermes-1',
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
         link = current.with_name(current.name + '.next')
+        if link.is_symlink():
+            link.unlink()  # Recover a temporary pointer left by an interrupted deployment.
         link.symlink_to(source)
         link.replace(current)
         candidate.replace(state / 'deployment.env')
