@@ -1,0 +1,49 @@
+name: Hermes daily recovery
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: hermes-daily-recovery
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    # Install this workflow in a private control repository. Never attach the
+    # Hermes host to the public OS repository's runner pool.
+    if: github.event.repository.private == true && vars.HERMES_RECOVERY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, hermes-recovery]
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RECOVERY_HOME: ${{ vars.HERMES_RECOVERY_HOME }}
+      HERMES_SOURCE: ${{ vars.HERMES_RECOVERY_SOURCE }}
+      HERMES_BIN: ${{ vars.HERMES_RECOVERY_BIN }}
+      RUNTIME_IMAGE: ${{ vars.HERMES_RECOVERY_RUNTIME_IMAGE }}
+      RECOVERY_IMAGE: ${{ vars.HERMES_RECOVERY_IMAGE }}
+      OS_REF: ${{ vars.HERMES_RECOVERY_OS_REF }}
+    steps:
+      - name: Require reviewed OS commit
+        shell: bash
+        run: '[[ "$OS_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: its-nix/os
+          ref: ${{ vars.HERMES_RECOVERY_OS_REF }}
+          persist-credentials: false
+      - name: Build, restore-check and publish privately
+        shell: bash
+        run: |
+          python3 automation/recovery/create.py \
+            --home "$RECOVERY_HOME" \
+            --hermes-source "$HERMES_SOURCE" \
+            --hermes-bin "${HERMES_BIN:-hermes}" \
+            --runtime-image "$RUNTIME_IMAGE" \
+            --image "$RECOVERY_IMAGE" \
+            --apply --publish

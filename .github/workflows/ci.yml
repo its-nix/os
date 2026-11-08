@@ -19,6 +19,10 @@ jobs:
           python-version: "3.11"
       - name: Unit tests
         run: python3 -m unittest discover -s tests -v
+      - name: Synthetic Docker recovery canary
+        env:
+          HERMES_RECOVERY_TEST_IMAGE: python:3.11-slim
+        run: python3 -m unittest discover -s tests -p test_recovery_container.py -v
       - name: Clean Compose contract
         run: |
           python3 - <<'PYTHON'
