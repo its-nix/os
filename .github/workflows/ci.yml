@@ -3,6 +3,9 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * *'
 
 permissions:
   contents: read
@@ -37,7 +40,9 @@ jobs:
       - name: Repository verifier
         run: python3 scripts/verify.py
       - name: Bootstrap syntax
-        run: bash -n scripts/bootstrap.sh
+        run: |
+          bash -n scripts/bootstrap.sh
+          sh -n scripts/deploy-os.sh
       - name: Python syntax
         run: python3 -m compileall -q scripts tests automation
       - name: Bootstrap preview
@@ -48,3 +53,39 @@ jobs:
         run: HERMES_BIN=/not-installed/hermes python3 scripts/setup-skill-scouts.py
       - name: Diff whitespace
         run: git diff --check
+
+  deploy:
+    needs: verify
+    if: github.repository == 'its-nix/os' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: vps
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: nix-os-vps
+      cancel-in-progress: false
+    timeout-minutes: 15
+    steps:
+      - name: Deploy verified main through restricted SSH
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_KNOWN_HOSTS: ${{ vars.VPS_KNOWN_HOSTS }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ && "$VPS_USER" == nixops ]]
+          [[ -n "$VPS_SSH_KEY" && -n "$VPS_KNOWN_HOSTS" ]]
+          umask 077
+          task_dir=$(mktemp -d)
+          trap 'rm -rf "$task_dir"' EXIT
+          printf '%s\n' "$VPS_SSH_KEY" > "$task_dir/key"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$task_dir/known_hosts"
+          ssh -i "$task_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$task_dir/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+            -- "$VPS_USER@$VPS_HOST" "$GITHUB_SHA"
+          printf 'Deployed %s to the VPS. Native state is preserved.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
