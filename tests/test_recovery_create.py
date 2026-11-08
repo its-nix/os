@@ -111,3 +111,35 @@ class CreateTests(unittest.TestCase):
                 '--image', 'ghcr.io/example/recovery', '--apply',
             ]))
         self.assertNotIn('PRIVATE_MEMBER_NAME', output.getvalue())
+
+    def test_linked_credentials_and_databases_and_omitted_root_files_are_refused(self):
+        for rel in ('.env', 'auth.json', 'state.db', 'config.yaml', 'profiles/project/.env'):
+            with self.subTest(path=rel), tempfile.TemporaryDirectory() as td:
+                home = Path(td)
+                target = home / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(home / 'external-value')
+                with self.assertRaises(create.Refusal):
+                    create.check_coverage(home, {})
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / '.env').write_text('SYNTHETIC=example')
+            with self.assertRaises(create.Refusal):
+                create.check_coverage(home, {})
+
+    def test_empty_source_database_is_refused_even_if_sqlite_snapshot_is_valid(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            source = home / 'state.db'
+            source.touch()
+            snapshot = home / 'elsewhere.db'
+            conn = sqlite3.connect(source)
+            dest = sqlite3.connect(snapshot)
+            conn.backup(dest)
+            dest.close()
+            conn.close()
+            self.assertGreater(snapshot.stat().st_size, 0)
+            create.recovery.check_database(snapshot)
+            with self.assertRaises(create.Refusal):
+                create.check_coverage(home, {'state.db': create.recovery.digest(snapshot)})

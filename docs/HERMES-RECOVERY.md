@@ -24,7 +24,7 @@ Temporary backup/build files live outside the checkout in an owner-only director
 
 ## What verification proves
 
-Before publishing, the builder checks archive CRCs, paths, SQLite integrity and coverage of memories, session files and learned skills across profiles. Linked context is refused because native backup skips symlinks; materialize those installations deliberately before retrying. If context files change while the backup runs, coverage may refuse and a later retry is appropriate.
+Before publishing, the builder checks archive CRCs, paths, SQLite integrity and coverage of durable root configuration/credentials/databases, memories, session files and learned skills across profiles. Empty or truncated source database headers are refused before native backup can convert them into valid but empty SQLite files. Linked context is refused because native backup skips symlinks; materialize those installations deliberately before retrying. If context files change while the backup runs, coverage may refuse and a later retry is appropriate.
 
 A container then restores into temporary storage with no network, a read-only root, dropped capabilities and no gateway entrypoint. Every restored file is hashed and every database checked again. Stale process markers and database sidecars are excluded. A successful canary proves archive extraction and database readability, not live Discord/API authentication or successful agent replies. It never starts bots or scheduled jobs.
 

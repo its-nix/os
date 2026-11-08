@@ -27,7 +27,17 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def check_database_header(path):
+    # SQLite accepts a zero-byte file and can snapshot it into a valid empty DB.
+    # Reject truncation before opening it, both on the source and in the archive.
+    with path.open('rb') as stream:
+        header = stream.read(100)
+    if len(header) < 100 or not header.startswith(b'SQLite format 3\x00'):
+        raise Refusal('Database integrity failed: empty or truncated header')
+
+
 def check_database(path):
+    check_database_header(path)
     try:
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
             if conn.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
@@ -66,7 +76,7 @@ def inspect_archive(archive):
                 check_database(scratch)
                 scratch.unlink()
             members[info.filename] = sha
-        if not members or not any(PurePosixPath(n).name == 'config.yaml' for n in members):
+        if 'config.yaml' not in members:
             raise Refusal('Archive lacks Hermes configuration')
         # Ambiguous file/directory collisions must be rejected before touching the destination.
         for name in seen:

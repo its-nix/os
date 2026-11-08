@@ -32,29 +32,47 @@ def run(command, **kwargs):
     return result.stdout.strip()
 
 
-def check_coverage(home, members):
-    """Native backup skips links; refuse silently losing durable user context."""
+def check_coverage(home, members=None):
+    """Preflight durable inputs, then verify native backup coverage when supplied."""
     roots = [home]
     profiles = home / 'profiles'
     if profiles.is_symlink():
         raise Refusal('Linked profile roots require materialization before backup')
     if profiles.is_dir():
         roots.extend(profiles.iterdir())
+    ignored_names = recovery.INERT_NAMES | {'.backup.lock'}
+    ignored_suffixes = ('.pyc', '.pyo', '.db-wal', '.db-shm', '.db-journal')
+    ignored_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.cache',
+                    'site-packages', '.tox', '.nox', '.pytest_cache', '.mypy_cache', '.ruff_cache'}
     for root in roots:
         if root.is_symlink():
             raise Refusal('Linked profiles require materialization before backup')
-        for name in ('skills', 'memories', 'sessions'):
+        if not root.is_dir():
+            continue
+        # Root files include configuration, credential stores, identities and databases.
+        paths = [p for p in root.iterdir() if p.is_file() or p.is_symlink()]
+        for name in ('skills', 'memories', 'sessions', 'credentials', 'auth', 'mcp-tokens',
+                     'pairing', 'platforms', 'cron', 'kanban', 'state'):
             directory = root / name
             if directory.is_symlink():
-                raise Refusal('Linked context requires materialization before backup')
-            for path in directory.rglob('*'):
-                rel = path.relative_to(home).as_posix()
-                if {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.cache'} & set(path.relative_to(directory).parts):
-                    continue
-                if path.is_symlink():
-                    raise Refusal('Linked context requires materialization before backup')
-                if path.is_file() and members.get(rel) != recovery.digest(path):
-                    raise Refusal('Durable context missing or changed during backup')
+                raise Refusal('Linked durable state requires materialization before backup')
+            paths.extend(p for p in directory.rglob('*')
+                         if not ignored_dirs.intersection(p.relative_to(directory).parts))
+        for path in paths:
+            if (path.name in ignored_names or path.name.endswith(ignored_suffixes)
+                    or path.name.startswith(('state.db.pre-update-emergency-', 'state.db.retired-wal-'))):
+                continue
+            if path.is_symlink():
+                raise Refusal('Linked durable state requires materialization before backup')
+            if not path.is_file():
+                continue
+            rel = path.relative_to(home).as_posix()
+            database = path.suffix in {'.db', '.sqlite', '.sqlite3'}
+            if database:
+                recovery.check_database_header(path)
+            if members is not None and (rel not in members or (
+                    not database and members[rel] != recovery.digest(path))):
+                raise Refusal('Durable state missing or changed during backup')
 
 
 def check_runtime(image, revision):
@@ -114,6 +132,7 @@ def build(args):
     check_runtime(args.runtime_image, revision)
     if args.publish:
         require_private(args.image)
+    check_coverage(home)  # Refuse truncated sources before SQLite can turn them into empty snapshots.
     # TemporaryDirectory is mode 0700; never stage state inside the checkout.
     with tempfile.TemporaryDirectory(prefix='hermes-recovery-') as td:
         work = Path(td)

@@ -92,3 +92,16 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(recovery.Refusal, 'empty'):
                 recovery.restore(archive, output)
             self.assertEqual('untouched', (output / 'existing').read_text())
+
+    def test_zero_byte_database_and_profile_only_configuration_are_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / 'input.zip'
+            with zipfile.ZipFile(archive, 'w') as zf:
+                zf.writestr('config.yaml', 'example: true')
+                zf.writestr('state.db', b'')
+            with self.assertRaises(recovery.Refusal):
+                recovery.inspect_archive(archive)
+            with zipfile.ZipFile(archive, 'w') as zf:
+                zf.writestr('profiles/project/config.yaml', 'example: true')
+            with self.assertRaises(recovery.Refusal):
+                recovery.inspect_archive(archive)
