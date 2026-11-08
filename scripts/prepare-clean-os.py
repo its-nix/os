@@ -21,8 +21,9 @@ class Refusal(ValueError):
 def inputs():
     versions = json.loads((REPO / 'deploy/versions.json').read_text())
     pilot = json.loads((REPO / 'deploy/pilot.json').read_text())
-    for name in ('hermes', 'paperclip'):
-        if not re.fullmatch(r'[^\s]+@sha256:[0-9a-f]{64}', versions[name]['image']):
+    official = {'hermes': 'nousresearch/hermes-agent', 'paperclip': 'ghcr.io/paperclipai/paperclip'}
+    for name, repository in official.items():
+        if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
             raise Refusal('An immutable official image digest is required')
     return versions, pilot
 
