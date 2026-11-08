@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -16,9 +17,10 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             db = root / 'sample.db'
-            with sqlite3.connect(db) as conn:
+            with closing(sqlite3.connect(db)) as conn:
                 conn.execute('create table messages (text)')
                 conn.execute('insert into messages values (?)', ('remember this',))
+                conn.commit()
             archive = root / 'snapshot.zip'
             files = {
                 'config.yaml': b'model: example\n',
@@ -45,7 +47,7 @@ class RecoveryTests(unittest.TestCase):
                           if name.startswith('_external/') else destination / 'hermes' / name)
                 self.assertEqual(data, target.read_bytes())
                 self.assertEqual(0o600, target.stat().st_mode & 0o777)
-            with sqlite3.connect(destination / 'hermes/state.db') as conn:
+            with closing(sqlite3.connect(destination / 'hermes/state.db')) as conn:
                 self.assertEqual([('remember this',)], conn.execute('select * from messages').fetchall())
 
     def test_unsafe_archives_never_create_destination(self):

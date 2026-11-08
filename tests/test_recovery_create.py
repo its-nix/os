@@ -97,3 +97,17 @@ class CreateTests(unittest.TestCase):
                 with self.assertRaises(create.Refusal):
                     create.build(args)
         self.assertFalse(any('build' in c or 'push' in c for c in calls))
+
+    def test_corrupt_archive_errors_do_not_expose_member_names(self):
+        from contextlib import redirect_stderr
+        import io
+        from unittest.mock import patch
+        import zipfile
+        output = io.StringIO()
+        with patch.object(create, 'build', side_effect=zipfile.BadZipFile('PRIVATE_MEMBER_NAME')), redirect_stderr(output):
+            self.assertEqual(1, create.main([
+                '--home', '/unused', '--hermes-source', '/unused',
+                '--runtime-image', 'example@sha256:' + 'a' * 64,
+                '--image', 'ghcr.io/example/recovery', '--apply',
+            ]))
+        self.assertNotIn('PRIVATE_MEMBER_NAME', output.getvalue())

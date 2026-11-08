@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -48,7 +49,7 @@ def check_coverage(home, members):
                 raise Refusal('Linked context requires materialization before backup')
             for path in directory.rglob('*'):
                 rel = path.relative_to(home).as_posix()
-                if {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.cache'} & set(path.parts):
+                if {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.cache'} & set(path.relative_to(directory).parts):
                     continue
                 if path.is_symlink():
                     raise Refusal('Linked context requires materialization before backup')
@@ -116,6 +117,8 @@ def build(args):
     # TemporaryDirectory is mode 0700; never stage state inside the checkout.
     with tempfile.TemporaryDirectory(prefix='hermes-recovery-') as td:
         work = Path(td)
+        if any(work.resolve().is_relative_to(root) for root in (REPO, source, home)):
+            raise Refusal('Temporary build context must be outside source checkouts and Hermes state')
         env = dict(os.environ, HERMES_HOME=str(home))
         env.pop('HERMES_PROFILE', None)
         output = run([args.hermes_bin, 'backup', '-o', str(work / 'snapshot.zip'), '--keep', '0'], env=env)
@@ -165,7 +168,7 @@ def main(argv=None):
     try:
         build(args)
         return 0
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError, subprocess.SubprocessError):
         print('Recovery build refused; no new recovery tag should be used. Check source, runtime revision,'
               ' Docker, and private package access. Private subprocess output was suppressed.', file=sys.stderr)
         return 1

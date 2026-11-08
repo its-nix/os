@@ -95,6 +95,10 @@ hermes import <backup.zip>
 Successful command exit does not promise warning-free diagnostics; review the
 config-check, doctor, and gateway status output for warnings or degraded state.
 
+## Daily Hermes recovery
+
+[Hermes recovery images](docs/HERMES-RECOVERY.md) preserve full portable state, including memories, sessions, learned skills and credentials, in dated private Docker images without additional encryption. Builds must pass an isolated restore check before publishing. The daily workflow runs from a private control repository on the source host and is inactive until configured; the public Git repository contains no live backups.
+
 ## Governed role skills
 
 `skills/packs.json` pins NixKit checkout `f5377ca3219daf4f33f6e8525f9438318dabcd2f` and audited `sources.json` SHA-256 `110ecc3872b4fe45ede667afd4ca757d59aef850672045a639eae5ef78415a83`, whose seven LNX skills retain source snapshot `da5f36fc4c470fa28ffdcab1a6c6aaa3750bded3`. It classifies all 57 source skills into explicit persistent role packs, task-only tools, or exclusions. There is no universal pack. The baseline and all named role packs are unchanged. `web-design-guidelines` and `find-docs` remain task-only because their pinned skill instructions fetch mutable latest dependencies at runtime. Caveman and Watch retain their receipt-backed LNX-only single-skill approvals.

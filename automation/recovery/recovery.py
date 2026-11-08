@@ -2,6 +2,7 @@
 """Validate and restore a full Hermes backup without starting any services."""
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -28,7 +29,7 @@ def digest(path):
 
 def check_database(path):
     try:
-        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as conn:
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
             if conn.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
                 raise Refusal('Database integrity check failed')
     except sqlite3.DatabaseError:
