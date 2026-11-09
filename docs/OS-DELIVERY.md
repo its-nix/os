@@ -33,7 +33,7 @@ The host launcher, account authorization, sudo policy and environment credential
 ```bash
 ssh -l nixos vps
 sudo -n /usr/local/sbin/nix-os-deploy status
-docker ps --filter name=nix-clean
+docker ps --filter name=nixos-
 ```
 
 Access the native interfaces through SSH:
@@ -44,12 +44,10 @@ ssh -N -l nixos -L 13100:127.0.0.1:13100 -L 19119:127.0.0.1:19119 vps
 
 Open Paperclip at `http://127.0.0.1:13100` and Hermes at `http://127.0.0.1:19119`.
 
-When ready, use the native picker in each profile and choose OpenAI Codex:
+When ready, sign in once through the main profile and choose OpenAI Codex:
 
 ```bash
-ssh -t -l nixos vps 'docker exec -it -u 10000 nix-clean-hermes-1 hermes model'
-ssh -t -l nixos vps 'docker exec -it -u 10000 nix-clean-hermes-1 hermes -p engineer model'
-ssh -t -l nixos vps 'docker exec -it -u 10000 nix-clean-hermes-1 hermes -p reviewer model'
+ssh -t -l nixos vps 'docker exec -it -u 10000 nixos-hermes hermes model'
 ```
 
-Complete each provider's native device authorization; do not copy refresh-token files between profiles. Keep agents paused until the bounded three-agent acceptance task, group consultation, real Todoist/GitHub/Drive connector boundaries and knowledge-impact handoff are verified. The existing HTTP skill-listing limitation is recorded in [the pilot guide](../deploy/README.md).
+Complete the native device authorization once. Named profiles use the global-root provider credentials when they have no profile-specific override; this native fallback was verified for both specialists on the installed image. Configure each specialist's provider/model separately after sign-in, using that shared account. Do not copy refresh-token files between profiles. Keep agents paused until the bounded three-agent acceptance task, group consultation, real Todoist/GitHub/Drive connector boundaries and knowledge-impact handoff are verified. The existing HTTP skill-listing limitation is recorded in [the pilot guide](../deploy/README.md).
