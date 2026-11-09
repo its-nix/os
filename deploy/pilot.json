@@ -2,6 +2,15 @@
   "schema_version": 1,
   "company": "Nix clean pilot",
   "group": "Delivery pilot",
+  "model": {
+    "provider": "openai-codex",
+    "default": "gpt-6.1-terra"
+  },
+  "discord": {
+    "profile": "default",
+    "bot_name": "LNX",
+    "require_mention": true
+  },
   "agents": [
     {
       "id": "lead",

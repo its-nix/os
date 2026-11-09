@@ -78,9 +78,12 @@ No current result means no approved evidence found. Curation reports issues and 
         target = home if profile == 'default' else home / 'profiles' / profile
         boundaries = (REPO / 'deploy/roles' / (agent['id'] + '.md')).read_text()
         config = {
+            'model': dict(pilot['model']),
             'gateway': {'multiplex_profiles': True},
             'approvals': {'mode': 'manual', 'cron_mode': 'deny'},
             'terminal': {'cwd': '/opt/data/workspaces/' + profile},
+            'platforms': {'discord': {'enabled': profile == pilot['discord']['profile']}},
+            'discord': {'require_mention': pilot['discord']['require_mention']},
         }
         write(target / 'config.yaml', json.dumps(config, indent=2) + '\n')
         write(target / 'SOUL.md', boundaries + knowledge + '\n## Agency role reference\n\n' + roles[agent['id']])

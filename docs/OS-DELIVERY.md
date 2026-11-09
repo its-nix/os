@@ -50,4 +50,26 @@ When ready, sign in once through the main profile and choose OpenAI Codex:
 ssh -t -l nixos vps 'docker exec -it -u 10000 nixos-hermes hermes model'
 ```
 
-Complete the native device authorization once. Named profiles use the global-root provider credentials when they have no profile-specific override; this native fallback was verified for both specialists on the installed image. Configure each specialist's provider/model separately after sign-in, using that shared account. Do not copy refresh-token files between profiles. Keep agents paused until the bounded three-agent acceptance task, group consultation, real Todoist/GitHub/Drive connector boundaries and knowledge-impact handoff are verified. The existing HTTP skill-listing limitation is recorded in [the pilot guide](../deploy/README.md).
+Complete the native device authorization once. Named profiles use the global-root provider credentials when they have no profile-specific override; this native fallback was verified for both specialists on the installed image. Fresh preparation seeds every profile with the model declared in `deploy/pilot.json`. For an existing installation, configure provider/model selections through `hermes -p <profile> config set model.provider <provider>` and `config set model.default <model>`, using that shared account; record intended non-secret defaults in the manifest. Do not copy refresh-token files between profiles. Keep agents paused until the bounded three-agent acceptance task, group consultation, real Todoist/GitHub/Drive connector boundaries and knowledge-impact handoff are verified. The existing HTTP skill-listing limitation is recorded in [the pilot guide](../deploy/README.md).
+
+## Discord frontend
+
+The existing LNX bot is connected to the main (`default`) Hermes profile. `deploy/pilot.json` declares that profile as the sole Discord owner and requires mentions. The engineer and reviewer have native `platforms.discord.enabled: false`, so specialist consultation remains in the native Bot Group. Keep the bot token, allowed-user IDs and home-channel ID in Hermes's private runtime configuration.
+
+To configure or replace the connector credential, use the native interactive setup:
+
+```bash
+ssh -t -l nixos vps 'docker exec -it -u 10000 nixos-hermes hermes gateway setup'
+```
+
+Choose Discord and enter the token at its secure prompt. Configure an explicit authorized-user allowlist; allow-all access is off in the current setup. After saving, use Docker to reload the existing supervised gateway:
+
+```bash
+ssh -l nixos vps 'docker restart --timeout 60 nixos-hermes'
+```
+
+Wait for native health, then verify the authenticated `/health/detailed` readback reports Discord and API connected. Do not print the API key or response traces into public logs. Bot-token validity alone does not prove a live gateway connection. A human can then mention LNX in the existing server to check the reply path. Keep ordinary discussion and profile memory separate from reviewed KB knowledge.
+
+## Verified status — 2026-11-09
+
+Shared login and live model responses are verified for all three profiles. Discord LNX and the API report connected; both containers are healthy. Paperclip agents remain paused with heartbeat and wake-on-demand disabled. Full controller-led workflow/connector acceptance and isolated full-state restore remain pending; daily recovery publication is still disabled. The [deployment guide](../deploy/README.md) records the dated evidence and pinned-input limits.

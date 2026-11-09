@@ -1,14 +1,14 @@
-# Clean VPS pilot
+# Nix OS deployment
 
 The Compose project is `nixos`, with containers `nixos-hermes` and `nixos-paperclip`. Official image repositories and digests are pinned in `versions.json`.
 
-The target architecture is [Clean company OS](../docs/CLEAN-COMPANY-OS.md). This directory deploys fresh official images and native state. The previous OS manifest/installer is historical and is not used by this stack. This is staged for Lior's later Codex login; all controller agents stay paused and heartbeat-disabled.
+The target architecture is [Clean company OS](../docs/CLEAN-COMPANY-OS.md). This directory deploys fresh official images and native state. The previous OS manifest/installer is historical and is not used by this stack. Shared Codex login and Discord connectivity are verified. All controller agents remain paused and heartbeat-disabled until full delegated-work acceptance.
 
 Ongoing delivery, the dedicated `nixos` operator and provider-login commands are documented in [Tracked VPS delivery](../docs/OS-DELIVERY.md). Main-only CI/CD preserves these native homes and records every successful deployment revision.
 
 ## Inputs and native ownership
 
-`versions.json` pins the official images, their source revisions, company KB, Kit and Agency role sources. `pilot.json` maps each controller identity to its exact Hermes profile and selected skills. Shared workflow skills include the upstream prerequisites; role-specific selections add focused expertise. The Agency references are Project Shepherd, Minimal Change Engineer and Code Reviewer. Role bodies are hash-checked and combined with the small Nix boundary files; their MIT notice is installed into the native home.
+`versions.json` pins the official images, their source revisions, company KB, Kit and Agency role sources. `pilot.json` maps each controller identity to its exact Hermes profile and selected skills, declares the shared model defaults, and assigns Discord to the main profile only. Fresh preparation writes these native non-secret settings; credentials are configured separately. Shared workflow skills include the upstream prerequisites; role-specific selections add focused expertise. The Agency references are Project Shepherd, Minimal Change Engineer and Code Reviewer. Role bodies are hash-checked and combined with the small Nix boundary files; their MIT notice is installed into the native home.
 
 | Role | Hermes home inside container | Adapter base URL |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ python3 scripts/prepare-clean-os.py --root /srv/nix-clean
 python3 scripts/prepare-clean-os.py --root /srv/nix-clean --apply
 ```
 
-Apply refuses an existing destination, including an empty one. It creates fresh native homes, role instructions, distinct API keys and a private deployment env file. It downloads only the pinned public Agency source and checks its hashes. It does not start a service, configure a model or import previous state. Never rerun apply to update an existing installation; preserve native state and review upgrades separately.
+Apply refuses an existing destination, including an empty one. It creates fresh native homes, role instructions, distinct API keys and a private deployment env file. It downloads only the pinned public Agency source and checks its hashes. It does not start a service, authenticate a provider, install a bot token or import previous state. Never rerun apply to update an existing installation; preserve native state and review upgrades separately.
 
 Before starting:
 
@@ -49,7 +49,7 @@ The official image performs native ownership/setup and supervision. No custom en
 Operator access:
 
 ```bash
-ssh -N -L 13100:127.0.0.1:13100 -L 19119:127.0.0.1:19119 vps
+ssh -N -l nixos -L 13100:127.0.0.1:13100 -L 19119:127.0.0.1:19119 vps
 ```
 
 Paperclip is at `http://127.0.0.1:13100`; the native Hermes UI/backend is at `http://127.0.0.1:19119`. Local-trusted controller access is intended only through this SSH/loopback boundary. Do not forward either listener publicly. Keep its native state and signing keys on restart.
@@ -68,18 +68,18 @@ The KB entry is <https://github.com/its-nix/knowledgebase/blob/main/START-HERE.m
 
 Preparation embeds the exact local paths, retrieval/curation commands and pinned citation ref in every worker's SOUL, with non-secret pins at `/opt/data/nix/versions.json`. These commands run inside the Hermes container. Results are private company context: do not print note bodies into public CI or operator reports. Current results must carry source/authority links. Zero matches means no approved evidence found. The current lexical engine does not infer semantic matches or truth.
 
-Every significant outcome reports its knowledge-impact disposition on the originating Paperclip work item. The lead routes a focused company proposal through the curator and applicable human review. Proposal writes use a separately scoped working copy/credential later; the worker's read-only snapshot cannot publish or merge. Drive artifacts and project technical truth remain linked, not mirrored. The companion KB PR updates older task-plane references; until merged, that proposal is not promoted company truth.
+Every significant outcome reports its knowledge-impact disposition on the originating Paperclip work item. The lead routes a focused company proposal through the curator and applicable human review. Proposal writes use a separately scoped working copy/credential later; the worker's read-only snapshot cannot publish or merge. Drive artifacts and project technical truth remain linked, not mirrored. The [companion KB PR](https://github.com/its-nix/knowledgebase/pull/5) updating task-plane references is merged. The deployed snapshot remains the separately pinned revision; refresh it explicitly after review.
 
-## Staged verification and activation
+## Verification and activation
 
-Before model login, verify:
+For each installation, verify:
 
 - Official versions, native health, exact loopback listeners and absence of old data mounts.
 - All three profile endpoints accept their own key and reject another profile's key.
 - Native group driver readiness and exact member readback; same room and paused controller identities survive full container recreation.
 - Native `commands.catalog` discovery and `skill_view` loads include every declared role skill, with only the native core `hermes-agent` extra in the default profile, the KB mount is read-only, and the KB's own tests/retrieval/curation run under the actual agent UID.
 
-After Lior connects Codex through the native Hermes provider setup, verify each profile's provider credentials without copying single-use refresh tokens. Unpause only the bounded acceptance task: specification → engineer → independent review, group consultation and knowledge-impact handoff. Test the actual Todoist, GitHub and Drive connector permissions before claiming external integration. Review and merge the KB contract proposal normally; no metadata field authenticates approval.
+The main profile has a working Codex login, and all three profiles have returned live model responses through the shared credential. Keep token files in the native root store. Next, unpause only the bounded acceptance task: specification → engineer → independent review, group consultation and knowledge-impact handoff. Test the actual Todoist, GitHub and Drive connector permissions before claiming external integration. Treat future KB changes as reviewed proposals; no metadata field authenticates approval.
 
 Recovery is a separate pending gate: adapt PR 60 for native container capture, Paperclip's actual database/configuration/keys, group state and immutable input revisions. Test a fresh isolated restore before enabling daily private publication or unattended work. No additional backup encryption is requested. An old backup or a healthy container is not evidence that the complete redesigned system has passed recovery or real model execution.
 
@@ -91,4 +91,14 @@ Official Hermes 0.23.0 and Paperclip 2026.1106.0 started healthy on fresh native
 
 Independent source review found a missing worker-local KB command/ref, which was reproduced and fixed with a preparation regression. The source-owned knowledge section was updated and read back in all three staged profiles. The old deployment remains stopped and no old state is mounted. Full Linux OS validation ran 258 tests with two optional checks skipped, plus the repository verifier and existing syntax/bootstrap/scout checks.
 
-Known upstream limitation: the pinned official Hermes image returns HTTP 500 from `/p/<profile>/v1/skills`. Its API handler calls `find_all_skills(..., include_editorial=True)`, but the native finder does not accept that keyword. Native UI/RPC discovery and actual skill loading passed independently; the runtime is unpatched. Any client that depends on this HTTP enumeration route remains blocked until a compatible official release is pinned and retested. Model-backed Paperclip execution remains a separate acceptance gate after provider login.
+Known upstream limitation: the pinned official Hermes image returns HTTP 500 from `/p/<profile>/v1/skills`. Its API handler calls `find_all_skills(..., include_editorial=True)`, but the native finder does not accept that keyword. Native UI/RPC discovery and actual skill loading passed independently; the runtime is unpatched. Any client that depends on this HTTP enumeration route remains blocked until a compatible official release is pinned and retested. Model-backed Paperclip execution remains a separate acceptance gate; CLI connectivity probes do not establish the controller handoff.
+
+## Current verification — 2026-11-09
+
+- The Compose project is `nixos`; both official containers are healthy. SSH/CI uses the `nixos` operator, with verified main-only deployments and daily/manual reconciliation.
+- `default`, `engineer` and `reviewer` use `openai-codex` / `gpt-6.1-terra`. One main-profile login supplies native fallback credentials. Each profile returned a live model response; no token files were copied.
+- The existing LNX Discord bot has a valid credential and required intents, and the native gateway reports Discord and API connected. Mentions are required, allow-all access is off, and the allowlist/home channel are configured privately. Both specialists have Discord explicitly disabled.
+- Paperclip retains the three profile-matched identities, native secret references, disabled heartbeat/wake-on-demand and paused status. The native Bot Group uses those same profiles.
+- The running SOULs contain the current Nix role boundaries, Agency references and KB instructions. Old configuration, context, memories and sessions were not bulk imported. A full audit of reusable old company/project context is still pending.
+
+Remaining gates: an actual Paperclip-led delegated task with group consultation and knowledge-impact review; live Todoist/GitHub/Drive permission checks; and full isolated Hermes-plus-Paperclip recovery before enabling daily private publication. The pinned KB snapshot and historical image/skill evidence above retain their explicit revisions and dates.
