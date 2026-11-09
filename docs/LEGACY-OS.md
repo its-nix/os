@@ -129,7 +129,7 @@ Only the aggregator's second-stage delivery target is `discord`, which resolves 
 
 ## Migration note
 
-The previous Paperclip-based design remains preserved remotely at `archive/paperclip-os-2026-10-23`. That archived experiment is historical evidence and is not an input to the clean deployment. The new design uses native upstream capabilities and excludes the old custom integration, n8n and Slack. Do not revive the archived stack or modify its evidence through the previous bootstrap.
+The previous Paperclip-based design remains preserved remotely at `archive/paperclip-os-2026-10-23`. That archived experiment is historical evidence and is not an input to the clean deployment. The new design uses native upstream capabilities and excludes the old custom integrations. Do not revive the archived stack or modify its evidence through the previous bootstrap.
 
 ## Repository map
 
