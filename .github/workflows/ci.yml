@@ -77,7 +77,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ && "$VPS_USER" == nixops ]]
+          [[ "$VPS_HOST" =~ ^[A-Za-z0-9.-]+$ && "$VPS_USER" == nixos ]]
           [[ -n "$VPS_SSH_KEY" && -n "$VPS_KNOWN_HOSTS" ]]
           umask 077
           task_dir=$(mktemp -d)
