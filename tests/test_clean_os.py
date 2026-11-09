@@ -60,3 +60,16 @@ class CleanPreparationTests(unittest.TestCase):
                 self.assertIn('--ref ' + versions['knowledgebase']['revision'], soul)
                 self.assertIn('--curate', soul)
             self.assertEqual(versions, json.loads((home / 'nix/versions.json').read_text()))
+
+    def test_fresh_profiles_use_the_declared_model_and_one_discord_owner(self):
+        import json
+        with tempfile.TemporaryDirectory() as td, contextlib.redirect_stdout(io.StringIO()):
+            destination = Path(td) / 'deployment'
+            clean_os.prepare(destination, roles={key: 'Synthetic role/license' for key in ('lead', 'engineer', 'reviewer', 'license')})
+            for profile, rel in [('default', ''), ('engineer', 'profiles/engineer'), ('reviewer', 'profiles/reviewer')]:
+                config = json.loads((destination / 'hermes' / rel / 'config.yaml').read_text())
+                self.assertEqual({'provider': 'openai-codex', 'default': 'gpt-6.1-terra'}, config.get('model'))
+                self.assertEqual(profile == 'default', config.get('platforms', {}).get('discord', {}).get('enabled'))
+                self.assertTrue(config.get('discord', {}).get('require_mention'))
+                self.assertFalse((destination / 'hermes' / rel / 'auth.json').exists())
+                self.assertNotIn('DISCORD_BOT_TOKEN', (destination / 'hermes' / rel / '.env').read_text())
