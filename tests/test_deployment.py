@@ -28,7 +28,7 @@ class DeploymentTests(unittest.TestCase):
         def healthy(argv):
             calls.append(argv)
             if argv[:2] == ['docker', 'inspect']:
-                name = argv[-1].removeprefix('nix-clean-').removesuffix('-1')
+                name = argv[-1].removeprefix('nixos-')
                 return images[name]['image'] + ' healthy'
             if argv == ['ss', '-lntH']:
                 return '\n'.join('LISTEN 0 128 127.0.0.1:' + port + ' 0.0.0.0:*'

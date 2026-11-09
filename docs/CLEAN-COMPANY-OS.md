@@ -20,7 +20,7 @@ Paperclip replaces the previous delegated-work queue. A Todoist commitment links
 
 ## Deployment
 
-Fresh Compose project `nix-clean`, fresh state directories and new service credentials. Do not import, mount, restart or patch the previous VPS deployment or its data. Leave unrelated VPS workloads unchanged. Physical removal of old data is outside this rollout.
+Fresh Compose project `nixos`, fresh state directories and new service credentials. Do not import, mount, restart or patch the previous VPS deployment or its data. Leave unrelated VPS workloads unchanged. Physical removal of old data is outside this rollout.
 
 Use the official image entrypoints and supervision unchanged. Pin images by digest and record source revisions. One Hermes gateway multiplexes the pilot profiles; Paperclip uses its built-in `hermes_gateway` adapter with `/p/<profile>` base URLs and distinct profile API keys. Bot Groups use those same profiles. Confirm the endpoints and profile-key scoping against the pinned runtime before relying on the mapping.
 

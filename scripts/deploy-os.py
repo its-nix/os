@@ -65,14 +65,14 @@ def apply(revision, source, state, current, run=run):
             'PAPERCLIP_IMAGE': versions['paperclip']['image'],
         }.items()))
         candidate.chmod(0o600)
-        compose = ['docker', 'compose', '--project-name', 'nix-clean', '--env-file', str(candidate),
+        compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
                    '--file', str(source / 'deploy/compose.yaml')]
         run(compose + ['config', '--quiet'])
         run(compose + ['pull'])
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         for name in ('hermes', 'paperclip'):
             observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',
-                            'nix-clean-' + name + '-1'])
+                            'nixos-' + name])
             if observed != versions[name]['image'] + ' healthy':
                 raise ValueError('Native image or health readback differs from the declared deployment')
         listeners = run(['ss', '-lntH']).splitlines()
@@ -81,7 +81,7 @@ def apply(revision, source, state, current, run=run):
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:
                 raise ValueError('A pilot listener is missing or is not exclusively loopback')
-        run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nix-clean-hermes-1',
+        run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nixos-hermes',
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
         link = current.with_name(current.name + '.next')
         if link.is_symlink():

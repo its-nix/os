@@ -1,6 +1,7 @@
-name: nix-clean
+name: nixos
 services:
   hermes:
+    container_name: nixos-hermes
     image: ${HERMES_IMAGE:?Prepare the pinned deployment environment first}
     network_mode: host
     restart: unless-stopped
@@ -33,6 +34,7 @@ services:
       start_period: 120s
       retries: 4
   paperclip:
+    container_name: nixos-paperclip
     image: ${PAPERCLIP_IMAGE:?Prepare the pinned deployment environment first}
     network_mode: host
     restart: unless-stopped

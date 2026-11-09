@@ -1,5 +1,7 @@
 # Clean VPS pilot
 
+The Compose project is `nixos`, with containers `nixos-hermes` and `nixos-paperclip`. Official image repositories and digests are pinned in `versions.json`.
+
 The target architecture is [Clean company OS](../docs/CLEAN-COMPANY-OS.md). This directory deploys fresh official images and native state. The previous OS manifest/installer is historical and is not used by this stack. This is staged for Lior's later Codex login; all controller agents stay paused and heartbeat-disabled.
 
 Ongoing delivery, the dedicated `nixos` operator and provider-login commands are documented in [Tracked VPS delivery](../docs/OS-DELIVERY.md). Main-only CI/CD preserves these native homes and records every successful deployment revision.
