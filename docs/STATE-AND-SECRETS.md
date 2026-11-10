@@ -51,4 +51,4 @@ If sensitive state is accidentally added, stop; do not merely add it to `.gitign
 
 ## Private recovery images
 
-The explicitly authorized full-state recovery workflow stores unencrypted native Hermes backup archives inside private GHCR images, outside Git. See [Hermes recovery](HERMES-RECOVERY.md) for source-host scheduling, private package checks, retention and fresh-volume restoration. Recovery automation sources and synthetic tests may be tracked; backup archives, build contexts and live state may not.
+The authorized full-system recovery stores unencrypted Hermes and Paperclip state inside the operator’s private Docker Hub images, outside Git. See [Daily private OS recovery](DOCKERHUB-RECOVERY.md) for source-host scheduling, explicit private-repository checks and empty-destination restoration. Recovery automation sources and synthetic tests may be tracked; backup archives, build contexts and live state may not.

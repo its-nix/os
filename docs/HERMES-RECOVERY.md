@@ -1,6 +1,6 @@
-# Hermes recovery images
+# Historical Hermes-only recovery images
 
-The clean container-native pilot in `deploy/README.md` has a separate recovery activation gate. This implementation is not yet adapted or proven for that pilot's Hermes container and Paperclip database/state; merging it does not enable daily publication or establish full-system recoverability.
+The current container-native Hermes-plus-Paperclip backup is [Daily private OS recovery](DOCKERHUB-RECOVERY.md), using Docker Hub. This older Hermes-only GHCR implementation and its workflow remain disabled and are not the current backup path.
 
 
 Each recovery image embeds a native **full** Hermes backup in the matching Linux Hermes runtime. It includes portable memories, sessions, learned skills, all named profiles, configuration, credentials and SQLite databases. The archive is unencrypted by design and must stay in a **private** GHCR package. Neither the archive nor its contents belongs in Git, Actions artifacts or CI caches.

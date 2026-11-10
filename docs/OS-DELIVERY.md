@@ -12,7 +12,7 @@ Each revision is checked out into `/opt/nix-os/releases/<sha>`. Compose reads th
 
 Runtime image and Compose changes can deploy normally. KB/Kit/Agency pins, profiles and generated role instructions have an explicit migration boundary: a changed installed-input contract causes refusal. Refresh the affected snapshot/packages/instructions with their documented native tools, verify them, then record the actual installed input contract. Never restamp metadata to bypass an unapplied change. Credentials, learning, sessions and controller databases are preserved; deployment never calls preparation, `down`, volume removal or recursive ownership repair.
 
-Failed rollouts leave the previous successful receipt and a failed latest attempt. Some containers may already have changed before a later health failure; this is not an automatic rollback. Inspect the native logs and deploy a reviewed correction. Database-affecting downgrades require a compatible recovery procedure. Daily private recovery publication remains a separate, inactive acceptance gate in [Hermes recovery](HERMES-RECOVERY.md).
+Failed rollouts leave the previous successful receipt and a failed latest attempt. Some containers may already have changed before a later health failure; this is not an automatic rollback. Inspect the native logs and deploy a reviewed correction. Database-affecting downgrades require a compatible recovery procedure. Daily private recovery runs separately on the VPS; [Daily private OS recovery](DOCKERHUB-RECOVERY.md) documents the Docker Hub login, first remote restore gate and timer. Backup capture shares this deployment lock.
 
 ## One-time operator setup
 
