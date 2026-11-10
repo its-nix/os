@@ -101,4 +101,6 @@ Known upstream limitation: the pinned official Hermes image returns HTTP 500 fro
 - Paperclip retains the three profile-matched identities, native secret references, disabled heartbeat/wake-on-demand and paused status. The native Bot Group uses those same profiles.
 - The running SOULs contain the current Nix role boundaries, Agency references and KB instructions. Old configuration, context, memories and sessions were not bulk imported. A full audit of reusable old company/project context is still pending.
 
-Remaining gates: an actual Paperclip-led delegated task with group consultation and knowledge-impact review; live Todoist/GitHub/Drive permission checks; and full isolated Hermes-plus-Paperclip recovery before enabling daily private publication. The pinned KB snapshot and historical image/skill evidence above retain their explicit revisions and dates.
+Recovery update — 2026-11-10: the first private Docker Hub snapshot passed isolated Hermes-plus-Paperclip restore checks after remote digest readback. The daily 03:17 UTC timer is enabled; [Daily private OS recovery](../docs/DOCKERHUB-RECOVERY.md) records the destination, verified digest and restore procedure.
+
+Remaining gates: an actual Paperclip-led delegated task with group consultation and knowledge-impact review, and live Todoist/GitHub/Drive permission checks. The pinned KB snapshot and historical image/skill evidence above retain their explicit revisions and dates.

@@ -1,12 +1,14 @@
 # Daily private OS recovery
 
-The current container-native backup uses a private Docker Hub repository named `nixos-recovery` under the authenticated operator's personal account. It captures the complete persistent `/srv/nix-clean` tree: Hermes profiles, accumulated memories, sessions, learned skills, credentials, Bot Groups and workspaces; Paperclip's embedded PostgreSQL database, files and matching keys; company KB/Kit snapshots and deployment metadata. Nothing is imported from the retired VPS setup.
+The deployed container-native backup uses [liornis/nixos-recovery](https://hub.docker.com/r/liornis/nixos-recovery), a private Docker Hub repository under the operator’s personal account. It captures the complete persistent `/srv/nix-clean` tree: Hermes profiles, accumulated memories, sessions, learned skills, credentials, Bot Groups and workspaces; Paperclip's embedded PostgreSQL database, files and matching keys; company KB/Kit snapshots and deployment metadata. Nothing is imported from the retired VPS setup.
 
 Snapshots are unencrypted by request. They contain working credentials and private company context. Keep the repository private and use the native Docker credential store; never copy payloads into Git, Actions artifacts or logs. The builder refuses publication unless the Hub API explicitly reports `is_private: true`, before and after pushing. Dated UTC tags are retained; no moving `latest` tag or registry deletion is used.
 
 ## Observed status — 2026-11-10
 
-The real VPS local-only canary passed: full cold capture, file/SQLite restore, isolated native Paperclip PostgreSQL validation and recovery-image verification. Both production services returned healthy. Native Docker Hub login is still absent; the personal repository has not been created, no state has been uploaded and the daily timer is not enabled. The source change alone does not activate backups.
+Daily backups are active. The personal repository is explicitly private, and anonymous metadata access returns 404. The first snapshot, `20261110T174037864615Z`, completed at 17:45 UTC with 5,771 preserved entries. Its remote manifest digest was pulled back and passed file/SQLite restoration, isolated native Paperclip PostgreSQL checks and recovery-image verification. Both production services returned healthy.
+
+The verified manifest is `liornis/nixos-recovery@sha256:d15ce5a2ac023b6019683955754fe3dd0e6c17420ddfc59b84a1112c5f038338`. The root-owned service exited successfully, and the enabled persistent timer is active and waiting for **2026-11-11 03:17 UTC**. Success and attempt receipts are stored privately on the VPS under `/var/lib/nixos-recovery`. Later scheduled runs must continue to advance the success receipt; timer activation alone is not proof that a future backup completed.
 
 ## Capture and verification
 
@@ -20,7 +22,7 @@ Only state inside the declared root and the pinned runtime are covered. Unexpect
 
 ## Operator installation
 
-Sign in from the `nixos` account on the VPS. Use a Docker Hub personal access token at the native password prompt if device-login credentials cannot access repository-management APIs. Do not paste it into chat or a shell argument.
+Sign in from the `nixos` account on the VPS using a Docker Hub personal access token at the native password prompt. Creating the private repository requires **Repo Read, Write, Delete** permission; **Repo Read & Write** is sufficient for daily uploads after the repository exists. After creating the repository, reduce the same token to **Repo Read & Write**. Docker Hub allows changing an existing token’s permissions without generating a new token or repeating login ([permission reference](https://docs.docker.com/security/access-tokens/reference/)). Do not paste the token into chat or a shell argument.
 
 ```bash
 ssh -l nixos vps
