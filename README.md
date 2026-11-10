@@ -21,13 +21,13 @@ Todoist owns human–agent commitments, GitHub owns code and project technical e
 
 As of 2026-11-09, both services are healthy, all three profiles have returned live model responses through the shared login, and the native gateway reports Discord and API connected. Profile key isolation, selected skill loading, the native Group roster and KB retrieval/tests have been verified. Paperclip's three agents remain paused with heartbeat and wake-on-demand disabled.
 
-The full Paperclip-led specification → implementation → independent-review task, group consultation, real Todoist/GitHub/Drive connector permissions and knowledge-impact handoff remain pending. Daily private full-state recovery publication is disabled until container-native Hermes/Paperclip capture and an isolated restore pass. A connected bot or successful model probe does not complete those checks.
+The full Paperclip-led specification → implementation → independent-review task, group consultation, real Todoist/GitHub/Drive connector permissions and knowledge-impact handoff remain pending. The full-system Docker Hub recovery implementation is documented in [Daily private OS recovery](docs/DOCKERHUB-RECOVERY.md). Publication and scheduling require the native Docker Hub login and a successful remote restore check. A connected bot or successful model probe does not complete those checks.
 
 ## Configure and operate
 
 - [Deployment and inputs](deploy/README.md): official image/source pins, fresh-home preparation and native configuration.
 - [VPS access and CI/CD](docs/OS-DELIVERY.md): SSH, dashboards, shared provider login, Discord setup and deployment receipts.
-- [Recovery gate](docs/HERMES-RECOVERY.md): existing tooling and its current container-native limitation.
+- [Daily private recovery](docs/DOCKERHUB-RECOVERY.md): full native state, private Docker Hub publication, verification and restoration.
 
 `deploy/compose.yaml` declares the two services, `deploy/versions.json` pins their dependencies, and `deploy/pilot.json` declares profiles, selected skills, model defaults and the Discord-owning profile. Fresh preparation consumes those settings. Existing native state is updated through native tools and explicit input verification; preparation never overwrites it.
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily private Nix OS recovery image
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+Persistent=true
+Unit=nixos-recovery.service
+
+[Install]
+WantedBy=timers.target

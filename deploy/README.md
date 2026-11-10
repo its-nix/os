@@ -81,7 +81,7 @@ For each installation, verify:
 
 The main profile has a working Codex login, and all three profiles have returned live model responses through the shared credential. Keep token files in the native root store. Next, unpause only the bounded acceptance task: specification → engineer → independent review, group consultation and knowledge-impact handoff. Test the actual Todoist, GitHub and Drive connector permissions before claiming external integration. Treat future KB changes as reviewed proposals; no metadata field authenticates approval.
 
-Recovery is a separate pending gate: adapt PR 60 for native container capture, Paperclip's actual database/configuration/keys, group state and immutable input revisions. Test a fresh isolated restore before enabling daily private publication or unattended work. No additional backup encryption is requested. An old backup or a healthy container is not evidence that the complete redesigned system has passed recovery or real model execution.
+Full native Hermes/Paperclip recovery, including learned skills, group state, database keys and pinned inputs, is implemented in [Daily private OS recovery](../docs/DOCKERHUB-RECOVERY.md). It requires the operator’s native Docker Hub login, an explicitly private personal repository and a successful isolated remote restore before scheduling. No additional backup encryption is requested.
 
 Stop only this project with the same Compose file and env file. It preserves both native homes. Do not remove volumes/state or revive the previous VPS stack as a rollback.
 

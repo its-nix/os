@@ -1,0 +1,20 @@
+[Unit]
+Description=Verified private Docker Hub backup of Nix OS
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+EnvironmentFile=/etc/nixos/recovery.env
+ExecStart=/usr/bin/python3 /opt/nix-clean-source/automation/recovery/full_create.py --apply --publish --image ${NIXOS_RECOVERY_IMAGE}
+# Also recover services if Python is killed or the job times out before its finally block.
+ExecStopPost=/usr/bin/flock -w 240 /run/lock/nix-os-deploy.lock /usr/bin/docker start nixos-hermes nixos-paperclip
+Restart=on-failure
+RestartSec=15min
+TimeoutStartSec=1h
+TimeoutStopSec=5min
+

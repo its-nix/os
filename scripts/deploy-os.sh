@@ -9,7 +9,7 @@ fi
 case "$revision" in ''|*[!0-9a-f]*) echo 'Exact main SHA required' >&2; exit 1;; esac
 [ "${#revision}" -eq 40 ] || exit 1
 exec 9>/run/lock/nix-os-deploy.lock
-flock -n 9 || { echo 'Deployment already running' >&2; exit 1; }
+flock -w 300 9 || { echo 'Deployment or recovery capture still running' >&2; exit 1; }
 repository=/var/lib/nix-os/repository
 mkdir -p /var/lib/nix-os /opt/nix-os/releases
 if [ ! -d "$repository/.git" ]; then
