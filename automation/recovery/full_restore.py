@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import sys
@@ -141,6 +142,11 @@ def restore(archive, manifest, destination, *, preserve_owner=True):
                 target.chmod(row['mode'])
         for name, row in inventory.items():
             if row['type'] == 'file' and Path(name).suffix in ('.db', '.sqlite', '.sqlite3'):
+                # Paperclip's permanent advisory lock has no schema and may be zero bytes.
+                # Preserve it exactly; this exception never applies to application databases.
+                if row['size'] == 0 and re.fullmatch(
+                        r'paperclip/instances/default/locks/directory-merge/[0-9a-f]{64}\.lock\.sqlite', name):
+                    continue
                 db.check_database((destination / name).resolve())
     return len(inventory)
 

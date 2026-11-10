@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,26 @@ class PublicationTests(unittest.TestCase):
         self.assertIn('--interactive', argv)
         self.assertEqual('none', argv[argv.index('--network') + 1])
         self.assertIn('SELECT', run.call_args.kwargs['input'])
+
+    def test_public_destination_failure_preserves_previous_success_and_never_captures(self):
+        module = self.module()
+        class Hub:
+            username = 'example'
+            def request(self, *args):
+                return {'is_private': False}
+        with tempfile.TemporaryDirectory() as td:
+            root, status = Path(td) / 'live', Path(td) / 'receipts'
+            root.mkdir(); status.mkdir()
+            previous = status / 'last-success.json'
+            previous.write_text('{"status":"published","manifest_digest":"previous"}')
+            args = SimpleNamespace(root=root, status=status, publish=True, create_repository=False,
+                                   image='docker.io/example/nixos-recovery')
+            with patch.object(module, 'Hub', return_value=Hub()), patch.object(module, 'stopped_services') as capture, patch.object(module.subprocess, 'run'):
+                with self.assertRaises(module.Refusal):
+                    module.build(args)
+            capture.assert_not_called()
+            self.assertEqual('previous', module.json.loads(previous.read_text())['manifest_digest'])
+            self.assertEqual('failed', module.json.loads((status / 'last-attempt.json').read_text())['status'])
 
     def test_public_repository_refuses_before_push(self):
         path = ROOT / 'automation/recovery/full_create.py'

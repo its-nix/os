@@ -49,6 +49,7 @@ class FullRecoveryTests(unittest.TestCase):
                 'hermes/profiles/engineer/skills/learned/SKILL.md': '# Learned procedure',
                 'paperclip/instances/default/db/PG_VERSION': '18',
                 'paperclip/instances/default/secrets/master.key': 'synthetic-key',
+                'paperclip/instances/default/locks/directory-merge/' + 'a' * 64 + '.lock.sqlite': '',
                 'knowledge/company/START-HERE.md': '# Company knowledge',
             }.items():
                 target = root / name
@@ -65,6 +66,8 @@ class FullRecoveryTests(unittest.TestCase):
             recovery.restore(archive, manifest, restored, preserve_owner=False)
             self.assertEqual('durable learned context', (restored / 'hermes/memories/MEMORY.md').read_text())
             self.assertEqual('synthetic-key', (restored / 'paperclip/instances/default/secrets/master.key').read_text())
+            lock = restored / 'paperclip/instances/default/locks/directory-merge' / ('a' * 64 + '.lock.sqlite')
+            self.assertEqual(0, lock.stat().st_size)
             with closing(sqlite3.connect(restored / 'hermes/state.db')) as conn:
                 self.assertEqual([('learned result',)], conn.execute('SELECT body FROM memories').fetchall())
             self.assertTrue((restored / 'hermes/profiles/engineer/skills/learned/SKILL.md').is_file())
