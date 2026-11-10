@@ -20,7 +20,7 @@ Only state inside the declared root and the pinned runtime are covered. Unexpect
 
 ## Operator installation
 
-Sign in from the `nixos` account on the VPS. Use a Docker Hub personal access token at the native password prompt if device-login credentials cannot access repository-management APIs. Do not paste it into chat or a shell argument.
+Sign in from the `nixos` account on the VPS using a Docker Hub personal access token at the native password prompt. Creating the private repository requires **Repo Read, Write, Delete** permission; **Repo Read & Write** is sufficient for daily uploads after the repository exists. Docker Hub allows changing an existing token’s permissions without generating a new token or repeating login ([permission reference](https://docs.docker.com/security/access-tokens/reference/)). Do not paste the token into chat or a shell argument.
 
 ```bash
 ssh -l nixos vps
