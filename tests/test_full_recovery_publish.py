@@ -85,7 +85,7 @@ class PublicationTests(unittest.TestCase):
             previous.write_text('{"status":"published","manifest_digest":"previous"}')
             args = SimpleNamespace(root=root, status=status, publish=True, create_repository=False,
                                    image='docker.io/example/nixos-recovery')
-            with patch.object(module, 'Hub', return_value=Hub()), patch.object(module, 'stopped_services') as capture, patch.object(module.subprocess, 'run'):
+            with patch.object(module, 'Hub', return_value=Hub()), patch.object(module, 'stopped_services') as capture, patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=0)):
                 with self.assertRaises(module.Refusal):
                     module.build(args)
             capture.assert_not_called()

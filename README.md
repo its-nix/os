@@ -21,7 +21,7 @@ Todoist owns human–agent commitments, GitHub owns code and project technical e
 
 As of 2026-11-09, both services are healthy, all three profiles have returned live model responses through the shared login, and the native gateway reports Discord and API connected. Profile key isolation, selected skill loading, the native Group roster and KB retrieval/tests have been verified. Paperclip's three agents remain paused with heartbeat and wake-on-demand disabled.
 
-The full Paperclip-led specification → implementation → independent-review task, group consultation, real Todoist/GitHub/Drive connector permissions and knowledge-impact handoff remain pending. The full-system Docker Hub recovery implementation is documented in [Daily private OS recovery](docs/DOCKERHUB-RECOVERY.md). Publication and scheduling require the native Docker Hub login and a successful remote restore check. A connected bot or successful model probe does not complete those checks.
+The full Paperclip-led specification → implementation → independent-review task, group consultation, real Todoist/GitHub/Drive connector permissions and knowledge-impact handoff remain pending. The full-system Docker Hub recovery implementation is documented in [Daily private OS recovery](docs/DOCKERHUB-RECOVERY.md). The real VPS local cold snapshot and isolated Hermes/Paperclip restore passed on 2026-11-10. Private repository creation, publication and scheduling await the native Docker Hub login and a successful remote restore check. A connected bot or successful model probe does not complete those checks.
 
 ## Configure and operate
 

@@ -4,13 +4,17 @@ The current container-native backup uses a private Docker Hub repository named `
 
 Snapshots are unencrypted by request. They contain working credentials and private company context. Keep the repository private and use the native Docker credential store; never copy payloads into Git, Actions artifacts or logs. The builder refuses publication unless the Hub API explicitly reports `is_private: true`, before and after pushing. Dated UTC tags are retained; no moving `latest` tag or registry deletion is used.
 
+## Observed status — 2026-11-10
+
+The real VPS local-only canary passed: full cold capture, file/SQLite restore, isolated native Paperclip PostgreSQL validation and recovery-image verification. Both production services returned healthy. Native Docker Hub login is still absent; the personal repository has not been created, no state has been uploaded and the daily timer is not enabled. The source change alone does not activate backups.
+
 ## Capture and verification
 
 The host takes a cold snapshot under the CI/CD deployment lock. Both applications briefly stop cleanly, the complete state is archived with per-file hashes and native ownership, and both restart before image creation or upload. Failure paths restart both services. Active conversations can be interrupted during this short daily window.
 
 The recovery image extends the exact pinned official Hermes runtime. A new stopped holder container receives the archive explicitly in its unmounted writable layer; committing a live application's mounted volumes would omit their data. No private BuildKit cache is created. Temporary payloads and this job's local image tag are removed after the run.
 
-Every run restores into separate storage, validates coverage, hashes and SQLite integrity, and starts the restored Paperclip PostgreSQL in single-user mode with networking disabled. It checks that company and agent rows are present. No application, bot, group or agent task runs during verification. After upload, the remote manifest digest is pulled and the restore/database checks repeat against its payload before `last-success.json` is written. This proves database readability and file preservation; it does not replace post-disaster model/connector acceptance.
+Every run restores into separate storage, validates coverage, hashes and SQLite integrity, and starts the restored Paperclip PostgreSQL in single-user mode with networking disabled. It checks that company and agent rows are present. No application, bot, group or agent task runs during verification. Paperclip’s documented permanent empty `.lock.sqlite` advisory files are preserved byte-for-byte; they are not application databases ([pinned upstream contract](https://github.com/paperclipai/paperclip/blob/d69631b01b9c658f80bf8bed389863dce82643e1/doc/workspace-restore-locks.md)). After upload, the remote manifest digest is pulled and the restore/database checks repeat against its payload before `last-success.json` is written. This proves database readability and file preservation; it does not replace post-disaster model/connector acceptance.
 
 Only state inside the declared root and the pinned runtime are covered. Unexpected external mounts/databases/links cause refusal. Host SSH keys, Docker Hub login, CI bootstrap and external Todoist/GitHub/Drive services are not backed up. Recreate the host access boundary separately. A restored OAuth login may still require provider reauthorization after token rotation or revocation.
 
