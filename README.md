@@ -28,6 +28,7 @@ The full Paperclip-led specification → implementation → independent-review t
 - [Deployment and inputs](deploy/README.md): official image/source pins, fresh-home preparation and native configuration.
 - [VPS access and CI/CD](docs/OS-DELIVERY.md): SSH, dashboards, shared provider login, Discord setup and deployment receipts.
 - [Daily private recovery](docs/DOCKERHUB-RECOVERY.md): full native state, private Docker Hub publication, verification and restoration.
+- [Portfolio workflow proposal](docs/superpowers/specs/2026-11-12-company-workflow-design.md): autonomy, project ownership, specification, verification, delivery and recovery. This planning document does not activate the proposed workflow.
 
 `deploy/compose.yaml` declares the two services, `deploy/versions.json` pins their dependencies, and `deploy/pilot.json` declares profiles, selected skills, model defaults and the Discord-owning profile. Fresh preparation consumes those settings. Existing native state is updated through native tools and explicit input verification; preparation never overwrites it.
 
