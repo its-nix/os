@@ -37,6 +37,14 @@ def t3_build_tag(source):
     return hashlib.sha256((source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16]
 
 
+def ensure_t3_image(source, run):
+    """Build the pinned T3 image only when its Dockerfile-hash tag is absent."""
+    tag = 'nixos-t3:' + t3_build_tag(source)
+    # `image ls -q` exits 0 with empty output for a missing tag; a daemon error still raises.
+    if not run(['docker', 'image', 'ls', '--quiet', tag]).strip():
+        run(['docker', 'build', '--tag', tag, str(source / 'deploy/t3')])
+
+
 def ensure_t3_state(state):
     """New, empty T3 state directories only; existing state is never modified."""
     root = state / 't3'
@@ -192,7 +200,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                    '--file', str(source / 'deploy/compose.yaml')]
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
-        run(compose + ['build', 't3'])  # pinned local build; cached when the Dockerfile is unchanged
+        ensure_t3_image(source, run)
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         for name in ('hermes', 'paperclip'):
             observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',

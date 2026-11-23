@@ -1,6 +1,6 @@
 # T3 Code container
 
-Pinned T3 Code v0.1.11 (upstream linux-x64 tarball, SHA-256 checked) plus the native harness CLIs: Claude Code, Codex, OpenCode, Gemini CLI and Grok, and `gh`. Versions are ARGs in `Dockerfile`, mirrored in `deploy/versions.json` (a test keeps them equal). The deployment builds it locally (`docker compose build t3`), so no registry is involved.
+Pinned T3 Code v0.1.11 (upstream linux-x64 tarball, SHA-256 checked) plus the native harness CLIs: Claude Code, Codex, OpenCode, Gemini CLI and Grok, and `gh`. Versions are ARGs in `Dockerfile`, mirrored in `deploy/versions.json` (a test keeps them equal). The deployment builds it locally (`docker build`, tag = Dockerfile hash) only when that tag is missing, so unrelated deploys never recreate T3 and no registry is involved.
 
 ## Boundary
 

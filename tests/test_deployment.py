@@ -39,6 +39,8 @@ class DeploymentTests(unittest.TestCase):
 
         def healthy(argv):
             calls.append(argv)
+            if argv[:3] == ['docker', 'image', 'ls']:
+                return 'sha256:present'
             if argv[:2] == ['docker', 'inspect']:
                 name = argv[-1].removeprefix('nixos-')
                 if name == 't3':
@@ -114,8 +116,8 @@ class DeploymentTests(unittest.TestCase):
             apply('f' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner(calls),
                   t3_credential=lambda s: True)
             self.assertTrue((state / 't3/home').is_dir() and (state / 't3/work').is_dir())
-            build = next(c for c in calls if 'build' in c)
-            self.assertEqual('t3', build[-1])
+            self.assertIn(['docker', 'image', 'ls', '--quiet', 'nixos-t3:' + deployment.t3_build_tag(ROOT)], calls)
+            self.assertFalse(any('build' in c for c in calls))  # tag present: never rebuilt
             self.assertIn(['docker', 'restart', '--timeout', '60', 'nixos-hermes'], calls)
             env_written = [c for c in calls if 'config' in c]
             self.assertTrue(env_written)
@@ -125,7 +127,21 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('cap_drop: [ALL]', t3)
         self.assertNotIn('docker.sock', compose)
         self.assertNotIn('network_mode: host', t3)
+        self.assertNotIn('\n    build:', t3)  # a per-release build context would recreate T3 every deploy
         self.assertNotIn('/hermes', t3.split('networks:\n  coding')[0])
+
+    def test_missing_t3_image_is_built_from_the_release(self):
+        calls = []
+        def runner(argv):
+            calls.append(argv)
+            return ''  # tag absent
+        deployment.ensure_t3_image(ROOT, runner)
+        self.assertEqual(['docker', 'build', '--tag', 'nixos-t3:' + deployment.t3_build_tag(ROOT),
+                          str(ROOT / 'deploy/t3')], calls[-1])
+        def daemon_down(argv):
+            raise subprocess.CalledProcessError(1, argv)
+        with self.assertRaises(subprocess.CalledProcessError):
+            deployment.ensure_t3_image(ROOT, daemon_down)
 
     def test_t3_state_paths_must_be_plain_directories(self):
         with tempfile.TemporaryDirectory() as td:
