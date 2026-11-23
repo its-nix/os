@@ -12,13 +12,27 @@ the lead is an external action and goes through approval.py instead.
 """
 
 import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
 import os
+from pathlib import Path
 import sys
 import urllib.parse
 import urllib.request
 
 STAGES = ('NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER')  # Twenty's default pipeline
+
+
+@contextmanager
+def title_lock(title):
+    """Serialize writers of one keyed note on this host (one Hermes runtime)."""
+    base = Path(os.environ.get('HERMES_HOME', '/opt/data')) / 'ventures' / '.crm-locks'
+    base.mkdir(parents=True, exist_ok=True)
+    with open(base / hashlib.sha256(title.encode()).hexdigest()[:24], 'a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 class Twenty:
@@ -64,15 +78,17 @@ class Twenty:
         return found[0] if found else None
 
     def note(self, person_id, title, body, opportunity_id=None):
-        """Idempotent by title: callers put a unique key (lead email, action id) in the title."""
-        existing = self.find_note(title)
-        if existing:
-            return existing
-        note = self.create('notes', {'title': title, 'bodyV2': {'markdown': body}})
-        self.create('noteTargets', {'noteId': note['id'], 'targetPersonId': person_id})
-        if opportunity_id:
-            self.create('noteTargets', {'noteId': note['id'], 'targetOpportunityId': opportunity_id})
-        return note
+        """Idempotent by title (callers put a unique key in it); links are repaired on retry."""
+        with title_lock(title):
+            note = self.find_note(title) or self.create('notes', {'title': title, 'bodyV2': {'markdown': body}})
+            query = urllib.parse.quote(f'noteId[eq]:"{note["id"]}"')
+            linked = self._payload(self.opener('GET', f'/rest/noteTargets?filter={query}&limit=20')) or []
+            have = {(t.get('targetPersonId'), t.get('targetOpportunityId')) for t in linked}
+            if not any(p == person_id for p, _ in have):
+                self.create('noteTargets', {'noteId': note['id'], 'targetPersonId': person_id})
+            if opportunity_id and not any(o == opportunity_id for _, o in have):
+                self.create('noteTargets', {'noteId': note['id'], 'targetOpportunityId': opportunity_id})
+            return note
 
 
 def intake(crm, args):

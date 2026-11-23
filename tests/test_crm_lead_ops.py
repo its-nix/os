@@ -40,6 +40,8 @@ class FakeTwenty:
             row = next(r for r in self.rows[obj] if r['id'] == rid)
             row.update(body)
             return {'data': {'update': row}}
+        if 'filter=' not in path:
+            return {'data': {obj: self.rows[obj]}}
         flt = path.split('filter=', 1)[1].split('&')[0]
         from urllib.parse import unquote
         field, value = unquote(flt).split('[eq]:')
@@ -53,6 +55,11 @@ class FakeTwenty:
 
 class CrmTests(unittest.TestCase):
     def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        patcher = patch.dict(os.environ, {'HERMES_HOME': self.td.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.crm_mod = load('crm')
         self.fake = FakeTwenty()
         self.crm = self.crm_mod.Twenty(key='k', opener=self.fake)
@@ -84,6 +91,13 @@ class CrmTests(unittest.TestCase):
         self.run_cli('intake', '--email', 'd@x.example', '--first', 'Dana')
         self.run_cli('intake', '--email', 'd@x.example', '--first', 'Dana')
         self.assertEqual(1, len(self.fake.rows['notes']))
+
+    def test_note_links_are_repaired_on_retry(self):
+        self.run_cli('intake', '--email', 'r@x.example', '--first', 'R')
+        self.fake.rows['noteTargets'].clear()  # crash after note creation, before links
+        self.run_cli('intake', '--email', 'r@x.example', '--first', 'R')
+        self.assertEqual(1, len(self.fake.rows['notes']))
+        self.assertEqual(2, len(self.fake.rows['noteTargets']))
 
     def test_qualify_requires_existing_record(self):
         with self.assertRaises(SystemExit):
@@ -147,13 +161,24 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(2, len(uuids))
         self.assertEqual(uuids[0], uuids[1])  # Todoist ignores the repeated command
 
-    def test_executed_requires_founder_delivery(self):
+    def test_undelivered_request_can_only_expire(self):
         self.m.request(self.args())  # queued-local: the founder never saw it
-        with self.assertRaises(SystemExit):
-            self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence='x'))
+        for outcome in ('executed', 'declined'):
+            with self.subTest(outcome=outcome), self.assertRaises(SystemExit):
+                self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome=outcome, evidence='x'))
+        self.assertEqual('closed', self.m.record(types.SimpleNamespace(
+            venture='demo', action_id='demo-dana-1', outcome='expired', evidence='withdrawn by lead'))['status'])
+
+    def test_fifo_and_symlink_previews_refused(self):
+        drafts = Path(self.td.name) / 'ventures/demo/drafts'
+        os.mkfifo(drafts / 'pipe.md')
+        (drafts / 'link.md').symlink_to(self.preview)
+        for name in ('pipe.md', 'link.md'):
+            with self.subTest(name=name), self.assertRaises(SystemExit):
+                self.m.request(self.args(preview=name))
 
     def test_outcome_needs_evidence_and_is_recorded_once(self):
-        self.m.request(self.args())
+        self.m.request(self.args(), post=lambda c: 'task-1')
         with self.assertRaises(SystemExit):
             self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence=' '))
         done = self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='declined',

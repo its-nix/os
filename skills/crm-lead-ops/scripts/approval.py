@@ -23,6 +23,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 import urllib.parse
@@ -72,10 +73,16 @@ def action_lock(path):
 
 def read_preview(venture, name):
     drafts = venture_dir(venture) / 'drafts'
-    path = (drafts / name)
-    if path.is_symlink() or path.resolve().parent != drafts.resolve():
-        raise SystemExit('Preview must be a file directly inside the venture drafts/ folder')
-    text = path.read_text()
+    if '/' in name or name in ('', '.', '..'):
+        raise SystemExit('Preview must be a file name directly inside the venture drafts/ folder')
+    try:
+        fd = os.open(drafts / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise SystemExit('Preview must be a regular, non-symlink file inside the venture drafts/ folder') from None
+    with os.fdopen(fd) as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise SystemExit('Preview must be a regular file')
+        text = handle.read(MAX_PREVIEW + 1)
     if not text.strip():
         raise SystemExit('An exact preview of the external effect is required')
     if len(text) > MAX_PREVIEW:
@@ -114,7 +121,19 @@ def todoist_task(receipt, token, post=None):
         reply = json.load(response)
     if reply.get('sync_status', {}).get(command_uuid) != 'ok':
         raise SystemExit('Todoist did not confirm the approval task; the request stays pending and is safe to retry')
-    return reply.get('temp_id_mapping', {}).get(command_uuid, command_uuid)
+    task_id = reply.get('temp_id_mapping', {}).get(command_uuid) or find_task(receipt['action_id'], token)
+    if not task_id:
+        raise SystemExit('Todoist accepted the command but the task cannot be found; reconcile manually before retrying')
+    return task_id
+
+
+def find_task(action_id, token):
+    """A replayed command returns no id mapping: locate the original task by its action id."""
+    request = urllib.request.Request('https://api.todoist.com/api/v1/tasks?label=nix-approval&limit=200',
+                                     headers={'Authorization': 'Bearer ' + token})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        results = json.load(response).get('results', [])
+    return next((t['id'] for t in results if f'Action id: {action_id}\n' in (t.get('description') or '') + '\n'), None)
 
 
 def request(args, post=None):
@@ -150,8 +169,9 @@ def record(args):
         receipt = json.loads(path.read_text())
         if receipt.get('outcome'):
             raise SystemExit('Outcome already recorded; actions are never re-run')
-        if args.outcome == 'executed' and receipt['status'] != 'awaiting-founder':
-            raise SystemExit('Only an action the founder actually received can be recorded as executed')
+        if args.outcome != 'expired' and receipt['status'] != 'awaiting-founder':
+            raise SystemExit('Only an action the founder actually received can be executed or declined; '
+                             'an undelivered request can only expire')
         receipt.update(outcome=args.outcome, evidence=args.evidence, recorded_at=now(), status='closed')
         write(path, receipt)
         return receipt
