@@ -1,6 +1,6 @@
 # Daily private OS recovery
 
-The deployed container-native backup uses [liornis/nixos-recovery](https://hub.docker.com/r/liornis/nixos-recovery), a private Docker Hub repository under the operator’s personal account. It captures the complete persistent `/srv/nix-clean` tree: Hermes profiles, accumulated memories, sessions, learned skills, credentials, Bot Groups and workspaces; Paperclip's embedded PostgreSQL database, files and matching keys; company KB/Kit snapshots and deployment metadata. Nothing is imported from the retired VPS setup.
+The deployed container-native backup uses [liornis/nixos-recovery](https://hub.docker.com/r/liornis/nixos-recovery), a private Docker Hub repository under the operator’s personal account. It captures the complete persistent `/srv/nix-clean` tree (T3's home with its database and provider logins included; T3 worktrees, clones and caches excluded as rebuildable from GitHub): Hermes profiles, accumulated memories, sessions, learned skills, credentials, Bot Groups and workspaces; Paperclip's embedded PostgreSQL database, files and matching keys; company KB/Kit snapshots and deployment metadata. Nothing is imported from the retired VPS setup.
 
 Snapshots are unencrypted by request. They contain working credentials and private company context. Keep the repository private and use the native Docker credential store; never copy payloads into Git, Actions artifacts or logs. The builder refuses publication unless the Hub API explicitly reports `is_private: true`, before and after pushing. Dated UTC tags are retained; no moving `latest` tag or registry deletion is used.
 
@@ -90,7 +90,12 @@ The destination contains `state/`, mode-600 `compose.json` with the actual captu
 Pull the pinned Paperclip runtime, inspect Compose locally without logging its private environment, and start only after disabling the previous host's bots to avoid duplicate sessions:
 
 ```bash
-docker compose -f /srv/nixos-restored/compose.json pull
+# T3 is a locally built image: rebuild it from the OS repository at the manifest's os_revision.
+rev=$(python3 -c 'import json;print(json.load(open("/srv/nixos-restored/manifest.json"))["os_revision"])')
+git clone https://github.com/its-nix/os /tmp/nix-os && git -C /tmp/nix-os checkout "$rev"
+tag=$(python3 -c 'import json;print(json.load(open("/srv/nixos-restored/compose.json"))["services"]["t3"]["image"])')
+docker build -t "$tag" /tmp/nix-os/deploy/t3
+docker compose -f /srv/nixos-restored/compose.json pull --ignore-buildable
 docker compose -f /srv/nixos-restored/compose.json up -d --wait
 ```
 

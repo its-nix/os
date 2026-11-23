@@ -3,10 +3,12 @@
 
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -26,17 +28,72 @@ def write_json(path, payload):
     temporary.replace(path)
 
 
+# Runtime images may change through normal deployment; other pins are installed native inputs.
+RUNTIMES = ('hermes', 'paperclip', 't3')
+T3_UID = T3_GID = 10010
+
+
+def t3_build_tag(source):
+    return hashlib.sha256((source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16]
+
+
+def ensure_t3_state(state):
+    """New, empty T3 state directories only; existing state is never modified."""
+    root = state / 't3'
+    for path in (root, root / 'home', root / 'work'):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('T3 state path is not a plain directory')
+        if not path.exists():
+            path.mkdir(mode=0o700)
+            os.chown(path, T3_UID, T3_GID)
+
+
+def _token_module():
+    spec = importlib.util.spec_from_file_location('hermes_token', Path(__file__).resolve().parents[1] / 'deploy/t3/hermes_token.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def renew_t3_credential(state):
+    return _token_module().ensure(state / 'hermes')
+
+
+def confirm_t3_credential(state):
+    _token_module().mark_loaded(state / 'hermes')
+
+
+RECOVERY_UNITS = ('nixos-recovery.service', 'nixos-recovery.timer')
+
+
+def sync_recovery_units(source, run, unit_dir=Path('/etc/systemd/system')):
+    """Keep already-adopted recovery units equal to the reviewed release (one root writer)."""
+    changed = False
+    for name in RECOVERY_UNITS:
+        installed, reviewed = unit_dir / name, source / 'automation/recovery' / name
+        if not installed.exists():
+            continue  # recovery not adopted on this host; enabling it stays an explicit step
+        if installed.read_bytes() != reviewed.read_bytes():
+            shutil.copyfile(reviewed, installed)
+            installed.chmod(0o644)
+            changed = True
+    if changed:
+        run(['systemctl', 'daemon-reload'])
+    return changed
+
+
 def native_inputs(source):
     versions = json.loads((source / 'deploy/versions.json').read_text())
     files = ['deploy/pilot.json', 'scripts/prepare-clean-os.py']
     files += ['deploy/roles/' + role + '.md' for role in ('lead', 'engineer', 'reviewer')]
     return {
-        'dependencies': {k: v for k, v in versions.items() if k not in ('hermes', 'paperclip')},
+        'dependencies': {k: v for k, v in versions.items() if k not in RUNTIMES},
         'instructions': {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in files},
     }
 
 
-def apply(revision, source, state, current, run=run):
+def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
+          t3_loaded=confirm_t3_credential, units=sync_recovery_units):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -55,34 +112,45 @@ def apply(revision, source, state, current, run=run):
             raise ValueError('Native inputs changed; refresh KB, Kit, profiles or instructions explicitly first')
         versions = json.loads((source / 'deploy/versions.json').read_text())
         installed = json.loads((state / 'hermes/nix/versions.json').read_text())
-        if {k: v for k, v in installed.items() if k not in ('hermes', 'paperclip')} != desired['dependencies']:
+        if {k: v for k, v in installed.items() if k not in RUNTIMES} != desired['dependencies']:
             raise ValueError('Installed native dependency pins do not match the reviewed source')
         for name, repository in [('hermes', 'nousresearch/hermes-agent'), ('paperclip', 'ghcr.io/paperclipai/paperclip')]:
             if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
                 raise ValueError('Only digest-pinned official images may deploy')
         candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
             'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
-            'PAPERCLIP_IMAGE': versions['paperclip']['image'],
+            'PAPERCLIP_IMAGE': versions['paperclip']['image'], 'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
+        ensure_t3_state(state)
         candidate.chmod(0o600)
         compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
                    '--file', str(source / 'deploy/compose.yaml')]
         run(compose + ['config', '--quiet'])
-        run(compose + ['pull'])
+        run(compose + ['pull', '--ignore-buildable'])
+        run(compose + ['build', 't3'])  # pinned local build; cached when the Dockerfile is unchanged
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         for name in ('hermes', 'paperclip'):
             observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',
                             'nixos-' + name])
             if observed != versions[name]['image'] + ' healthy':
                 raise ValueError('Native image or health readback differs from the declared deployment')
+        if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-t3']) \
+                != 'nixos-t3:' + t3_build_tag(source) + ' healthy':
+            raise ValueError('T3 image or health readback differs from the declared deployment')
         listeners = run(['ss', '-lntH']).splitlines()
-        for port in ('18642', '19119', '13100'):
+        for port in ('18642', '19119', '13100', '3773'):
             addresses = [line.split()[3] for line in listeners if len(line.split()) >= 5
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:
                 raise ValueError('A pilot listener is missing or is not exclusively loopback')
         run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nixos-hermes',
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
+        if t3_credential(state):
+            # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
+            run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
+            run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
+            t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
+        units(source, run)
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.

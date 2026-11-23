@@ -39,5 +39,18 @@
         "sha256": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f"
       }
     }
+  },
+  "t3": {
+    "version": "0.1.11",
+    "sha256": "2b691c07f5bcb5adea4a863d5324aae7db21bd6d82280cec7787836dcaa013e1",
+    "build": "deploy/t3/Dockerfile",
+    "harnesses": {
+      "claude-code": "2.1.330",
+      "codex": "0.171.0",
+      "opencode": "1.19.6",
+      "gemini-cli": "0.70.0",
+      "grok": "1.0.92",
+      "gh": "2.105.0"
+    }
   }
 }

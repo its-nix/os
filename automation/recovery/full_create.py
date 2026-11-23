@@ -6,6 +6,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -26,7 +27,7 @@ spec = importlib.util.spec_from_file_location('full_restore', HERE / 'full_resto
 state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
-CONTAINERS = ['nixos-hermes', 'nixos-paperclip']
+CONTAINERS = ['nixos-hermes', 'nixos-paperclip', 'nixos-t3']
 
 
 def run(argv, **kwargs):
@@ -135,8 +136,8 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock')):
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in CONTAINERS]
-        if statuses != ['running', 'running']:
-            raise Refusal('Both OS services must be running before capture')
+        if statuses != ['running'] * len(CONTAINERS):
+            raise Refusal('All OS services must be running before capture')
         try:
             run(['docker', 'stop', '--time', '90', *CONTAINERS])
             for name in CONTAINERS:
@@ -151,12 +152,14 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock')):
 
 def deployment_model(root, versions, deployed_source):
     env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes']['image'],
-               PAPERCLIP_IMAGE=versions['paperclip']['image'])
+               PAPERCLIP_IMAGE=versions['paperclip']['image'],
+               T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
     model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
                             'config', '--format', 'json'], env=env))
-    for name in ('hermes', 'paperclip'):
+    for name in ('hermes', 'paperclip', 't3'):
         actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
-        if actual['Config']['Image'] != versions[name]['image']:
+        expected = versions[name].get('image') or model['services'][name]['image']  # t3: pinned local build
+        if actual['Config']['Image'] != expected:
             raise Refusal('Running runtime differs from the immutable OS image pins')
         environment = dict(row.split('=', 1) for row in actual['Config']['Env'] if '=' in row)
         if name == 'paperclip' and environment.get('DATABASE_URL'):
