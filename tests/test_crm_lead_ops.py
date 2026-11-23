@@ -30,6 +30,8 @@ class FakeTwenty:
         self.calls.append((method, path))
         obj = path.split('/')[2].split('?')[0]
         if method == 'POST':
+            if obj == 'noteTargets':
+                assert set(body) <= {'noteId', 'targetPersonId', 'targetOpportunityId'}, body  # v2.62 schema
             row = dict(body, id=f'{obj}-{len(self.rows[obj]) + 1}')
             self.rows[obj].append(row)
             return {'data': {'create': row}}
@@ -73,7 +75,15 @@ class CrmTests(unittest.TestCase):
         self.assertEqual('MEETING', self.fake.rows['opportunities'][0]['stage'])
         self.assertEqual('MEETING', q['stage'])
         titles = [n['title'] for n in self.fake.rows['notes']]
-        self.assertEqual(['Lead intake', 'Qualified: MEETING'], titles)
+        self.assertEqual(['Lead intake: owner@bakery.example', 'Qualified MEETING: owner@bakery.example'], titles)
+        self.assertEqual(4, len(self.fake.rows['noteTargets']))
+
+    def test_intake_heals_a_missing_note_after_a_crash(self):
+        self.crm.create('people', {'name': {'firstName': 'Dana', 'lastName': ''}, 'emails': {'primaryEmail': 'd@x.example'}})
+        self.crm.create('opportunities', {'name': 'Dana', 'stage': 'NEW', 'pointOfContactId': 'people-1'})
+        self.run_cli('intake', '--email', 'd@x.example', '--first', 'Dana')
+        self.run_cli('intake', '--email', 'd@x.example', '--first', 'Dana')
+        self.assertEqual(1, len(self.fake.rows['notes']))
 
     def test_qualify_requires_existing_record(self):
         with self.assertRaises(SystemExit):
@@ -92,7 +102,9 @@ class ApprovalTests(unittest.TestCase):
         self.env.start()
         os.environ.pop('TODOIST_API_TOKEN', None)
         self.m = load('approval')
-        self.preview = Path(self.td.name) / 'draft.md'
+        drafts = Path(self.td.name) / 'ventures/demo/drafts'
+        drafts.mkdir(parents=True)
+        self.preview = drafts / 'demo-dana-1.md'
         self.preview.write_text('Hi Dana, could we talk for 15 minutes about restocking?')
 
     def tearDown(self):
@@ -101,7 +113,7 @@ class ApprovalTests(unittest.TestCase):
 
     def args(self, **kw):
         base = dict(venture='demo', action_id='demo-dana-1', target='email owner@bakery.example',
-                    effect='Send one email', preview=str(self.preview), cost='none', expires='2026-12-01',
+                    effect='Send one email', preview='demo-dana-1.md', cost='none', expires='2026-12-01',
                     executor='founder')
         base.update(kw)
         return types.SimpleNamespace(**base)
@@ -111,7 +123,8 @@ class ApprovalTests(unittest.TestCase):
         receipt = self.m.request(self.args(), post=lambda body: posted.append(body) or 'task-1')
         self.assertEqual('awaiting-founder', receipt['status'])
         self.assertIsNone(receipt['outcome'])
-        self.assertIn('does not authorize', posted[0]['description'])
+        self.assertIn('does not authorize', posted[0]['args']['description'])
+        self.assertEqual('item_add', posted[0]['type'])
         again = self.m.request(self.args(), post=lambda body: posted.append(body) or 'task-2')
         self.assertEqual('task-1', again['todoist_task'])
         self.assertEqual(1, len(posted))  # never queued twice
@@ -119,6 +132,25 @@ class ApprovalTests(unittest.TestCase):
     def test_without_queue_credential_it_stays_local_and_blocked(self):
         receipt = self.m.request(self.args())
         self.assertEqual('queued-local', receipt['status'])
+
+    def test_retry_after_uncertain_submission_reuses_the_command_uuid(self):
+        uuids = []
+        def flaky(command):
+            uuids.append(command['uuid'])
+            if len(uuids) == 1:
+                raise SystemExit('timeout')
+            return 'task-1'
+        with self.assertRaises(SystemExit):
+            self.m.request(self.args(), post=flaky)
+        self.assertEqual('submitting', json.loads((Path(self.td.name) / 'ventures/demo/actions/demo-dana-1.json').read_text())['status'])
+        self.m.request(self.args(), post=flaky)
+        self.assertEqual(2, len(uuids))
+        self.assertEqual(uuids[0], uuids[1])  # Todoist ignores the repeated command
+
+    def test_executed_requires_founder_delivery(self):
+        self.m.request(self.args())  # queued-local: the founder never saw it
+        with self.assertRaises(SystemExit):
+            self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence='x'))
 
     def test_outcome_needs_evidence_and_is_recorded_once(self):
         self.m.request(self.args())
@@ -130,7 +162,15 @@ class ApprovalTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence='x'))
 
-    def test_empty_preview_and_unsafe_ids_refused(self):
+    def test_unsafe_previews_and_ids_refused(self):
+        outside = Path(self.td.name) / 'secret.txt'
+        outside.write_text('private')
+        for preview in ('../../secret.txt', str(outside)):
+            with self.subTest(preview=preview), self.assertRaises(SystemExit):
+                self.m.request(self.args(preview=preview))
+        self.preview.write_text('x' * (self.m.MAX_PREVIEW + 1))
+        with self.assertRaisesRegex(SystemExit, 'exceeds'):
+            self.m.request(self.args())
         self.preview.write_text('  ')
         with self.assertRaises(SystemExit):
             self.m.request(self.args())

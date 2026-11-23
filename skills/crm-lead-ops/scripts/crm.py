@@ -18,7 +18,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-STAGES = ('NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER', 'LOST')
+STAGES = ('NEW', 'SCREENING', 'MEETING', 'PROPOSAL', 'CUSTOMER')  # Twenty's default pipeline
 
 
 class Twenty:
@@ -58,11 +58,20 @@ class Twenty:
         found = self._payload(self.opener('GET', f'/rest/opportunities?filter={query}&limit=1'))
         return found[0] if found else None
 
+    def find_note(self, title):
+        query = urllib.parse.quote(f'title[eq]:"{title}"')
+        found = self._payload(self.opener('GET', f'/rest/notes?filter={query}&limit=1'))
+        return found[0] if found else None
+
     def note(self, person_id, title, body, opportunity_id=None):
+        """Idempotent by title: callers put a unique key (lead email, action id) in the title."""
+        existing = self.find_note(title)
+        if existing:
+            return existing
         note = self.create('notes', {'title': title, 'bodyV2': {'markdown': body}})
-        self.create('noteTargets', {'noteId': note['id'], 'personId': person_id})
+        self.create('noteTargets', {'noteId': note['id'], 'targetPersonId': person_id})
         if opportunity_id:
-            self.create('noteTargets', {'noteId': note['id'], 'opportunityId': opportunity_id})
+            self.create('noteTargets', {'noteId': note['id'], 'targetOpportunityId': opportunity_id})
         return note
 
 
@@ -76,7 +85,8 @@ def intake(crm, args):
     if opportunity is None:
         opportunity = crm.create('opportunities', {'name': f'{args.first} {args.last}'.strip() + (
             f' ({args.company})' if args.company else ''), 'stage': 'NEW', 'pointOfContactId': person['id']})
-        crm.note(person['id'], 'Lead intake', f'Source: {args.source or "unspecified"}', opportunity['id'])
+    # Re-run safe: the intake note is keyed by email, so a crash before it is healed on retry.
+    crm.note(person['id'], f'Lead intake: {args.email}', f'Source: {args.source or "unspecified"}', opportunity['id'])
     return {'person': person['id'], 'opportunity': opportunity['id'], 'created': created}
 
 
@@ -116,7 +126,7 @@ def main(argv=None, crm=None):
             if opportunity is None:
                 raise SystemExit('No opportunity for this lead; run intake first')
             crm.update('opportunities', opportunity['id'], {'stage': args.stage})
-            crm.note(person['id'], f'Qualified: {args.stage}', args.rationale, opportunity['id'])
+            crm.note(person['id'], f'Qualified {args.stage}: {args.email}', args.rationale, opportunity['id'])
             result = {'person': person['id'], 'opportunity': opportunity['id'], 'stage': args.stage}
         elif args.command == 'note':
             note = crm.note(person['id'], args.title, args.body, opportunity and opportunity['id'])
