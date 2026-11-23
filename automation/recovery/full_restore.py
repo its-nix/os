@@ -176,6 +176,10 @@ def restore(archive, manifest, destination, *, preserve_owner=True):
                 if row['size'] == 0 and re.fullmatch(
                         r'paperclip/instances/default/locks/directory-merge/[0-9a-f]{64}\.lock\.sqlite', name):
                     continue
+                # T3's ownership lock: an exclusive transaction on a file that "never holds data"
+                # (pingdotgg/t3code v0.1.11 apps/server/src/serverOwnership.ts). Preserved exactly.
+                if row['size'] == 0 and name == 't3/home/.t3/userdata/server-owner.sqlite':
+                    continue
                 db.check_database((destination / name).resolve())
     return len(inventory)
 
