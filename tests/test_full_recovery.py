@@ -39,6 +39,33 @@ class FullRecoveryTests(unittest.TestCase):
             with self.subTest(name=name, target=target), self.assertRaises(recovery.Refusal):
                 recovery.safe_link(name, target)
 
+    def test_restore_refuses_archived_link_outside_runtime(self):
+        recovery = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'live'
+            for name in ('hermes/config.yaml', 'paperclip/instances/default/db/PG_VERSION',
+                         'paperclip/instances/default/secrets/master.key'):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text('x')
+            link = root / 'hermes/installs/a/environments/b/venv/bin/python'
+            link.parent.mkdir(parents=True)
+            link.symlink_to('/opt/hermes/tools/python3')
+            archive = Path(td) / 'snapshot.tar.gz'
+            inventory = recovery.snapshot(root, archive)
+            # Tamper: the archive+manifest now claim an escaping target.
+            import tarfile
+            tampered = Path(td) / 'tampered.tar.gz'
+            with tarfile.open(archive) as src, tarfile.open(tampered, 'w:gz') as dst:
+                for member in src.getmembers():
+                    if member.issym():
+                        member.linkname = '/etc/shadow'
+                    dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+            inventory['hermes/installs/a/environments/b/venv/bin/python']['target'] = '/etc/shadow'
+            manifest = {'archive_sha256': recovery.digest(tampered), 'files': inventory}
+            with self.assertRaises(recovery.Refusal):
+                recovery.restore(tampered, manifest, Path(td) / 'restored', preserve_owner=False)
+            self.assertFalse((Path(td) / 'restored').exists())
+
     def test_missing_state_or_key_material_refused(self):
         recovery = self.module()
         with self.assertRaises(recovery.Refusal):
