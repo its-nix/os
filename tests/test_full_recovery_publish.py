@@ -144,6 +144,8 @@ class ServiceControlTests(unittest.TestCase):
         with patch.object(module, 'run', return_value='starting'):
             self.assertFalse(module.ready('nixos-hermes'))
         self.assertIn('exited 143', module.CLEAN_EXIT)
+        self.assertIn('exited 130', module.CLEAN_EXIT)  # T3 under tini
+        self.assertNotIn('exited 137', module.CLEAN_EXIT)  # killed after timeout
 
     def test_capture_refuses_running_crm_writers_when_disabled(self):
         module = self.module()
