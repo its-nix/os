@@ -102,7 +102,20 @@ def _token_module():
 
 
 def renew_t3_credential(state):
-    return _token_module().ensure(state / 'hermes')
+    module = _token_module()
+    renewed = module.ensure(state / 'hermes')
+    return module.share_with_leads(state / 'hermes') or renewed
+
+
+def register_t3_for_leads(state, run):
+    """Native `hermes mcp add` for each registry-owned lead that lacks the t3 server."""
+    for profile in _token_module().venture_profiles(state / 'hermes'):
+        config = profile / 'config.yaml'
+        text = config.read_text() if config.is_file() else ''
+        if 'http://127.0.0.1:3773/mcp' in text:
+            continue
+        run(['docker', 'exec', '-i', '-u', '10000', 'nixos-hermes', 'sh', '-c',
+             f'printf "Y\\nY\\nY\\n" | hermes -p {profile.name} mcp add t3 --url http://127.0.0.1:3773/mcp --auth header'])
 
 
 def confirm_t3_credential(state):
@@ -320,6 +333,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                 raise ValueError('A pilot listener is missing or is not exclusively loopback')
         run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nixos-hermes',
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
+        register_t3_for_leads(state, run)
         if t3_credential(state):
             # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
             run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])

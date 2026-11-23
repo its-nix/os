@@ -162,6 +162,36 @@ def ensure(hermes_home, now=None, minter=mint, prober=probe):
     return True
 
 
+def venture_profiles(hermes_home):
+    """Registry-owned lead profiles (marker names its own profile; no symlinks)."""
+    profiles = hermes_home / 'profiles'
+    if not profiles.is_dir() or profiles.is_symlink():
+        return []
+    found = []
+    for marker in sorted(profiles.glob('*/nix-venture.json')):
+        directory = marker.parent
+        if directory.is_symlink() or marker.is_symlink() or not marker.is_file():
+            continue
+        try:
+            if json.loads(marker.read_text()).get('venture') == directory.name:
+                found.append(directory)
+        except ValueError:
+            continue
+    return found
+
+
+def share_with_leads(hermes_home):
+    """Profile secrets are scoped under the multiplexed gateway: give each venture lead the current
+    credential in its own private .env. Returns True when any lead's value changed."""
+    token = current_token(hermes_home)
+    changed = False
+    for profile in venture_profiles(hermes_home):
+        if current_token(profile) != token:
+            write_env(profile / '.env', {KEYS[0]: token})
+            changed = True
+    return changed
+
+
 def mark_loaded(hermes_home):
     """Called by the deployment only after Hermes restarted healthy with the new credential."""
     sidecar = hermes_home / 'nix' / 't3-mcp.json'

@@ -59,6 +59,18 @@ class TokenTests(unittest.TestCase):
         token.write_env(self.home / '.env', {'MCP_T3_API_KEY': other})
         self.assertTrue(token.ensure(self.home, NOW, self.minter(), prober=lambda t: True))
 
+    def test_credential_shared_only_with_registry_owned_leads(self):
+        token.ensure(self.home, NOW, self.minter(), prober=lambda t: True)
+        for name, owner in (('acme', 'acme'), ('clone', 'acme'), ('engineer', None)):
+            (self.home / 'profiles' / name).mkdir(parents=True)
+            if owner:
+                (self.home / 'profiles' / name / 'nix-venture.json').write_text(json.dumps({'venture': owner}))
+        self.assertTrue(token.share_with_leads(self.home))
+        self.assertEqual(GOOD, token.current_token(self.home / 'profiles/acme'))
+        self.assertIsNone(token.current_token(self.home / 'profiles/clone'))
+        self.assertIsNone(token.current_token(self.home / 'profiles/engineer'))
+        self.assertFalse(token.share_with_leads(self.home))  # already current: no restart
+
     def test_injected_newline_or_malformed_token_refused(self):
         with self.assertRaises(token.Refusal):
             token.ensure(self.home, NOW, self.minter(GOOD + '\nHERMES_EVIL=1'), prober=lambda t: True)
