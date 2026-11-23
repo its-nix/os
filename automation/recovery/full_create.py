@@ -30,6 +30,9 @@ Refusal = state.Refusal
 CONTAINERS = ['nixos-hermes', 'nixos-paperclip', 'nixos-t3']
 # Optional CRM: stopped app-first, started database-first.
 CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
+# Probe image for a restored Twenty database, independent of whether the profile is active now
+# (a test keeps it equal to deploy/compose.yaml).
+TWENTY_DB_IMAGE = 'postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175'
 
 
 def crm_enabled(root=Path('/srv/nix-clean')):
@@ -152,6 +155,18 @@ def ready(name):
     return run(['docker', 'inspect', '--format', HEALTH, name]) in ('healthy', 'running')
 
 
+def start_all(names):
+    """Attempt every start (databases first), then report; one failure never strands the rest."""
+    failed = []
+    for name in names:
+        try:
+            run(['docker', 'start', name])
+        except Refusal:
+            failed.append(name)
+    if failed:
+        raise Refusal('Some services did not start after capture: ' + ', '.join(failed))
+
+
 def wait_services(names=None):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
@@ -167,12 +182,12 @@ def crm_writers_running():
 
 
 @contextmanager
-def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock')):
+def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('/srv/nix-clean')):
     # The same lock serializes CI/CD. No archive is ever copied from live database writers.
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        names = containers()
-        if not crm_enabled() and crm_writers_running():
+        names = containers(root)
+        if not crm_enabled(root) and crm_writers_running():
             raise Refusal('CRM containers run while CRM is disabled; reconcile with a deployment first')
         statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in names]
         if statuses != ['running'] * len(names):
@@ -186,8 +201,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock')):
             yield
         finally:
             # Even a failed/partial stop must not leave the company OS down. Databases start first.
-            for name in reversed(names):
-                run(['docker', 'start', name])
+            start_all(list(reversed(names)))
             wait_services(names)
 
 
@@ -237,8 +251,7 @@ def verify_payload(payload, work, versions):
     state.restore_bundle(payload, restored)
     postgres_check(versions['paperclip']['image'], restored / 'state')
     if (restored / 'state/twenty/db/PG_VERSION').is_file():
-        model = json.loads((payload / 'deployment.json').read_text())
-        twenty_db_check(model['services']['twenty-db']['image'], restored / 'state')
+        twenty_db_check(TWENTY_DB_IMAGE, restored / 'state')
     return manifest
 
 
@@ -310,7 +323,7 @@ def build(args):
             work = Path(td)
             payload = work / 'payload'
             payload.mkdir(mode=0o700)
-            with stopped_services():
+            with stopped_services(root=root):
                 versions = json.loads((root / 'versions.json').read_text())
                 # Resolve after taking the shared lock: a deployment may have advanced
                 # the source pointer while this backup process was waiting.

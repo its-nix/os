@@ -258,10 +258,11 @@ class DeploymentTests(unittest.TestCase):
             def with_leftover(argv):
                 if argv[:2] == ['docker', 'ps']:
                     calls.append(argv)
-                    return 'aaa\nbbb'
+                    return 'nixos-twenty-db\nnixos-twenty-worker'
                 return runner(argv)
             apply('6' * 40, ROOT, state, Path(td) / 'current', run=with_leftover)
-            self.assertIn(['docker', 'stop', '--time', '90', 'aaa', 'bbb'], calls)
+            stops = [c[-1] for c in calls if c[:2] == ['docker', 'stop']]
+            self.assertEqual(['nixos-twenty-worker', 'nixos-twenty-db'], stops)
             self.assertFalse(any('rm' in c or 'down' in c for c in calls))
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):

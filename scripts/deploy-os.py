@@ -239,9 +239,10 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             ensure_twenty_state(state)
         else:
             # A disabled CRM must not keep writing: stop (never remove) any running Twenty container.
-            running = run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-twenty-']).split()
-            if running:
-                run(['docker', 'stop', '--time', '90', *running])
+            running = set(run(['docker', 'ps', '--format', '{{.Names}}', '--filter', 'name=^nixos-twenty-']).split())
+            for name in ('nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis'):
+                if name in running:  # apps drain before their datastores stop
+                    run(['docker', 'stop', '--time', '90', name])
         compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
                    '--file', str(source / 'deploy/compose.yaml')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])

@@ -158,6 +158,28 @@ class ServiceControlTests(unittest.TestCase):
                     self.fail('must not capture')
 
 
+class CrmRestartTests(unittest.TestCase):
+    def test_failed_crm_start_still_starts_core_services_and_probe_image_matches_compose(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        started = []
+        def command(argv):
+            if argv[:2] == ['docker', 'start']:
+                started.append(argv[2])
+                if argv[2] == 'nixos-twenty-db':
+                    raise module.Refusal('failed')
+            return ''
+        with patch.object(module, 'run', side_effect=command):
+            with self.assertRaisesRegex(module.Refusal, 'nixos-twenty-db'):
+                module.start_all(list(reversed(module.CONTAINERS + module.CRM_CONTAINERS)))
+        self.assertTrue(set(module.CONTAINERS) <= set(started))
+        self.assertIn(module.TWENTY_DB_IMAGE, (ROOT / 'deploy/compose.yaml').read_text())
+        hook = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        self.assertIn('|| rc=1', hook)
+        self.assertNotIn('|| exit 1', hook)
+
+
 class RecoveryUnitTests(unittest.TestCase):
     def test_failed_backups_cannot_cold_stop_services_indefinitely(self):
         unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
