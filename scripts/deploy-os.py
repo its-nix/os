@@ -267,7 +267,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
     write_json(state / 'deployment-attempt.json', attempt)
     try:
         if not all((state / name).is_dir() and not (state / name).is_symlink()
-                   for name in ('hermes', 'paperclip', 'knowledge/company')):
+                   for name in ('hermes', 'knowledge/company')):
             raise ValueError('Existing native state and KB are required')
         if current.exists() and not current.is_symlink():
             raise ValueError('Operator must adopt the existing source directory as a symlink first')
@@ -278,12 +278,12 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         installed = json.loads((state / 'hermes/nix/versions.json').read_text())
         if {k: v for k, v in installed.items() if k not in RUNTIMES} != desired['dependencies']:
             raise ValueError('Installed native dependency pins do not match the reviewed source')
-        for name, repository in [('hermes', 'nousresearch/hermes-agent'), ('paperclip', 'ghcr.io/paperclipai/paperclip')]:
+        for name, repository in [('hermes', 'nousresearch/hermes-agent')]:
             if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
                 raise ValueError('Only digest-pinned official images may deploy')
         candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
             'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
-            'PAPERCLIP_IMAGE': versions['paperclip']['image'], 'T3_BUILD_TAG': t3_build_tag(source),
+            'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
         candidate.chmod(0o600)
@@ -302,7 +302,11 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         run(compose + ['pull', '--ignore-buildable'])
         ensure_t3_image(source, run)
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
-        for name in ('hermes', 'paperclip'):
+        # Paperclip is retired (no work since 2026-11-23): stop, never remove; its state stays under
+        # NIX_CLEAN_ROOT/paperclip and in every recovery image for rollback.
+        if run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-paperclip$']).strip():
+            run(['docker', 'stop', '--time', '90', 'nixos-paperclip'])
+        for name in ('hermes',):
             observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',
                             'nixos-' + name])
             if observed != versions[name]['image'] + ' healthy':
@@ -313,7 +317,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         if crm and run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', 'nixos-twenty-server']) != 'healthy':
             raise ValueError('Twenty CRM health readback failed')
         listeners = run(['ss', '-lntH']).splitlines()
-        for port in ('18642', '19119', '13100', '3773') + (('3020',) if crm else ()):
+        for port in ('18642', '19119', '3773') + (('3020',) if crm else ()):
             addresses = [line.split()[3] for line in listeners if len(line.split()) >= 5
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:
@@ -338,7 +342,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         write_json(state / 'versions.json', versions)
         (state / 'source-revision').write_text(revision + '\n')
         receipt = dict(attempt, status='healthy', completed_at=datetime.now(timezone.utc).isoformat(),
-                       images={name: versions[name]['image'] for name in ('hermes', 'paperclip')})
+                       images={'hermes': versions['hermes']['image'], 't3': 'nixos-t3:' + t3_build_tag(source)})
         write_json(state / 'deployment.json', receipt)
         write_json(state / 'deployment-attempt.json', receipt)
         publish_health(state, receipt)

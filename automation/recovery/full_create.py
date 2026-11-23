@@ -27,7 +27,7 @@ spec = importlib.util.spec_from_file_location('full_restore', HERE / 'full_resto
 state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
-CONTAINERS = ['nixos-hermes', 'nixos-paperclip', 'nixos-t3']
+CONTAINERS = ['nixos-hermes', 'nixos-t3']  # Paperclip retired: archived state only
 # Optional CRM: stopped app-first, started database-first.
 CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
 # Probe image for a restored Twenty database, independent of whether the profile is active now
@@ -212,19 +212,16 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
 
 def deployment_model(root, versions, deployed_source):
     env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes']['image'],
-               PAPERCLIP_IMAGE=versions['paperclip']['image'],
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
     model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
-    for name in ('hermes', 'paperclip', 't3'):
+    for name in ('hermes', 't3'):
         actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
         expected = versions[name].get('image') or model['services'][name]['image']  # t3: pinned local build
         if actual['Config']['Image'] != expected:
             raise Refusal('Running runtime differs from the immutable OS image pins')
         environment = dict(row.split('=', 1) for row in actual['Config']['Env'] if '=' in row)
-        if name == 'paperclip' and environment.get('DATABASE_URL'):
-            raise Refusal('External Paperclip databases need a separate native dump workflow')
         model['services'][name]['environment'] = environment
         expected_mounts = {(str(Path(v['source']).resolve()), v['target'], not v.get('read_only', False))
                            for v in model['services'][name].get('volumes', [])}
@@ -254,7 +251,8 @@ def verify_payload(payload, work, versions):
     manifest = json.loads((payload / 'manifest.json').read_text())
     restored = work / ('restored-' + uuid.uuid4().hex)
     state.restore_bundle(payload, restored)
-    postgres_check(versions['paperclip']['image'], restored / 'state')
+    if (restored / 'state/paperclip/instances/default/db/PG_VERSION').is_file():
+        postgres_check(versions['paperclip']['image'], restored / 'state')  # archived Paperclip stays restorable
     if (restored / 'state/twenty/db/PG_VERSION').is_file():
         twenty_db_check(TWENTY_DB_IMAGE, restored / 'state')
     return manifest
