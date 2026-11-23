@@ -34,7 +34,7 @@ jobs:
           versions = json.loads(Path('deploy/versions.json').read_text())
           env = dict(os.environ, NIX_CLEAN_ROOT='/tmp/nix-clean-ci',
                      HERMES_IMAGE=versions['hermes']['image'],
-                     PAPERCLIP_IMAGE=versions['paperclip']['image'])
+                     PAPERCLIP_IMAGE=versions['paperclip']['image'], T3_BUILD_TAG='ci')
           subprocess.run(['docker', 'compose', '-f', 'deploy/compose.yaml', 'config', '--quiet'], env=env, check=True)
           PYTHON
       - name: Repository verifier

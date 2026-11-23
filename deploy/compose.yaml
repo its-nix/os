@@ -59,3 +59,33 @@ services:
       timeout: 5s
       start_period: 180s
       retries: 4
+  t3:
+    # Coding cockpit and Hermes coding delegate. Full-access agents run here, so it is
+    # isolated from the host-network runtime: own bridge network, loopback-only publish,
+    # no Docker socket, no Hermes/Paperclip state, no capabilities, non-root.
+    container_name: nixos-t3
+    image: nixos-t3:${T3_BUILD_TAG:?Prepare the pinned deployment environment first}
+    build:
+      context: ./t3
+    pull_policy: never
+    networks: [coding]
+    ports:
+      - 127.0.0.1:3773:3773
+    restart: unless-stopped
+    stop_grace_period: 60s
+    mem_limit: 2g
+    pids_limit: 2048
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/t3/home
+        target: /home/t3
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/t3/work
+        target: /work
+        bind: {create_host_path: false}
+networks:
+  coding:
+    name: nixos-coding

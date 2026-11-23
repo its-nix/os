@@ -56,11 +56,32 @@ def safe_link(name, target):
             parts.append(part)
 
 
+# Rebuildable content kept out of recovery images: T3 repositories/worktrees come back from
+# GitHub, and caches are regenerated. The directories themselves are preserved (empty).
+REBUILDABLE = ('t3/work/', 't3/home/.cache/', 't3/home/.npm/', 't3/home/.codex/tmp/', 't3/home/.codex/.tmp/')
+
+
+def durable_paths(root):
+    """Every path under root except rebuildable content, without descending into it."""
+    found = []
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(directory)
+        keep = []
+        for name in dirnames:
+            rel = (base / name).relative_to(root).as_posix() + '/'
+            found.append(base / name)
+            if not rel.startswith(REBUILDABLE) and not (base / name).is_symlink():
+                keep.append(name)
+        dirnames[:] = keep
+        found.extend(base / name for name in filenames)
+    return sorted(p for p in found if not p.relative_to(root).as_posix().startswith(REBUILDABLE))
+
+
 def snapshot(root, archive):
     root = Path(root)
     inventory = {}
     with tarfile.open(archive, 'w:gz', format=tarfile.PAX_FORMAT, dereference=False) as tf:
-        for path in sorted(root.rglob('*')):
+        for path in durable_paths(root):
             rel = path.relative_to(root).as_posix()
             info = path.lstat()
             if path.name in INERT or stat.S_ISSOCK(info.st_mode):
