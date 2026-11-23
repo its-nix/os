@@ -64,9 +64,8 @@ services:
     # isolated from the host-network runtime: own bridge network, loopback-only publish,
     # no Docker socket, no Hermes/Paperclip state, no capabilities, non-root.
     container_name: nixos-t3
-    # Built by the deployment from deploy/t3 (tag = Dockerfile hash). No `build:` key: Compose
-    # hashes the absolute build context, which changes with every release directory and would
-    # recreate T3 (interrupting coding threads) on every unrelated deploy.
+    # Built by the deployment from deploy/t3 only when its tag (= Dockerfile hash) is missing, so an
+    # unrelated deploy never produces a new image ID and never recreates T3 mid-thread.
     image: nixos-t3:${T3_BUILD_TAG:?Prepare the pinned deployment environment first}
     pull_policy: never
     networks: [coding]

@@ -40,9 +40,8 @@ def t3_build_tag(source):
 def ensure_t3_image(source, run):
     """Build the pinned T3 image only when its Dockerfile-hash tag is absent."""
     tag = 'nixos-t3:' + t3_build_tag(source)
-    try:
-        run(['docker', 'image', 'inspect', '--format', '{{.Id}}', tag])
-    except subprocess.CalledProcessError:
+    # `image ls -q` exits 0 with empty output for a missing tag; a daemon error still raises.
+    if not run(['docker', 'image', 'ls', '--quiet', tag]).strip():
         run(['docker', 'build', '--tag', tag, str(source / 'deploy/t3')])
 
 

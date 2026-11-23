@@ -39,6 +39,8 @@ class DeploymentTests(unittest.TestCase):
 
         def healthy(argv):
             calls.append(argv)
+            if argv[:3] == ['docker', 'image', 'ls']:
+                return 'sha256:present'
             if argv[:2] == ['docker', 'inspect']:
                 name = argv[-1].removeprefix('nixos-')
                 if name == 't3':
@@ -114,8 +116,7 @@ class DeploymentTests(unittest.TestCase):
             apply('f' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner(calls),
                   t3_credential=lambda s: True)
             self.assertTrue((state / 't3/home').is_dir() and (state / 't3/work').is_dir())
-            self.assertIn(['docker', 'image', 'inspect', '--format', '{{.Id}}',
-                           'nixos-t3:' + deployment.t3_build_tag(ROOT)], calls)
+            self.assertIn(['docker', 'image', 'ls', '--quiet', 'nixos-t3:' + deployment.t3_build_tag(ROOT)], calls)
             self.assertFalse(any('build' in c for c in calls))  # tag present: never rebuilt
             self.assertIn(['docker', 'restart', '--timeout', '60', 'nixos-hermes'], calls)
             env_written = [c for c in calls if 'config' in c]
@@ -133,12 +134,14 @@ class DeploymentTests(unittest.TestCase):
         calls = []
         def runner(argv):
             calls.append(argv)
-            if argv[:3] == ['docker', 'image', 'inspect']:
-                raise subprocess.CalledProcessError(1, argv)
-            return ''
+            return ''  # tag absent
         deployment.ensure_t3_image(ROOT, runner)
         self.assertEqual(['docker', 'build', '--tag', 'nixos-t3:' + deployment.t3_build_tag(ROOT),
                           str(ROOT / 'deploy/t3')], calls[-1])
+        def daemon_down(argv):
+            raise subprocess.CalledProcessError(1, argv)
+        with self.assertRaises(subprocess.CalledProcessError):
+            deployment.ensure_t3_image(ROOT, daemon_down)
 
     def test_t3_state_paths_must_be_plain_directories(self):
         with tempfile.TemporaryDirectory() as td:
