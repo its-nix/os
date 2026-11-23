@@ -83,6 +83,14 @@ class FullRecoveryTests(unittest.TestCase):
             self.assertIn('t3/work', rels)
             self.assertFalse(any(r.startswith(('t3/work/', 't3/home/.cache/', 't3/home/.codex/tmp/')) for r in rels))
 
+    def test_unit_stop_hook_restarts_every_service(self):
+        unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        create = (ROOT / 'automation/recovery/full_create.py').read_text()
+        hook = next(l for l in unit.splitlines() if l.startswith('ExecStopPost='))
+        for name in ('nixos-hermes', 'nixos-paperclip', 'nixos-t3'):
+            self.assertIn(name, hook)
+            self.assertIn(repr(name), create)
+
     def test_missing_state_or_key_material_refused(self):
         recovery = self.module()
         with self.assertRaises(recovery.Refusal):

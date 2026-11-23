@@ -189,6 +189,11 @@ def restore_bundle(payload, destination):
     count = restore(payload / 'snapshot.tar.gz', manifest, destination / 'state')
     model = json.loads((payload / 'deployment.json').read_text())
     for service in model['services'].values():
+        # A locally built image (T3) cannot be rebuilt from the old host's release path. The
+        # restored compose names the exact image tag; rebuild it from the OS repository at
+        # manifest['os_revision'] (deploy/t3) before starting.
+        if service.pop('build', None) is not None:
+            service['pull_policy'] = 'never'
         for volume in service.get('volumes', []):
             if volume.get('type') != 'bind':
                 raise Refusal('Unexpected deployment volume')

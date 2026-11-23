@@ -47,11 +47,19 @@ def ensure_t3_state(state):
             os.chown(path, T3_UID, T3_GID)
 
 
-def renew_t3_credential(state):
+def _token_module():
     spec = importlib.util.spec_from_file_location('hermes_token', Path(__file__).resolve().parents[1] / 'deploy/t3/hermes_token.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.ensure(state / 'hermes')
+    return module
+
+
+def renew_t3_credential(state):
+    return _token_module().ensure(state / 'hermes')
+
+
+def confirm_t3_credential(state):
+    _token_module().mark_loaded(state / 'hermes')
 
 
 def native_inputs(source):
@@ -64,7 +72,8 @@ def native_inputs(source):
     }
 
 
-def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential):
+def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
+          t3_loaded=confirm_t3_credential):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -120,6 +129,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
             run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
             run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
+            t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.

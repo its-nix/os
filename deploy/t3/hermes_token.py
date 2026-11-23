@@ -15,10 +15,13 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
 import sys
+import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -82,35 +85,85 @@ def mint(code_source=pairing_code, request=http):
     return token['access_token'], expires
 
 
+TOKEN_RE = re.compile(r'[A-Za-z0-9._~+/=-]{20,4096}')
+
+
+def safe_write(path, text, owner):
+    """Atomic, no-follow, owner-only write: a random O_EXCL temp file, then rename over path."""
+    if path.is_symlink() or path.parent.is_symlink():
+        raise Refusal(f'Refusing to write through a symlink: {path.name}')
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name + '.')
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(text)
+        os.chmod(temporary, 0o600)
+        os.chown(temporary, owner.st_uid, owner.st_gid)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
 def write_env(env_path, values):
     """Replace only our keys in Hermes' private .env, preserving every other line and ownership."""
+    for value in values.values():
+        if not TOKEN_RE.fullmatch(value):
+            raise Refusal('T3 returned a credential with an unexpected format; not written')
     lines = env_path.read_text().splitlines() if env_path.exists() else []
     kept = [line for line in lines if line.split('=', 1)[0].strip() not in KEYS]
     kept += [f'{k}={v}' for k, v in values.items()]
     owner = env_path.stat() if env_path.exists() else env_path.parent.stat()
-    temporary = env_path.with_name('.env.t3-next')
-    temporary.write_text('\n'.join(kept) + '\n')
-    temporary.chmod(0o600)
-    os.chown(temporary, owner.st_uid, owner.st_gid)
-    temporary.replace(env_path)
+    safe_write(env_path, '\n'.join(kept) + '\n', owner)
 
 
-def ensure(hermes_home, now=None, minter=mint):
-    """Returns True when a new credential was written."""
+def current_token(hermes_home):
+    env = hermes_home / '.env'
+    if not env.exists():
+        return None
+    for line in env.read_text().splitlines():
+        key, _, value = line.partition('=')
+        if key.strip() == KEYS[0]:
+            return value.strip()
+    return None
+
+
+def probe(token, request=None):
+    """True when T3 accepts the credential for MCP (initialize)."""
+    body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+        'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'nix-deploy', 'version': '1'}}})
+    req = urllib.request.Request(ORIGIN + '/mcp', data=body.encode(), method='POST', headers={
+        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream'})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return response.status == 200
+    except urllib.error.HTTPError:
+        return False
+
+
+def ensure(hermes_home, now=None, minter=mint, prober=probe):
+    """Returns True when Hermes must (re)load the credential: newly minted, or never confirmed loaded."""
     now = now or datetime.now(timezone.utc)
     sidecar = hermes_home / 'nix' / 't3-mcp.json'
-    if sidecar.exists():
-        expires = datetime.fromisoformat(json.loads(sidecar.read_text())['expires_at'])
-        if expires - now > timedelta(days=RENEW_DAYS):
-            return False
+    state = json.loads(sidecar.read_text()) if sidecar.exists() else {}
+    token = current_token(hermes_home)
+    if (state and token and datetime.fromisoformat(state['expires_at']) - now > timedelta(days=RENEW_DAYS)
+            and prober(token)):
+        return not state.get('loaded', False)
     token, expires = minter()
-    write_env(hermes_home / '.env', {'MCP_T3_API_KEY': token})
+    write_env(hermes_home / '.env', {KEYS[0]: token})
     sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text(json.dumps({'expires_at': expires.isoformat(), 'access': 'full-access',
-                                   'renewed_at': now.isoformat()}) + '\n')
-    owner = hermes_home.stat()
-    os.chown(sidecar, owner.st_uid, owner.st_gid)
+    safe_write(sidecar, json.dumps({'expires_at': expires.isoformat(), 'access': 'full-access',
+                                    'renewed_at': now.isoformat(), 'loaded': False}) + '\n', hermes_home.stat())
     return True
+
+
+def mark_loaded(hermes_home):
+    """Called by the deployment only after Hermes restarted healthy with the new credential."""
+    sidecar = hermes_home / 'nix' / 't3-mcp.json'
+    state = json.loads(sidecar.read_text())
+    state['loaded'] = True
+    safe_write(sidecar, json.dumps(state) + '\n', hermes_home.stat())
 
 
 if __name__ == '__main__':

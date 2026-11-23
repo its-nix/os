@@ -38,3 +38,11 @@ docker exec -it nixos-t3 codex login --device-auth      # once
 Logins persist in `t3/home`. Unattended use must follow each provider's terms; API keys can be set in T3 provider settings. T3 Connect stays off: access is via SSH tunnel or Tailscale.
 
 The Antigravity ACP runtime is installed from T3's provider settings into the persistent home. Grok is supported through the pinned `grok` CLI.
+
+## Restore and known limits
+
+- **Restore on a new host.** The recovery bundle's `compose.json` names the exact `nixos-t3:<tag>` image without a build context. Before `compose up`, build it from the OS repository at the manifest's `os_revision`: `docker build -t nixos-t3:<tag> deploy/t3`.
+- **Worktrees are not backed up.** `t3/work` is rebuildable from GitHub. Unpushed local commits there are lost on a host loss, so agents push branches early.
+- **Deploys don't roll back automatically.** As before for Hermes and Paperclip, a failed health check can leave newer containers running with the previous receipt. Deploy a reviewed fix or revert.
+- **Pinning is partial.** Archives and the base image are pinned by checksum or digest; harness CLIs are pinned by exact version. APT packages and npm transitive dependencies are not lockfile-pinned.
+- **Host listeners on the bridge gateway are reachable from T3.** Today that is only SSH (verified). Never publish an unauthenticated admin service on the Docker bridge gateway address.

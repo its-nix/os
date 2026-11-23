@@ -18,6 +18,7 @@ _real_apply = deployment.apply
 
 def apply(*args, **kwargs):
     kwargs.setdefault('t3_credential', lambda state: False)
+    kwargs.setdefault('t3_loaded', lambda state: None)
     return _real_apply(*args, **kwargs)
 
 
