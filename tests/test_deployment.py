@@ -19,6 +19,7 @@ _real_apply = deployment.apply
 def apply(*args, **kwargs):
     kwargs.setdefault('t3_credential', lambda state: False)
     kwargs.setdefault('t3_loaded', lambda state: None)
+    kwargs.setdefault('units', lambda source, run: False)
     return _real_apply(*args, **kwargs)
 
 
@@ -142,6 +143,20 @@ class DeploymentTests(unittest.TestCase):
                  'gemini-cli': 'GEMINI_CLI', 'grok': 'GROK', 'gh': 'GH'}
         for key, arg in names.items():
             self.assertIn(f'ARG {arg}_VERSION={versions["harnesses"][key]}', dockerfile)
+
+    def test_installed_recovery_units_follow_the_reviewed_release(self):
+        with tempfile.TemporaryDirectory() as td:
+            units = Path(td) / 'units'
+            units.mkdir()
+            calls = []
+            self.assertFalse(deployment.sync_recovery_units(ROOT, calls.append, units))  # not adopted: untouched
+            self.assertEqual([], list(units.iterdir()))
+            (units / 'nixos-recovery.service').write_text('old hook without t3')
+            self.assertTrue(deployment.sync_recovery_units(ROOT, calls.append, units))
+            self.assertEqual((ROOT / 'automation/recovery/nixos-recovery.service').read_text(),
+                             (units / 'nixos-recovery.service').read_text())
+            self.assertEqual([['systemctl', 'daemon-reload']], calls)
+            self.assertFalse((units / 'nixos-recovery.timer').exists())
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):

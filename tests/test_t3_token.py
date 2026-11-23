@@ -35,7 +35,7 @@ class TokenTests(unittest.TestCase):
         env = (self.home / '.env').read_text().splitlines()
         self.assertEqual(['OTHER=keep', 'MCP_T3_API_KEY=' + GOOD], env)
         self.assertEqual(0o600, (self.home / '.env').stat().st_mode & 0o777)
-        self.assertFalse(json.loads((self.home / 'nix/t3-mcp.json').read_text())['loaded'])
+        self.assertNotIn('loaded_fingerprint', json.loads((self.home / 'nix/t3-mcp.json').read_text()))
 
     def test_restart_retried_until_confirmed_then_quiet(self):
         token.ensure(self.home, NOW, self.minter(), prober=lambda t: True)
@@ -50,6 +50,14 @@ class TokenTests(unittest.TestCase):
         self.assertTrue(token.ensure(self.home, NOW, self.minter(), prober=lambda t: False))
         self.assertTrue(token.ensure(self.home, NOW + timedelta(days=25), self.minter(), prober=lambda t: True))
         self.assertEqual(3, self.mints)
+
+    def test_env_replaced_but_marker_stale_still_restarts(self):
+        token.ensure(self.home, NOW, self.minter(), prober=lambda t: True)
+        token.mark_loaded(self.home)
+        # Crash window: a new credential reached .env, the sidecar still says the old one loaded.
+        other = 'c' * 40 + '.' + 'd' * 40
+        token.write_env(self.home / '.env', {'MCP_T3_API_KEY': other})
+        self.assertTrue(token.ensure(self.home, NOW, self.minter(), prober=lambda t: True))
 
     def test_injected_newline_or_malformed_token_refused(self):
         with self.assertRaises(token.Refusal):

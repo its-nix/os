@@ -37,6 +37,14 @@ Before starting:
 4. Use the existing Kit installer in a one-off official Hermes container, before first startup. Mount the dedicated VPS Kit checkout at `/kit` writable (the installer takes a source lock) and the fresh Hermes home at `/opt/data`; invoke `node /kit/install.mjs --apply --skills --agent hermes --prefix <profile-home>` with one repeatable `--skill` for the union of `shared_kit_skills` and that role's `kit_skills`. Native Hermes installation copies the selected packages. Preserve licenses and the installer's integrity checks. Never mount the operator's login or SSH agent.
 5. Create the KB's isolated dependency environment using the bundled Python: `/opt/hermes/.venv/bin/python -m venv /opt/data/nix/kb/.venv`, then its Python `-m pip install -r /knowledge/company/requirements.txt`. These are the KB's existing three pinned dependencies; the official image environment is unchanged. Recreate this environment after an image/interpreter upgrade.
 
+For T3 Code, create its empty state directories and pin its build tag (the CI/CD deployment does both automatically on every run):
+
+```bash
+install -d -m 700 -o 10010 -g 10010 /srv/nix-clean/t3 /srv/nix-clean/t3/home /srv/nix-clean/t3/work
+echo "T3_BUILD_TAG=\"$(sha256sum deploy/t3/Dockerfile | cut -c1-16)\"" >> /srv/nix-clean/deployment.env
+docker compose --env-file /srv/nix-clean/deployment.env -f deploy/compose.yaml build t3
+```
+
 Start the native entrypoints:
 
 ```bash

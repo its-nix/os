@@ -141,6 +141,10 @@ def probe(token, request=None):
         return False
 
 
+def fingerprint(token):
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
 def ensure(hermes_home, now=None, minter=mint, prober=probe):
     """Returns True when Hermes must (re)load the credential: newly minted, or never confirmed loaded."""
     now = now or datetime.now(timezone.utc)
@@ -149,12 +153,12 @@ def ensure(hermes_home, now=None, minter=mint, prober=probe):
     token = current_token(hermes_home)
     if (state and token and datetime.fromisoformat(state['expires_at']) - now > timedelta(days=RENEW_DAYS)
             and prober(token)):
-        return not state.get('loaded', False)
+        return state.get('loaded_fingerprint') != fingerprint(token)
     token, expires = minter()
     write_env(hermes_home / '.env', {KEYS[0]: token})
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     safe_write(sidecar, json.dumps({'expires_at': expires.isoformat(), 'access': 'full-access',
-                                    'renewed_at': now.isoformat(), 'loaded': False}) + '\n', hermes_home.stat())
+                                    'renewed_at': now.isoformat()}) + '\n', hermes_home.stat())
     return True
 
 
@@ -162,7 +166,7 @@ def mark_loaded(hermes_home):
     """Called by the deployment only after Hermes restarted healthy with the new credential."""
     sidecar = hermes_home / 'nix' / 't3-mcp.json'
     state = json.loads(sidecar.read_text())
-    state['loaded'] = True
+    state['loaded_fingerprint'] = fingerprint(current_token(hermes_home) or '')
     safe_write(sidecar, json.dumps(state) + '\n', hermes_home.stat())
 
 

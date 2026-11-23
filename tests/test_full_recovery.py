@@ -72,7 +72,7 @@ class FullRecoveryTests(unittest.TestCase):
             root = Path(td)
             for name in ('t3/home/.t3/userdata/state.json', 't3/home/.codex/auth.json',
                          't3/work/repo/node_modules/x/index.js', 't3/home/.cache/big.bin',
-                         't3/home/.codex/tmp/arg0/codex'):
+                         't3/home/.codex/tmp/arg0/codex', 't3/home/.t3/worktrees/os/t_1/venv/x'):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text('x')
             (root / 't3/work/repo/node_modules/.bin').mkdir()
@@ -81,7 +81,7 @@ class FullRecoveryTests(unittest.TestCase):
             self.assertIn('t3/home/.t3/userdata/state.json', rels)
             self.assertIn('t3/home/.codex/auth.json', rels)
             self.assertIn('t3/work', rels)
-            self.assertFalse(any(r.startswith(('t3/work/', 't3/home/.cache/', 't3/home/.codex/tmp/')) for r in rels))
+            self.assertFalse(any(r.startswith(('t3/work/', 't3/home/.cache/', 't3/home/.codex/tmp/', 't3/home/.t3/worktrees/')) for r in rels))
 
     def test_unit_stop_hook_restarts_every_service(self):
         unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()

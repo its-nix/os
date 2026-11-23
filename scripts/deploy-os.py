@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -62,6 +63,25 @@ def confirm_t3_credential(state):
     _token_module().mark_loaded(state / 'hermes')
 
 
+RECOVERY_UNITS = ('nixos-recovery.service', 'nixos-recovery.timer')
+
+
+def sync_recovery_units(source, run, unit_dir=Path('/etc/systemd/system')):
+    """Keep already-adopted recovery units equal to the reviewed release (one root writer)."""
+    changed = False
+    for name in RECOVERY_UNITS:
+        installed, reviewed = unit_dir / name, source / 'automation/recovery' / name
+        if not installed.exists():
+            continue  # recovery not adopted on this host; enabling it stays an explicit step
+        if installed.read_bytes() != reviewed.read_bytes():
+            shutil.copyfile(reviewed, installed)
+            installed.chmod(0o644)
+            changed = True
+    if changed:
+        run(['systemctl', 'daemon-reload'])
+    return changed
+
+
 def native_inputs(source):
     versions = json.loads((source / 'deploy/versions.json').read_text())
     files = ['deploy/pilot.json', 'scripts/prepare-clean-os.py']
@@ -73,7 +93,7 @@ def native_inputs(source):
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
-          t3_loaded=confirm_t3_credential):
+          t3_loaded=confirm_t3_credential, units=sync_recovery_units):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -130,6 +150,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
             run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
+        units(source, run)
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.
