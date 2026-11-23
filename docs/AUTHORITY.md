@@ -1,6 +1,6 @@
 # Authority and change governance
 
-Root policy, owned by the founder. Changes to this file, `.github/` (CI, reviewer, CODEOWNERS) or the deploy launcher need founder review through CODEOWNERS. Agents may propose such changes but cannot merge them.
+Root policy, owned by the founder. Changes to this file, `.github/` (CI, reviewer, CODEOWNERS), the repository verifier, the root-executed deploy implementation (`scripts/deploy-os.{sh,py}`), recovery code, or the gate's own tests need founder review through CODEOWNERS. Agents may propose such changes but cannot merge them.
 
 ## Durable changes (code, skills, workflows, deployment config)
 
@@ -15,7 +15,7 @@ The `main` ruleset requires:
 3. Code-owner review for the root-policy paths above, with stale approvals dismissed and an empty bypass list. Checks must be up to date with `main`.
 4. Repository settings allow `pull_request_target` for this workflow. GitHub blocks it by default from 2026-12-02.
 
-A same-named check from another workflow would also come from the Actions app. That is prevented because adding or changing workflow files requires the `workflow` permission, which builders don't hold, and because `.github/` is founder-owned. The reviewer judges exactly the event's base...head range, re-checks that the head did not move, and fails on drafts, forks, non-`main` bases, and incomplete, binary or oversized diffs. The model verdict judges code quality; enforcement comes from the ruleset and token permissions, not from the model.
+A same-named check from another workflow would also come from the Actions app. That is prevented because adding or changing workflow files requires the `workflow` permission, which builders don't hold, and because `.github/` is founder-owned. The reviewer judges exactly the event's base...head range, re-checks that the head did not move, and fails on drafts, forks, non-`main` bases, and incomplete, binary or oversized diffs. File modes are not visible in the reviewed diff, so mode-only effects rely on CI. Description edits during a review fail it. The model verdict judges code quality; enforcement comes from the ruleset and token permissions, not from the model.
 
 Builders (T3 coding threads, venture leads) use a GitHub identity **without** admin, ruleset bypass or workflow-file permission. A red check blocks the merge. A builder may not edit the tests or metric that judge its own change; PRs that touch evaluation files fall under CODEOWNERS.
 

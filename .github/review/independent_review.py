@@ -122,8 +122,11 @@ def main():
     base_sha, head_sha = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
     pr, diff = collect(repo, number, base_sha, head_sha)
     result, model = review(pr, diff)
-    if github(f'/repos/{repo}/pulls/{number}')['head']['sha'] != head_sha:
+    latest = github(f'/repos/{repo}/pulls/{number}')
+    if latest['head']['sha'] != head_sha:
         raise SystemExit('Refused: the pull request head moved during review; the new head gets its own check.')
+    if (latest['title'], latest.get('body')) != (pr['title'], pr.get('body')):
+        raise SystemExit('Refused: the description (acceptance criteria) changed during review; re-run.')
     blocking = [f for f in result['findings'] if f['severity'] == 'blocking']
     approved = result['verdict'] == 'APPROVE' and not blocking
     body = render(result, model, head_sha)

@@ -65,7 +65,7 @@ class IndependentReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'too large'):
                 self.m.collect('its-nix/os', 1, 'b', 'h')
 
-    def run_main(self, result, stop='end_turn', head_after='a' * 40):
+    def run_main(self, result, stop='end_turn', head_after='a' * 40, body_after='b'):
         client = types.SimpleNamespace(beta=types.SimpleNamespace(messages=types.SimpleNamespace(
             create=lambda **kw: Response(result, stop))))
         self.m.anthropic.Anthropic = lambda: client
@@ -73,7 +73,7 @@ class IndependentReviewTests(unittest.TestCase):
         env = {'GITHUB_REPOSITORY': 'its-nix/os', 'PR_NUMBER': '7', 'GITHUB_TOKEN': 't',
                'BASE_SHA': 'b' * 40, 'HEAD_SHA': 'a' * 40}
         with patch.dict('os.environ', env), \
-                patch.object(self.m, 'github', side_effect=[pr(), cmp(files), pr(head=head_after)]):
+                patch.object(self.m, 'github', side_effect=[pr(), cmp(files), dict(pr(head=head_after), body=body_after)]):
             return self.m.main()
 
     def test_approval_passes_only_without_blocking_findings(self):
@@ -88,6 +88,10 @@ class IndependentReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'head moved'):
             self.run_main({'verdict': 'APPROVE', 'summary': 's', 'findings': []}, head_after='c' * 40)
 
+    def test_description_edited_during_review_fails(self):
+        with self.assertRaisesRegex(SystemExit, 'description'):
+            self.run_main({'verdict': 'APPROVE', 'summary': 's', 'findings': []}, body_after='new criteria')
+
     def test_incomplete_or_refused_review_fails_closed(self):
         with self.assertRaises(SystemExit):
             self.run_main({'verdict': 'APPROVE', 'summary': 's', 'findings': []}, stop='refusal')
@@ -96,7 +100,7 @@ class IndependentReviewTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/independent-review.yml').read_text()
         self.assertIn('pull_request_target', workflow)
         checkout = workflow.split('actions/checkout', 1)[1].split('- uses:', 1)[0]
-        self.assertIn('base.sha', checkout)
+        self.assertIn('ref: ${{ github.sha }}', checkout)
         self.assertNotIn('head.', checkout)  # the PR head is data for the API, never checked out
         self.assertNotIn('head.ref', workflow)
         self.assertIn('persist-credentials: false', workflow)
