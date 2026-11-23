@@ -51,7 +51,7 @@ SCHEMA = {
 }
 
 
-def github(path, method='GET', body=None):
+def github(path, method='GET', body=None):  # read-only usage
     request = urllib.request.Request(
         'https://api.github.com' + path, method=method,
         data=json.dumps(body).encode() if body is not None else None,
@@ -61,23 +61,29 @@ def github(path, method='GET', body=None):
         return json.load(response)
 
 
-def collect(repo, number):
+MAX_FILES = 250  # the compare API lists at most 300 files; refuse well below that
+
+
+def collect(repo, number, base_sha, head_sha):
+    """Review exactly the event's immutable base...head range, never the mutable PR state."""
     pr = github(f'/repos/{repo}/pulls/{number}')
     if pr['head']['repo'] is None or pr['head']['repo']['full_name'] != repo:
         raise SystemExit('Refused: pull requests from forks are never auto-reviewed or auto-merged.')
-    files, page = [], 1
-    while True:
-        batch = github(f'/repos/{repo}/pulls/{number}/files?per_page=100&page={page}')
-        files += batch
-        if len(batch) < 100:
-            break
-        page += 1
+    if pr['base']['ref'] != 'main':
+        raise SystemExit('Refused: only pull requests into main are reviewed.')
+    if pr.get('draft'):
+        raise SystemExit('Refused: draft pull requests are not reviewed; mark ready for review.')
+    compare = github(f'/repos/{repo}/compare/{base_sha}...{head_sha}')
+    files = compare.get('files', [])
+    if not files or len(files) >= MAX_FILES:
+        raise SystemExit('Refused: diff is empty or too large to review completely; split the pull request.')
     parts, size = [], 0
     for f in files:
         patch = f.get('patch')
-        if patch is None:
-            raise SystemExit(f'Refused: {f["filename"]} has no reviewable text diff (binary or too large).')
-        parts.append(f'--- {f["filename"]} ({f["status"]})\n{patch}')
+        if not patch:
+            raise SystemExit(f'Refused: {f["filename"]} has no reviewable text diff (binary, rename-only or too large).')
+        name = f['filename'] if 'previous_filename' not in f else f'{f["previous_filename"]} -> {f["filename"]}'
+        parts.append(f'--- {name} ({f["status"]})\n{patch}')
         size += len(patch)
     if size > MAX_PATCH_CHARS:
         raise SystemExit('Refused: diff too large to review reliably; split the pull request.')
@@ -86,8 +92,10 @@ def collect(repo, number):
 
 def review(pr, diff):
     client = anthropic.Anthropic()
-    content = (f'<pull_request>\n<title>{pr["title"]}</title>\n<description>\n{pr.get("body") or ""}\n'
-               f'</description>\n<diff>\n{diff}\n</diff>\n</pull_request>\n\n'
+    def escape(text):
+        return text.replace('<', '&lt;').replace('>', '&gt;')
+    content = (f'<pull_request>\n<title>{escape(pr["title"])}</title>\n<description>\n'
+               f'{escape(pr.get("body") or "")}\n</description>\n<diff>\n{escape(diff)}\n</diff>\n</pull_request>\n\n'
                'Review this pull request and return your verdict.')
     response = client.beta.messages.create(
         model=MODEL, max_tokens=16000, system=SYSTEM,
@@ -111,17 +119,16 @@ def render(result, model, head_sha):
 
 def main():
     repo, number = os.environ['GITHUB_REPOSITORY'], int(os.environ['PR_NUMBER'])
-    pr, diff = collect(repo, number)
+    base_sha, head_sha = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+    pr, diff = collect(repo, number, base_sha, head_sha)
     result, model = review(pr, diff)
+    if github(f'/repos/{repo}/pulls/{number}')['head']['sha'] != head_sha:
+        raise SystemExit('Refused: the pull request head moved during review; the new head gets its own check.')
     blocking = [f for f in result['findings'] if f['severity'] == 'blocking']
     approved = result['verdict'] == 'APPROVE' and not blocking
-    body = render(result, model, pr['head']['sha'])
+    body = render(result, model, head_sha)
     with open(os.environ.get('GITHUB_STEP_SUMMARY', os.devnull), 'a') as summary:
-        summary.write(body + '\n')
-    try:
-        github(f'/repos/{repo}/issues/{number}/comments', 'POST', {'body': body})
-    except Exception:
-        print('Could not post review comment; verdict still applies.', file=sys.stderr)
+        summary.write(body + '\n')  # read-only token: the verdict lives in the check run
     print(body)
     return 0 if approved else 1
 

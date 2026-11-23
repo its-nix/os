@@ -12,7 +12,10 @@ The `main` ruleset requires:
    - `verify`: unit tests, Compose contract, repository verifier.
    - `independent-review`: a different model reviews the diff against the description. It runs from `main`'s definition (`pull_request_target`), never executes PR code, refuses forks and fails closed when unconfigured.
    Any write token can post a commit *status*, but only the Actions app produces these *check runs*, so a builder cannot forge them.
-3. Code-owner review for the root-policy paths above.
+3. Code-owner review for the root-policy paths above, with stale approvals dismissed and an empty bypass list. Checks must be up to date with `main`.
+4. Repository settings allow `pull_request_target` for this workflow. GitHub blocks it by default from 2026-12-02.
+
+A same-named check from another workflow would also come from the Actions app. That is prevented because adding or changing workflow files requires the `workflow` permission, which builders don't hold, and because `.github/` is founder-owned. The reviewer judges exactly the event's base...head range, re-checks that the head did not move, and fails on drafts, forks, non-`main` bases, and incomplete, binary or oversized diffs. The model verdict judges code quality; enforcement comes from the ruleset and token permissions, not from the model.
 
 Builders (T3 coding threads, venture leads) use a GitHub identity **without** admin, ruleset bypass or workflow-file permission. A red check blocks the merge. A builder may not edit the tests or metric that judge its own change; PRs that touch evaluation files fall under CODEOWNERS.
 
