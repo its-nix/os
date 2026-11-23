@@ -2,7 +2,7 @@
 """Generic, idempotent venture lifecycle for one multi-profile Hermes runtime.
 
 Runs inside the Hermes container (HERMES_HOME). The registry is native runtime state at
-$HERMES_HOME/nix/ventures/<id>/; Git holds only this tool and its templates. Every native
+$HERMES_HOME/ventures/<id>/; Git holds only this tool and its templates. Every native
 change goes through the `hermes` CLI; profile cron stores are only read back.
 
   venture.py create  --id ID --name NAME --mission TEXT --approval-ref REF [--prd F] [--gtm F]
@@ -121,7 +121,8 @@ class Hermes:
 
 class Registry:
     def __init__(self, home):
-        self.root = Path(home) / 'nix' / 'ventures'
+        # Agent-owned runtime state. ($HERMES_HOME/nix is root-owned deployment metadata.)
+        self.root = Path(home) / 'ventures'
 
     def path(self, vid):
         return self.root / vid
@@ -229,7 +230,7 @@ def ensure_soul(hermes, manifest):
     soul = directory / 'SOUL.md'
     text = render('SOUL.md', {
         'id': manifest['id'], 'name': manifest['name'], 'mission': manifest['mission'],
-        'registry': f'/opt/data/nix/ventures/{manifest["id"]}', 'board': manifest['board'],
+        'registry': f'/opt/data/ventures/{manifest["id"]}', 'board': manifest['board'],
         'packs': ', '.join(manifest['packs']),
     })
     recorded = manifest.get('soul_sha256')
@@ -309,7 +310,7 @@ def ensure_mission(hermes, registry, manifest):
         return  # created once; reruns never reopen or duplicate it
     vid = manifest['id']
     body = render('MISSION.md', {'id': vid, 'name': manifest['name'], 'mission': manifest['mission'],
-                                 'registry': f'/opt/data/nix/ventures/{vid}'})
+                                 'registry': f'/opt/data/ventures/{vid}'})
     out = hermes.run('create', f'Mission 1: {manifest["mission"][:80]}', '--body', body, '--assignee', vid,
                      '--idempotency-key', f'venture:{vid}:mission:1', '--created-by', 'venture-factory',
                      '--json', board=manifest['board'])
