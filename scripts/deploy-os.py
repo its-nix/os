@@ -94,7 +94,7 @@ def native_inputs(source):
 
 # First-party OS skills. The deployment is the ONLY writer of each profile's `skills/nix-os/`
 # category; NixKit owns its own skill directories. Copies (not links) pin the reviewed revision.
-OS_SKILLS = ('venture-factory', 'venture-lead')
+OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate')
 OS_SKILL_CATEGORY = 'nix-os'
 
 
