@@ -46,6 +46,8 @@ class DeploymentTests(unittest.TestCase):
                 if name == 't3':
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' healthy'
                 return images[name]['image'] + ' healthy'
+            if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
+                return '{"url": "http://127.0.0.1:3773/mcp", "enabled": true}'
             if argv == ['ss', '-lntH']:
                 return '\n'.join('LISTEN 0 128 127.0.0.1:' + port + ' 0.0.0.0:*'
                                  for port in ('18642', '19119', '13100', '3773'))
@@ -173,6 +175,32 @@ class DeploymentTests(unittest.TestCase):
                              (units / 'nixos-recovery.service').read_text())
             self.assertEqual([['systemctl', 'daemon-reload']], calls)
             self.assertFalse((units / 'nixos-recovery.timer').exists())
+
+    def test_t3_registration_retries_disabled_server_after_sharing_credential(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            profile = state / 'hermes/profiles/demo'
+            profile.mkdir(parents=True)
+            (profile / 'nix-venture.json').write_text('{"venture": "demo"}')
+            calls = []
+            healthy = self.healthy_runner(calls)
+
+            def run(argv):
+                if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
+                    self.assertIn('credential shared', calls)
+                    return '{"url": "http://127.0.0.1:3773/mcp", "enabled": false}'
+                if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3.enabled']:
+                    self.assertTrue(any(call[0:2] == ['docker', 'exec'] and 'register-t3' in call
+                                        for call in calls if isinstance(call, list)))
+                    return 'true'
+                return healthy(argv)
+
+            def share(_):
+                calls.append('credential shared')
+                return False
+
+            apply('a' * 40, ROOT, state, Path(td) / 'current', run=run, t3_credential=share)
+            self.assertIn(['docker', 'restart', '--timeout', '60', 'nixos-hermes'], calls)
 
     def test_os_skills_sync_only_owned_category_for_lnx_and_venture_leads(self):
         with tempfile.TemporaryDirectory() as td:
