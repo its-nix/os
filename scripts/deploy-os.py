@@ -140,7 +140,7 @@ def native_inputs(source):
 
 # First-party OS skills. The deployment is the ONLY writer of each profile's `skills/nix-os/`
 # category; NixKit owns its own skill directories. Copies (not links) pin the reviewed revision.
-OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops')
+OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops', 'company-ops')
 OS_SKILL_CATEGORY = 'nix-os'
 
 
@@ -201,6 +201,44 @@ def sync_os_skills(source, state):
             raise
         if old.exists():
             shutil.rmtree(old)
+
+
+def publish_health(state, receipt, recovery=Path('/var/lib/nixos-recovery')):
+    """Non-secret status for the no-agent company health loop (Hermes cannot read root receipts)."""
+    def read(path):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {}
+    success, attempt = read(recovery / 'last-success.json'), read(recovery / 'last-attempt.json')
+    status = {'deployed_revision': receipt['revision'], 'deployed_at': receipt['completed_at'],
+              'deploy_attempt_status': receipt['status'],
+              'backup_last_success': success.get('completed_at'), 'backup_last_attempt_status': attempt.get('status')}
+    target = state / 'hermes/nix/health.json'
+    temporary = target.with_suffix('.next')
+    temporary.write_text(json.dumps(status, indent=2) + '\n')
+    temporary.chmod(0o644)
+    temporary.replace(target)
+
+
+def install_health_script(source, state):
+    """Deployment-owned copy of the health check for Hermes' no-agent cron (scripts/nix-os/)."""
+    hermes = state / 'hermes'
+    scripts = hermes / 'scripts'
+    owner = hermes.stat()
+    if scripts.is_symlink():
+        raise ValueError('Hermes scripts path must not be a symlink')
+    if not scripts.exists():
+        scripts.mkdir(mode=0o755)
+        os.chown(scripts, owner.st_uid, owner.st_gid)
+    target = scripts / 'nix-os'
+    if target.is_symlink():
+        raise ValueError('Hermes scripts/nix-os must not be a symlink')
+    target.mkdir(mode=0o755, exist_ok=True)
+    temporary = target / '.health.py.next'
+    shutil.copyfile(source / 'skills/company-ops/scripts/health.py', temporary)
+    temporary.chmod(0o755)
+    temporary.replace(target / 'health.py')
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
@@ -274,6 +312,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
         units(source, run)
         sync_os_skills(source, state)
+        install_health_script(source, state)
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.
@@ -287,6 +326,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                        images={name: versions[name]['image'] for name in ('hermes', 'paperclip')})
         write_json(state / 'deployment.json', receipt)
         write_json(state / 'deployment-attempt.json', receipt)
+        publish_health(state, receipt)
         print('Healthy deployment recorded: ' + revision)
     except Exception:
         write_json(state / 'deployment-attempt.json', dict(attempt, status='failed'))
