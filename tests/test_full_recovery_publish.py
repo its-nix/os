@@ -91,6 +91,9 @@ class PublicationTests(unittest.TestCase):
             capture.assert_not_called()
             self.assertEqual('previous', module.json.loads(previous.read_text())['manifest_digest'])
             self.assertEqual('failed', module.json.loads((status / 'last-attempt.json').read_text())['status'])
+            # Authored refusal text is recorded so failures are diagnosable without logs.
+            self.assertEqual('Recovery repository must exist and be explicitly private',
+                             module.json.loads((status / 'last-attempt.json').read_text())['reason'])
 
     def test_public_repository_refuses_before_push(self):
         path = ROOT / 'automation/recovery/full_create.py'
@@ -105,3 +108,34 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaises(module.Refusal):
             module.require_private('docker.io/example/nixos-recovery', api)
         self.assertEqual(1, len(calls))
+
+
+class RecoveryUnitTests(unittest.TestCase):
+    def test_failed_backups_cannot_cold_stop_services_indefinitely(self):
+        unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        self.assertNotIn('StartLimitIntervalSec=0', unit)
+        burst = int(unit.split('StartLimitBurst=')[1].split()[0])
+        window = unit.split('StartLimitIntervalSec=')[1].split()[0]
+        retry = unit.split('RestartSec=')[1].split()[0]
+        self.assertEqual(('2h', '15min', 3), (window, retry, burst))
+        # The burst (first run + retries) fits in the window, and the window is far shorter than
+        # the 24h timer period, so the next daily run is never rejected by the rate limiter.
+        self.assertLess((burst - 1) * 15, 120)
+        self.assertLess(120, 24 * 60)
+
+    def test_unexpected_exception_text_is_never_recorded(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            root, status = Path(td) / 'live', Path(td) / 'receipts'
+            root.mkdir(); status.mkdir()
+            args = SimpleNamespace(root=root, status=status, publish=True, create_repository=False,
+                                   image='docker.io/example/nixos-recovery')
+            with patch.object(module, 'Hub', side_effect=OSError('secret-bearing detail')), \
+                    patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=0)):
+                with self.assertRaises(OSError):
+                    module.build(args)
+            attempt = module.json.loads((status / 'last-attempt.json').read_text())
+            self.assertEqual('failed', attempt['status'])
+            self.assertNotIn('reason', attempt)

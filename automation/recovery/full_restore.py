@@ -29,14 +29,21 @@ def safe_name(name):
     return path
 
 
+# Virtualenvs whose interpreter links deliberately point into the exact pinned Hermes runtime:
+# the KB environment, and Hermes-managed install environments (default or named profile homes).
+RUNTIME_VENV_BIN = re.compile(
+    r'hermes/(?:nix/kb/\.venv'
+    r'|(?:profiles/[A-Za-z0-9_.-]+/)?installs/[A-Za-z0-9_-]+/environments/[A-Za-z0-9_-]+/venv)'
+    r'/bin/[^/]+')
+
+
 def safe_link(name, target):
     path = safe_name(name)
     link = PurePosixPath(target)
     if '\\' in target or '..' in link.parts and link.is_absolute():
         raise Refusal('Unsafe snapshot link')
     if link.is_absolute():
-        # The KB virtualenv deliberately uses the exact pinned Hermes interpreter.
-        if not (name.startswith('hermes/nix/kb/.venv/bin/') and target.startswith('/opt/hermes/')):
+        if not (RUNTIME_VENV_BIN.fullmatch(name) and target.startswith('/opt/hermes/')):
             raise Refusal('External state link is outside the pinned runtime')
         return
     parts = list(path.parent.parts)

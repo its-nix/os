@@ -1,6 +1,7 @@
 from contextlib import closing
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -26,6 +27,44 @@ class FullRecoveryTests(unittest.TestCase):
             with self.subTest(target=target), self.assertRaises(recovery.Refusal):
                 recovery.safe_link(name, target)
         recovery.safe_link('hermes/nix/kb/.venv/bin/python', '/opt/hermes/tools/python/bin/python')
+        # Hermes-managed install environments link into the same pinned runtime.
+        for name in ('hermes/installs/351f81cc/environments/20ce4c50/venv/bin/python',
+                     'hermes/profiles/engineer/installs/ab12/environments/cd34/venv/bin/python3'):
+            recovery.safe_link(name, '/opt/hermes/tools/python-3.14.9/bin/python3')
+        for name, target in [('hermes/installs/x/environments/y/venv/bin/python', '/usr/bin/python3'),
+                             ('hermes/installs/x/environments/y/venv/lib/evil', '/opt/hermes/tools/python'),
+                             ('hermes/installs/x/environments/y/venv/bin/sub/python', '/opt/hermes/x'),
+                             ('hermes/workspace/installs/x/environments/y/venv/bin/python', '/opt/hermes/x'),
+                             ('paperclip/installs/x/environments/y/venv/bin/python', '/opt/hermes/x')]:
+            with self.subTest(name=name, target=target), self.assertRaises(recovery.Refusal):
+                recovery.safe_link(name, target)
+
+    def test_restore_refuses_archived_link_outside_runtime(self):
+        recovery = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'live'
+            for name in ('hermes/config.yaml', 'paperclip/instances/default/db/PG_VERSION',
+                         'paperclip/instances/default/secrets/master.key'):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text('x')
+            link = root / 'hermes/installs/a/environments/b/venv/bin/python'
+            link.parent.mkdir(parents=True)
+            link.symlink_to('/opt/hermes/tools/python3')
+            archive = Path(td) / 'snapshot.tar.gz'
+            inventory = recovery.snapshot(root, archive)
+            # Tamper: the archive+manifest now claim an escaping target.
+            import tarfile
+            tampered = Path(td) / 'tampered.tar.gz'
+            with tarfile.open(archive) as src, tarfile.open(tampered, 'w:gz') as dst:
+                for member in src.getmembers():
+                    if member.issym():
+                        member.linkname = '/etc/shadow'
+                    dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+            inventory['hermes/installs/a/environments/b/venv/bin/python']['target'] = '/etc/shadow'
+            manifest = {'archive_sha256': recovery.digest(tampered), 'files': inventory}
+            with self.assertRaises(recovery.Refusal):
+                recovery.restore(tampered, manifest, Path(td) / 'restored', preserve_owner=False)
+            self.assertFalse((Path(td) / 'restored').exists())
 
     def test_missing_state_or_key_material_refused(self):
         recovery = self.module()
@@ -55,6 +94,9 @@ class FullRecoveryTests(unittest.TestCase):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content)
+            managed = root / 'hermes/installs/351f81cc/environments/20ce4c50/venv/bin/python'
+            managed.parent.mkdir(parents=True)
+            managed.symlink_to('/opt/hermes/tools/python-3.14.9/bin/python3')
             with closing(sqlite3.connect(root / 'hermes/state.db')) as conn:
                 conn.execute('CREATE TABLE memories (body TEXT)')
                 conn.execute('INSERT INTO memories VALUES (?)', ('learned result',))
@@ -71,6 +113,8 @@ class FullRecoveryTests(unittest.TestCase):
             with closing(sqlite3.connect(restored / 'hermes/state.db')) as conn:
                 self.assertEqual([('learned result',)], conn.execute('SELECT body FROM memories').fetchall())
             self.assertTrue((restored / 'hermes/profiles/engineer/skills/learned/SKILL.md').is_file())
+            self.assertEqual('/opt/hermes/tools/python-3.14.9/bin/python3',
+                             os.readlink(restored / 'hermes/installs/351f81cc/environments/20ce4c50/venv/bin/python'))
             with self.assertRaises(recovery.Refusal):
                 recovery.restore(archive, manifest, restored, preserve_owner=False)
             # Both outer corruption and an internally inconsistent inventory must fail.

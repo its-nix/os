@@ -298,8 +298,13 @@ def build(args):
                 receipt(args.status / 'last-local-check.json', result)
             receipt(args.status / 'last-attempt.json', result)
             print('Full OS recovery ' + result['status'] + ': ' + tag)
-    except Exception:
-        receipt(args.status / 'last-attempt.json', dict(attempt, status='failed'))
+    except Exception as exc:
+        failed = dict(attempt, status='failed')
+        if isinstance(exc, Refusal):
+            # Refusal messages are authored, fixed, non-secret strings; record them so the
+            # next failure is diagnosable. Arbitrary exceptions/stderr are never recorded.
+            failed['reason'] = str(exc)
+        receipt(args.status / 'last-attempt.json', failed)
         raise
     finally:
         # No BuildKit cache is created. Remove only this job's local recovery tag/layer;
