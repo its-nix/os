@@ -333,6 +333,7 @@ def create(args, hermes, registry):
         raise Refusal('Unknown packs: ' + ', '.join(sorted(unknown)))
     if not (args.approval_ref or '').strip():
         raise Refusal('Founder strategic approval reference is required (message link or decision note)')
+    documents = decision_package(registry, args)  # validated before any side effect
     if hermes.dry_run:
         return plan(args, hermes, registry, packs)
     with venture_lock(registry, args.id):
@@ -348,9 +349,10 @@ def create(args, hermes, registry):
         directory = registry.path(args.id)
         if existing is None:
             registry.save(manifest)  # intent is durable before any native side effect
-        for name, source in (('PRD.md', args.prd), ('GTM.md', args.gtm)):
-            if source and not (directory / name).exists():
-                atomic_write(directory / name, Path(source).read_text())
+        for name, text in documents.items():
+            current = (directory / name).read_text() if (directory / name).is_file() else None
+            if current != text:
+                atomic_write(directory / name, text)
         if not (directory / 'CHARTER.md').exists():
             atomic_write(directory / 'CHARTER.md', render('CHARTER.md', {
                 'id': args.id, 'name': args.name, 'mission': args.mission,
@@ -371,6 +373,21 @@ def create(args, hermes, registry):
         ensure_loops(hermes, registry, manifest, activate=manifest['lifecycle'] in ACTIVE)
         registry.save(manifest)
         return manifest
+
+
+def decision_package(registry, args):
+    """The exact PRD/GTM text the lead will read: a non-empty registry copy wins (reruns need no
+    scratch files); otherwise the supplied file must be non-empty."""
+    documents = {}
+    for name, source in (('PRD.md', args.prd), ('GTM.md', args.gtm)):
+        held = registry.path(args.id) / name
+        text = held.read_text() if held.is_file() and not held.is_symlink() else ''
+        if not text.strip() and source and Path(source).is_file():
+            text = Path(source).read_text()
+        if not text.strip():
+            raise Refusal(f'The approved {name[:-3]} is missing or empty: provision only from a decision package')
+        documents[name] = text
+    return documents
 
 
 def new_manifest(args, packs):
@@ -444,8 +461,10 @@ def main(argv=None):
     c.add_argument('--name', required=True)
     c.add_argument('--mission', required=True, help='First measurable commercial/operational uncertainty')
     c.add_argument('--approval-ref', required=True)
-    c.add_argument('--prd')
-    c.add_argument('--gtm')
+    # Required: leads judge every loop against the approved PRD/GTM. Observed 2026-11-23: a lead
+    # provisioned without them had no source-of-truth metric and correctly blocked its first mission.
+    c.add_argument('--prd', help='approved PRD file (required unless the registry already holds a non-empty copy)')
+    c.add_argument('--gtm', help='approved GTM file (required unless the registry already holds a non-empty copy)')
     c.add_argument('--pack', action='append')
     c.add_argument('--crm', action='store_true')
     c.add_argument('--repo')

@@ -75,9 +75,12 @@ class VentureFactoryTests(unittest.TestCase):
         return self.v.main(['--home', str(self.home), *argv])
 
     def create(self, vid='acme', *extra):
+        prd, gtm = Path(self.td.name) / 'PRD.md', Path(self.td.name) / 'GTM.md'
+        prd.write_text('# PRD\nMetric: 5 paying shops in 30 days.')
+        gtm.write_text('# GTM\nChannel: direct visits.')
         return self.call('create', '--id', vid, '--name', 'Acme Widgets', '--mission',
                          'Validate that 5 shops will pay for widget restocking', '--approval-ref',
-                         'founder decision 2026-11-23', *extra)
+                         'founder decision 2026-11-23', '--prd', str(prd), '--gtm', str(gtm), *extra)
 
     def calls(self):
         log = self.home / 'calls.log'
@@ -127,8 +130,10 @@ class VentureFactoryTests(unittest.TestCase):
         for vid in ('default', 'personal', 'Bad', '1x', 'a', 'has-dash'):
             with self.subTest(vid=vid):
                 self.assertEqual(1, self.create(vid))
+        prd = Path(self.td.name) / 'p.md'
+        prd.write_text('x')
         self.assertEqual(1, self.call('create', '--id', 'acme', '--name', 'A', '--mission', 'm',
-                                      '--approval-ref', '  '))
+                                      '--approval-ref', '  ', '--prd', str(prd), '--gtm', str(prd)))
         self.assertFalse((self.home / 'profiles/acme').exists())
 
     def test_pause_resume_retire_control_routines_and_keep_history(self):
@@ -214,6 +219,28 @@ class VentureFactoryTests(unittest.TestCase):
                                                            {'slug': 'acme', 'archived': False}]))
         self.assertEqual(1, self.create())
         self.assertFalse((self.home / 'profiles/acme/cron').exists())
+
+    def test_provisioning_requires_a_nonempty_decision_package(self):
+        empty = Path(self.td.name) / 'empty.md'
+        empty.write_text('  ')
+        prd = Path(self.td.name) / 'prd.md'
+        prd.write_text('# PRD')
+        missing = str(Path(self.td.name) / 'missing.md')
+        for prd_arg, gtm_arg in ((str(prd), str(empty)), (str(prd), missing), (str(empty), str(prd)), (missing, str(prd))):
+            with self.subTest(prd=prd_arg, gtm=gtm_arg):
+                self.assertEqual(1, self.call('create', '--id', 'acme', '--name', 'A', '--mission', 'm',
+                                              '--approval-ref', 'ok', '--prd', prd_arg, '--gtm', gtm_arg))
+        self.assertEqual([], [p.name for p in self.home.iterdir()])  # no manifest, lock or Hermes call
+
+    def test_rerun_uses_registry_copies_and_blank_registry_copy_is_refused(self):
+        self.assertEqual(0, self.create())
+        self.assertEqual(0, self.call('create', '--id', 'acme', '--name', 'Acme Widgets', '--mission',
+                                      'Validate that 5 shops will pay for widget restocking',
+                                      '--approval-ref', 'founder decision 2026-11-23'))
+        (self.home / 'ventures/acme/GTM.md').write_text('   ')
+        self.assertEqual(1, self.call('create', '--id', 'acme', '--name', 'Acme Widgets', '--mission',
+                                      'Validate that 5 shops will pay for widget restocking',
+                                      '--approval-ref', 'founder decision 2026-11-23'))
 
     def test_no_venture_names_hardcoded_in_generic_code(self):
         text = (TOOL.read_text() + (ROOT / 'skills/venture-factory/SKILL.md').read_text()).lower()
