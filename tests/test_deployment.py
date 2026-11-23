@@ -158,6 +158,46 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual([['systemctl', 'daemon-reload']], calls)
             self.assertFalse((units / 'nixos-recovery.timer').exists())
 
+    def test_os_skills_sync_only_owned_category_for_lnx_and_venture_leads(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            hermes = state / 'hermes'
+            (hermes / 'skills/brainstorming').mkdir(parents=True)
+            (hermes / 'skills/brainstorming/SKILL.md').write_text('kit-owned')
+            (hermes / 'skills/nix-os/stale-skill').mkdir(parents=True)
+            for name, venture in (('acme', True), ('engineer', False)):
+                (hermes / 'profiles' / name / 'skills').mkdir(parents=True)
+                if venture:
+                    (hermes / 'profiles' / name / 'nix-venture.json').write_text('{"venture": "acme"}')
+            apply('e' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
+            for skills in (hermes / 'skills', hermes / 'profiles/acme/skills'):
+                self.assertEqual({'venture-factory', 'venture-lead'}, {p.name for p in (skills / 'nix-os').iterdir()})
+                self.assertEqual((ROOT / 'skills/venture-lead/SKILL.md').read_text(),
+                                 (skills / 'nix-os/venture-lead/SKILL.md').read_text())
+                self.assertEqual([], [p.name for p in skills.iterdir() if p.name.startswith('.nix-os')])
+            self.assertFalse((hermes / 'profiles/engineer/skills/nix-os').exists())
+            self.assertEqual('kit-owned', (hermes / 'skills/brainstorming/SKILL.md').read_text())
+
+    def test_os_skill_sync_never_follows_symlinked_profiles_and_recovers_interrupted_swap(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            hermes = state / 'hermes'
+            (hermes / 'skills').mkdir()
+            outside = Path(td) / 'outside'
+            (outside / 'skills').mkdir(parents=True)
+            (outside / 'nix-venture.json').write_text('{"venture": "evil"}')
+            (hermes / 'profiles').mkdir()
+            (hermes / 'profiles/evil').symlink_to(outside)
+            (hermes / 'profiles/clone/skills').mkdir(parents=True)
+            (hermes / 'profiles/clone/nix-venture.json').write_text('{"venture": "acme"}')
+            # interrupted previous run: live category moved aside, never restored
+            (hermes / 'skills/.nix-os.prev/venture-lead').mkdir(parents=True)
+            apply('9' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
+            self.assertEqual([], list((outside / 'skills').iterdir()))
+            self.assertTrue((hermes / 'skills/nix-os/venture-factory/SKILL.md').is_file())
+            self.assertFalse((hermes / 'skills/.nix-os.prev').exists())
+            self.assertFalse((hermes / 'profiles/clone/skills/nix-os').exists())
+
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):
             with self.subTest(value=value):
