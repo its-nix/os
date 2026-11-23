@@ -147,7 +147,9 @@ def create_private(image, hub):
 
 
 HEALTH = '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
-CLEAN_EXIT = {'exited 0', 'exited 143'}  # 143: graceful SIGTERM exit (e.g. the Twenty queue worker)
+# Graceful exits after `docker stop`: 0; 130 (T3 under tini, observed 2026-11-23); 143 (SIGTERM,
+# e.g. the Twenty queue worker). 137 (SIGKILL after the timeout) is never clean.
+CLEAN_EXIT = {'exited 0', 'exited 130', 'exited 143'}
 
 
 def ready(name):
