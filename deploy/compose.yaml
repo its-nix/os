@@ -86,6 +86,97 @@ services:
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/t3/work
         target: /work
         bind: {create_host_path: false}
+  # Optional CRM (PRD 7.2): started only when $NIX_CLEAN_ROOT/twenty/ENABLED exists, i.e. when a
+  # venture actually needs one. One platform; ventures get their own workspaces.
+  twenty-db:
+    profiles: [crm]
+    container_name: nixos-twenty-db
+    image: postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175  # 16-bookworm
+    networks: [crm]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    mem_limit: 512m
+    env_file:
+      - ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/db.env
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/db
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U twenty -d default -h localhost]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  twenty-redis:
+    profiles: [crm]
+    container_name: nixos-twenty-redis
+    image: redis@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90  # 7.4-bookworm
+    networks: [crm]
+    restart: unless-stopped
+    mem_limit: 128m
+    command: [--maxmemory-policy, noeviction, --save, '', --appendonly, 'no']
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  twenty-server:
+    profiles: [crm]
+    container_name: nixos-twenty-server
+    image: twentycrm/twenty@sha256:251d83ffa37c8916aaa7cd129ddb6829a941b2e2858747479579980d4e8f56a4  # v2.62.0
+    networks: [crm]
+    ports:
+      - 127.0.0.1:3020:3000
+    restart: unless-stopped
+    stop_grace_period: 120s
+    mem_limit: 1536m
+    env_file:
+      - ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/server.env
+    environment:
+      NODE_PORT: '3000'
+      SERVER_URL: http://127.0.0.1:3020
+      REDIS_URL: redis://twenty-redis:6379
+      STORAGE_TYPE: local
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/storage
+        target: /app/packages/twenty-server/.local-storage
+        bind: {create_host_path: false}
+    depends_on:
+      twenty-db: {condition: service_healthy}
+      twenty-redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, curl --fail --silent http://localhost:3000/healthz]
+      interval: 15s
+      timeout: 5s
+      start_period: 180s
+      retries: 10
+  twenty-worker:
+    profiles: [crm]
+    container_name: nixos-twenty-worker
+    image: twentycrm/twenty@sha256:251d83ffa37c8916aaa7cd129ddb6829a941b2e2858747479579980d4e8f56a4  # v2.62.0
+    networks: [crm]
+    restart: unless-stopped
+    mem_limit: 768m
+    command: [yarn, worker:prod]
+    env_file:
+      - ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/server.env
+    environment:
+      SERVER_URL: http://127.0.0.1:3020
+      REDIS_URL: redis://twenty-redis:6379
+      STORAGE_TYPE: local
+      DISABLE_DB_MIGRATIONS: 'true'
+      DISABLE_CRON_JOBS_REGISTRATION: 'true'
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/storage
+        target: /app/packages/twenty-server/.local-storage
+        bind: {create_host_path: false}
+    depends_on:
+      twenty-server: {condition: service_healthy}
 networks:
   coding:
     name: nixos-coding
+  crm:
+    name: nixos-crm

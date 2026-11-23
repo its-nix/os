@@ -44,7 +44,7 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'capture failed'):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     raise RuntimeError('capture failed')
-        self.assertIn(['docker', 'start', *module.CONTAINERS], calls)
+        self.assertIn(['docker', 'start', *reversed(module.CONTAINERS)], calls)
         health.assert_called_once()
 
     def test_failed_stop_still_restarts_both_services(self):
@@ -61,7 +61,7 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(module.Refusal):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     self.fail('Capture cannot run after failed stop')
-        self.assertIn(['docker', 'start', *module.CONTAINERS], calls)
+        self.assertIn(['docker', 'start', *reversed(module.CONTAINERS)], calls)
 
     def test_database_probe_attaches_sql_stdin_without_network(self):
         module = self.module()
@@ -108,6 +108,24 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaises(module.Refusal):
             module.require_private('docker.io/example/nixos-recovery', api)
         self.assertEqual(1, len(calls))
+
+
+class CrmRecoveryTests(unittest.TestCase):
+    def test_crm_containers_join_capture_only_when_enabled(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(module.CONTAINERS, module.containers(root))
+            (root / 'twenty').mkdir()
+            (root / 'twenty/ENABLED').write_text('')
+            names = module.containers(root)
+            self.assertEqual(module.CONTAINERS + module.CRM_CONTAINERS, names)
+            # stop app before database; start database before app
+            self.assertLess(names.index('nixos-twenty-server'), names.index('nixos-twenty-db'))
+            self.assertLess(list(reversed(names)).index('nixos-twenty-db'),
+                            list(reversed(names)).index('nixos-twenty-server'))
 
 
 class RecoveryUnitTests(unittest.TestCase):

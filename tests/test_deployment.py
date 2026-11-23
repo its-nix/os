@@ -214,6 +214,38 @@ class DeploymentTests(unittest.TestCase):
             self.assertFalse((hermes / 'skills/.nix-os.prev').exists())
             self.assertFalse((hermes / 'profiles/clone/skills/nix-os').exists())
 
+    def test_crm_is_opt_in_and_its_secrets_are_generated_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            calls = []
+            apply('1' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner(calls))
+            self.assertFalse(any('--profile' in c for c in calls))
+            self.assertFalse((state / 'twenty').exists())
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            (state / 'twenty').mkdir()
+            (state / 'twenty/ENABLED').write_text('needed by a venture')
+            deployment.TWENTY_DB_OWNER = deployment.TWENTY_APP_OWNER = (os.getuid(), os.getgid())
+            calls = []
+            runner = self.healthy_runner(calls)
+            def with_crm(argv):
+                if argv == ['ss', '-lntH']:
+                    return runner(argv) + '\nLISTEN 0 128 127.0.0.1:3020 0.0.0.0:*'
+                if argv[-1] == 'nixos-twenty-server':
+                    calls.append(argv)
+                    return 'healthy'
+                return runner(argv)
+            apply('2' * 40, ROOT, state, Path(td) / 'current', run=with_crm)
+            self.assertTrue(any(c[-2:] == ['--profile', 'crm'] or '--profile' in c for c in calls))
+            server = (state / 'twenty/server.env').read_text()
+            self.assertIn('APP_SECRET=', server)
+            self.assertEqual(0o600, (state / 'twenty/server.env').stat().st_mode & 0o777)
+            apply('3' * 40, ROOT, state, Path(td) / 'current', run=with_crm)
+            self.assertEqual(server, (state / 'twenty/server.env').read_text())  # never regenerated
+            (state / 'twenty/db.env').unlink()
+            with self.assertRaisesRegex(ValueError, 'half-present'):
+                apply('4' * 40, ROOT, state, Path(td) / 'current', run=with_crm)
+
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):
             with self.subTest(value=value):

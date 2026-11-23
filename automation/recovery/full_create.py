@@ -28,6 +28,17 @@ state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
 CONTAINERS = ['nixos-hermes', 'nixos-paperclip', 'nixos-t3']
+# Optional CRM: stopped app-first, started database-first.
+CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
+
+
+def crm_enabled(root=Path('/srv/nix-clean')):
+    flag = root / 'twenty' / 'ENABLED'
+    return flag.is_file() and not flag.is_symlink()
+
+
+def containers(root=Path('/srv/nix-clean')):
+    return CONTAINERS + (CRM_CONTAINERS if crm_enabled(root) else [])
 
 
 def run(argv, **kwargs):
@@ -124,7 +135,7 @@ def wait_services():
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         if all(run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', name]) == 'healthy'
-               for name in CONTAINERS):
+               for name in containers()):
             return
         time.sleep(2)
     raise Refusal('Native service health did not recover after capture')
@@ -135,18 +146,19 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock')):
     # The same lock serializes CI/CD. No archive is ever copied from live database writers.
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in CONTAINERS]
-        if statuses != ['running'] * len(CONTAINERS):
+        names = containers()
+        statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in names]
+        if statuses != ['running'] * len(names):
             raise Refusal('All OS services must be running before capture')
         try:
-            run(['docker', 'stop', '--time', '90', *CONTAINERS])
-            for name in CONTAINERS:
+            run(['docker', 'stop', '--time', '90', *names])
+            for name in names:
                 if run(['docker', 'inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', name]) != 'exited 0':
                     raise Refusal('Native services did not stop cleanly')
             yield
         finally:
             # Even a failed/partial stop must not leave the company OS down.
-            run(['docker', 'start', *CONTAINERS])
+            run(['docker', 'start', *reversed(names)])
             wait_services()
 
 
@@ -155,6 +167,7 @@ def deployment_model(root, versions, deployed_source):
                PAPERCLIP_IMAGE=versions['paperclip']['image'],
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
     model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
+                            *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
     for name in ('hermes', 'paperclip', 't3'):
         actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
