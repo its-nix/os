@@ -1,0 +1,5 @@
+# Founder-gated root authority: the evaluator, CI/deploy enforcement and ownership rules.
+# Everything else merges on independent AI review + required checks without a human.
+/.github/                       @Lior-Nis
+/scripts/deploy-os.sh           @Lior-Nis
+/docs/AUTHORITY.md              @Lior-Nis
