@@ -28,6 +28,32 @@ state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
 CONTAINERS = ['nixos-hermes', 'nixos-paperclip', 'nixos-t3']
+# Optional CRM: stopped app-first, started database-first.
+CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
+# Probe image for a restored Twenty database, independent of whether the profile is active now
+# (a test keeps it equal to deploy/compose.yaml).
+TWENTY_DB_IMAGE = 'postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175'
+
+
+def crm_enabled(root=Path('/srv/nix-clean')):
+    flag = root / 'twenty' / 'ENABLED'
+    return flag.is_file() and not flag.is_symlink()
+
+
+def containers(root=Path('/srv/nix-clean')):
+    return CONTAINERS + (CRM_CONTAINERS if crm_enabled(root) else [])
+
+
+def twenty_db_check(image, restored):
+    """Open the restored Twenty PostgreSQL in single-user mode, no network."""
+    output = run(['docker', 'run', '--rm', '--interactive', '--network', 'none', '--user', '999:999',
+                  '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only',
+                  '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777', '--tmpfs', '/var/run/postgresql:rw,mode=1777',
+                  '--mount', f'type=bind,source={restored / "twenty/db"},target=/var/lib/postgresql/data',
+                  '--entrypoint', 'postgres', image, '--single', '-D', '/var/lib/postgresql/data', 'default'],
+                 input="SELECT 'NIXOS_TWENTY_DB_OK';\n")
+    if 'NIXOS_TWENTY_DB_OK' not in output:
+        raise Refusal('Restored Twenty database did not open')
 
 
 def run(argv, **kwargs):
@@ -120,34 +146,63 @@ def create_private(image, hub):
     require_private(image, hub.request)
 
 
-def wait_services():
+HEALTH = '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
+CLEAN_EXIT = {'exited 0', 'exited 143'}  # 143: graceful SIGTERM exit (e.g. the Twenty queue worker)
+
+
+def ready(name):
+    """Healthy when a healthcheck exists; running for services without one (Twenty worker)."""
+    return run(['docker', 'inspect', '--format', HEALTH, name]) in ('healthy', 'running')
+
+
+def start_all(names):
+    """Attempt every start (databases first), then report; one failure never strands the rest."""
+    failed = []
+    for name in names:
+        try:
+            run(['docker', 'start', name])
+        except Refusal:
+            failed.append(name)
+    if failed:
+        raise Refusal('Some services did not start after capture: ' + ', '.join(failed))
+
+
+def wait_services(names=None):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
-        if all(run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', name]) == 'healthy'
-               for name in CONTAINERS):
+        if all(ready(name) for name in (names or containers())):
             return
         time.sleep(2)
     raise Refusal('Native service health did not recover after capture')
 
 
+def crm_writers_running():
+    return [name for name in CRM_CONTAINERS
+            if run(['docker', 'ps', '--quiet', '--filter', f'name=^{name}$']).strip()]
+
+
 @contextmanager
-def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock')):
+def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('/srv/nix-clean')):
     # The same lock serializes CI/CD. No archive is ever copied from live database writers.
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in CONTAINERS]
-        if statuses != ['running'] * len(CONTAINERS):
+        names = containers(root)
+        if not crm_enabled(root) and crm_writers_running():
+            raise Refusal('CRM containers run while CRM is disabled; reconcile with a deployment first')
+        statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in names]
+        if statuses != ['running'] * len(names):
             raise Refusal('All OS services must be running before capture')
         try:
-            run(['docker', 'stop', '--time', '90', *CONTAINERS])
-            for name in CONTAINERS:
-                if run(['docker', 'inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', name]) != 'exited 0':
+            for name in names:  # sequential: apps drain before the databases they use stop
+                run(['docker', 'stop', '--time', '90', name])
+            for name in names:
+                if run(['docker', 'inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', name]) not in CLEAN_EXIT:
                     raise Refusal('Native services did not stop cleanly')
             yield
         finally:
-            # Even a failed/partial stop must not leave the company OS down.
-            run(['docker', 'start', *CONTAINERS])
-            wait_services()
+            # Even a failed/partial stop must not leave the company OS down. Databases start first.
+            start_all(list(reversed(names)))
+            wait_services(names)
 
 
 def deployment_model(root, versions, deployed_source):
@@ -155,6 +210,7 @@ def deployment_model(root, versions, deployed_source):
                PAPERCLIP_IMAGE=versions['paperclip']['image'],
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
     model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
+                            *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
     for name in ('hermes', 'paperclip', 't3'):
         actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
@@ -194,6 +250,8 @@ def verify_payload(payload, work, versions):
     restored = work / ('restored-' + uuid.uuid4().hex)
     state.restore_bundle(payload, restored)
     postgres_check(versions['paperclip']['image'], restored / 'state')
+    if (restored / 'state/twenty/db/PG_VERSION').is_file():
+        twenty_db_check(TWENTY_DB_IMAGE, restored / 'state')
     return manifest
 
 
@@ -265,7 +323,7 @@ def build(args):
             work = Path(td)
             payload = work / 'payload'
             payload.mkdir(mode=0o700)
-            with stopped_services():
+            with stopped_services(root=root):
                 versions = json.loads((root / 'versions.json').read_text())
                 # Resolve after taking the shared lock: a deployment may have advanced
                 # the source pointer while this backup process was waiting.

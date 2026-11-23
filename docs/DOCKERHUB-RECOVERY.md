@@ -97,6 +97,8 @@ tag=$(python3 -c 'import json;print(json.load(open("/srv/nixos-restored/compose.
 docker build -t "$tag" /tmp/nix-os/deploy/t3
 docker compose -f /srv/nixos-restored/compose.json pull --ignore-buildable
 docker compose -f /srv/nixos-restored/compose.json up -d --wait
+# Only if the source host ran the CRM (state/twenty/ENABLED exists):
+[ -e /srv/nixos-restored/state/twenty/ENABLED ] && docker compose -f /srv/nixos-restored/compose.json --profile crm up -d --wait
 ```
 
 Verify both native health checks, profile authentication, Bot Group/controller identity, a representative model conversation and connector access before resuming work. The restored source inputs and receipts are under `state/`; re-establish reviewed GitHub CI/SSH bootstrap against the restored root deliberately before automatic deployments. The timer assumes the original `/srv/nix-clean` root until that host configuration is restored.

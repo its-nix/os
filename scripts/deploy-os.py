@@ -45,6 +45,44 @@ def ensure_t3_image(source, run):
         run(['docker', 'build', '--tag', tag, str(source / 'deploy/t3')])
 
 
+TWENTY_DB_OWNER, TWENTY_APP_OWNER = (999, 999), (1000, 1000)  # postgres / node users of the pinned images
+
+
+def crm_enabled(state):
+    """Twenty runs only after an operator records that a venture needs a CRM."""
+    flag = state / 'twenty' / 'ENABLED'
+    return flag.is_file() and not flag.is_symlink()
+
+
+def ensure_twenty_state(state, token=None):
+    """Create missing Twenty directories and secrets; never modify existing ones."""
+    import secrets as _secrets
+    token = token or (lambda: _secrets.token_hex(32))
+    root = state / 'twenty'
+    if root.is_symlink():
+        raise ValueError('Twenty state path is not a plain directory')
+    for name, (uid, gid) in (('db', TWENTY_DB_OWNER), ('storage', TWENTY_APP_OWNER), ('redis', TWENTY_DB_OWNER)):
+        path = root / name
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('Twenty state path is not a plain directory')
+        if not path.exists():
+            path.mkdir(mode=0o700)
+            os.chown(path, uid, gid)
+    db_env, server_env = root / 'db.env', root / 'server.env'
+    if not db_env.exists() and not server_env.exists():
+        if any((root / 'db').iterdir()):
+            raise ValueError('Twenty database exists but its secrets are missing; restore them, never regenerate')
+        password = token()
+        for path, body in ((db_env, f'POSTGRES_DB=default\nPOSTGRES_USER=twenty\nPOSTGRES_PASSWORD={password}\n'),
+                           (server_env, f'PG_DATABASE_URL=postgres://twenty:{password}@twenty-db:5432/default\n'
+                                        f'APP_SECRET={token()}\nENCRYPTION_KEY={token()}\n')):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(body)
+    elif not (db_env.exists() and server_env.exists()):
+        raise ValueError('Twenty secrets are half-present; restore them from recovery, do not regenerate')
+
+
 def ensure_t3_state(state):
     """New, empty T3 state directories only; existing state is never modified."""
     root = state / 't3'
@@ -196,8 +234,17 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         }.items()))
         ensure_t3_state(state)
         candidate.chmod(0o600)
+        crm = crm_enabled(state)
+        if crm:
+            ensure_twenty_state(state)
+        else:
+            # A disabled CRM must not keep writing: stop (never remove) any running Twenty container.
+            running = set(run(['docker', 'ps', '--format', '{{.Names}}', '--filter', 'name=^nixos-twenty-']).split())
+            for name in ('nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis'):
+                if name in running:  # apps drain before their datastores stop
+                    run(['docker', 'stop', '--time', '90', name])
         compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
-                   '--file', str(source / 'deploy/compose.yaml')]
+                   '--file', str(source / 'deploy/compose.yaml')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
         ensure_t3_image(source, run)
@@ -210,8 +257,10 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-t3']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' healthy':
             raise ValueError('T3 image or health readback differs from the declared deployment')
+        if crm and run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', 'nixos-twenty-server']) != 'healthy':
+            raise ValueError('Twenty CRM health readback failed')
         listeners = run(['ss', '-lntH']).splitlines()
-        for port in ('18642', '19119', '13100', '3773'):
+        for port in ('18642', '19119', '13100', '3773') + (('3020',) if crm else ()):
             addresses = [line.split()[3] for line in listeners if len(line.split()) >= 5
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:

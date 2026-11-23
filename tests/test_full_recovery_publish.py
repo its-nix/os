@@ -44,7 +44,8 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'capture failed'):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     raise RuntimeError('capture failed')
-        self.assertIn(['docker', 'start', *module.CONTAINERS], calls)
+        self.assertEqual([['docker', 'start', n] for n in reversed(module.CONTAINERS)],
+                         [c for c in calls if c[:2] == ['docker', 'start']])
         health.assert_called_once()
 
     def test_failed_stop_still_restarts_both_services(self):
@@ -61,7 +62,8 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(module.Refusal):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     self.fail('Capture cannot run after failed stop')
-        self.assertIn(['docker', 'start', *module.CONTAINERS], calls)
+        self.assertEqual([['docker', 'start', n] for n in reversed(module.CONTAINERS)],
+                         [c for c in calls if c[:2] == ['docker', 'start']])
 
     def test_database_probe_attaches_sql_stdin_without_network(self):
         module = self.module()
@@ -108,6 +110,74 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaises(module.Refusal):
             module.require_private('docker.io/example/nixos-recovery', api)
         self.assertEqual(1, len(calls))
+
+
+class CrmRecoveryTests(unittest.TestCase):
+    def test_crm_containers_join_capture_only_when_enabled(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(module.CONTAINERS, module.containers(root))
+            (root / 'twenty').mkdir()
+            (root / 'twenty/ENABLED').write_text('')
+            names = module.containers(root)
+            self.assertEqual(module.CONTAINERS + module.CRM_CONTAINERS, names)
+            # stop app before database; start database before app
+            self.assertLess(names.index('nixos-twenty-server'), names.index('nixos-twenty-db'))
+            self.assertLess(list(reversed(names)).index('nixos-twenty-db'),
+                            list(reversed(names)).index('nixos-twenty-server'))
+
+
+class ServiceControlTests(unittest.TestCase):
+    def module(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_worker_without_healthcheck_counts_as_ready_and_sigterm_is_clean(self):
+        module = self.module()
+        with patch.object(module, 'run', return_value='running'):
+            self.assertTrue(module.ready('nixos-twenty-worker'))
+        with patch.object(module, 'run', return_value='starting'):
+            self.assertFalse(module.ready('nixos-hermes'))
+        self.assertIn('exited 143', module.CLEAN_EXIT)
+
+    def test_capture_refuses_running_crm_writers_when_disabled(self):
+        module = self.module()
+        def command(argv):
+            if argv[:2] == ['docker', 'ps']:
+                return 'abc123'
+            return 'running'
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), \
+                patch.object(module, 'crm_enabled', return_value=False):
+            with self.assertRaisesRegex(module.Refusal, 'CRM containers run'):
+                with module.stopped_services(Path(td) / 'lock'):
+                    self.fail('must not capture')
+
+
+class CrmRestartTests(unittest.TestCase):
+    def test_failed_crm_start_still_starts_core_services_and_probe_image_matches_compose(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        started = []
+        def command(argv):
+            if argv[:2] == ['docker', 'start']:
+                started.append(argv[2])
+                if argv[2] == 'nixos-twenty-db':
+                    raise module.Refusal('failed')
+            return ''
+        with patch.object(module, 'run', side_effect=command):
+            with self.assertRaisesRegex(module.Refusal, 'nixos-twenty-db'):
+                module.start_all(list(reversed(module.CONTAINERS + module.CRM_CONTAINERS)))
+        self.assertTrue(set(module.CONTAINERS) <= set(started))
+        self.assertIn(module.TWENTY_DB_IMAGE, (ROOT / 'deploy/compose.yaml').read_text())
+        hook = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        self.assertIn('|| rc=1', hook)
+        self.assertNotIn('|| exit 1', hook)
 
 
 class RecoveryUnitTests(unittest.TestCase):
