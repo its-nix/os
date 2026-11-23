@@ -5,6 +5,8 @@
 /scripts/verify.py              @Lior-Nis
 # Code executed as root on the production host (deploy) or that restores production state.
 /scripts/deploy-os.py           @Lior-Nis
+/deploy/compose.yaml            @Lior-Nis
+/deploy/t3/hermes_token.py      @Lior-Nis
 /automation/recovery/           @Lior-Nis
 # The gate's own tests.
 /tests/test_independent_review.py @Lior-Nis

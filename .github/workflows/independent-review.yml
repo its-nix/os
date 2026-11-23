@@ -13,10 +13,10 @@ on:
 permissions:
   contents: read
 
-# A newer event for the same PR supersedes an in-flight review (the stale run ends cancelled,
-# which is not a pass); the newest run's check is the one that counts.
+# A newer event for the same PR head supersedes an in-flight review of that head (cancelled is not
+# a pass). Different heads never cancel each other.
 concurrency:
-  group: independent-review-${{ github.event.pull_request.number }}
+  group: independent-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: true
 
 jobs:

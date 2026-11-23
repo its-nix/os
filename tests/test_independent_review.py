@@ -105,6 +105,7 @@ class IndependentReviewTests(unittest.TestCase):
         self.assertNotIn('head.ref', workflow)
         self.assertIn('persist-credentials: false', workflow)
         self.assertIn('branches: [main]', workflow)
+        self.assertIn('pull_request.head.sha }}', workflow.split('concurrency:', 1)[1].split('jobs:', 1)[0])
         self.assertNotIn('pull-requests: write', workflow)
         self.assertNotIn('draft == false', workflow)  # a skipped required check would count as passing
 
