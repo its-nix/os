@@ -87,7 +87,7 @@ class VentureFactoryTests(unittest.TestCase):
         return json.loads((self.home / f'profiles/{vid}/cron/jobs.json').read_text())['jobs']
 
     def manifest(self, vid='acme'):
-        return json.loads((self.home / f'nix/ventures/{vid}/manifest.json').read_text())
+        return json.loads((self.home / f'ventures/{vid}/manifest.json').read_text())
 
     def test_create_scaffolds_lead_board_loops_and_mission_generically(self):
         self.assertEqual(0, self.create())
@@ -99,7 +99,7 @@ class VentureFactoryTests(unittest.TestCase):
         soul = (self.home / 'profiles/acme/SOUL.md').read_text()
         self.assertIn('Acme Widgets', soul)
         self.assertIn('Founder-gated', soul)
-        self.assertTrue((self.home / 'nix/ventures/acme/CHARTER.md').is_file())
+        self.assertTrue((self.home / 'ventures/acme/CHARTER.md').is_file())
         self.assertEqual({'acme-outcome', 'acme-distill'}, {j['name'] for j in self.jobs()})
         self.assertTrue(all(j['state'] == 'scheduled' and j['skills'] == ['venture-lead'] for j in self.jobs()))
         self.assertTrue(m['first_task'].startswith('t_'))
@@ -120,7 +120,7 @@ class VentureFactoryTests(unittest.TestCase):
         (self.home / 'profiles/legacy/SOUL.md').write_text('old venture memory')
         self.assertEqual(1, self.create('legacy'))
         self.assertEqual('old venture memory', (self.home / 'profiles/legacy/SOUL.md').read_text())
-        self.assertFalse((self.home / 'nix/ventures/legacy/manifest.json').exists())
+        self.assertFalse((self.home / 'ventures/legacy/manifest.json').exists())
         self.assertFalse(any(c[:2] == ['-p', 'legacy'] for c in self.calls()))
 
     def test_reserved_invalid_and_unapproved_ids_refused(self):
