@@ -333,6 +333,10 @@ def create(args, hermes, registry):
         raise Refusal('Unknown packs: ' + ', '.join(sorted(unknown)))
     if not (args.approval_ref or '').strip():
         raise Refusal('Founder strategic approval reference is required (message link or decision note)')
+    for label, source in (('PRD', args.prd), ('GTM', args.gtm)):
+        path = Path(source)
+        if not path.is_file() or not path.read_text().strip():
+            raise Refusal(f'The approved {label} file is missing or empty: provision only from a decision package')
     if hermes.dry_run:
         return plan(args, hermes, registry, packs)
     with venture_lock(registry, args.id):
@@ -444,8 +448,10 @@ def main(argv=None):
     c.add_argument('--name', required=True)
     c.add_argument('--mission', required=True, help='First measurable commercial/operational uncertainty')
     c.add_argument('--approval-ref', required=True)
-    c.add_argument('--prd')
-    c.add_argument('--gtm')
+    # Required: leads judge every loop against the approved PRD/GTM. Observed 2026-11-23: a lead
+    # provisioned without them had no source-of-truth metric and correctly blocked its first mission.
+    c.add_argument('--prd', required=True)
+    c.add_argument('--gtm', required=True)
     c.add_argument('--pack', action='append')
     c.add_argument('--crm', action='store_true')
     c.add_argument('--repo')

@@ -30,7 +30,7 @@ python3 /opt/data/skills/nix-os/venture-factory/scripts/venture.py create --dry-
   --prd PRD.md --gtm GTM.md --pack product --pack growth [--crm] [--repo owner/name]
 ```
 
-Review the plan, then repeat without `--dry-run`. Re-running is safe. The tool:
+`--prd` and `--gtm` are required: a lead judges every loop against them, so a venture without them cannot measure progress. Review the plan, then repeat without `--dry-run`. Re-running is safe. The tool:
 - creates the registry entry (`$HERMES_HOME/ventures/<id>/`) with the manifest, CHARTER, PRD and GTM
 - creates the lead profile `<id>` and its SOUL
 - creates the named Kanban board `<id>`
