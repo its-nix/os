@@ -16,7 +16,7 @@ UMask=0077
 EnvironmentFile=/etc/nixos/recovery.env
 ExecStart=/usr/bin/python3 /opt/nix-clean-source/automation/recovery/full_create.py --apply --publish --image ${NIXOS_RECOVERY_IMAGE}
 # Also recover services if Python is killed or the job times out before its finally block.
-ExecStopPost=/usr/bin/flock -w 240 /run/lock/nix-os-deploy.lock /bin/sh -c 'docker start nixos-hermes nixos-paperclip nixos-t3; for c in nixos-twenty-redis nixos-twenty-db nixos-twenty-server nixos-twenty-worker; do docker container inspect $$c >/dev/null 2>&1 && docker start $$c; done; true'
+ExecStopPost=/usr/bin/flock -w 240 /run/lock/nix-os-deploy.lock /bin/sh -c 'for c in nixos-twenty-redis nixos-twenty-db nixos-twenty-server nixos-twenty-worker; do if [ -e /srv/nix-clean/twenty/ENABLED ] && docker container inspect $$c >/dev/null 2>&1; then docker start $$c || exit 1; fi; done; docker start nixos-hermes nixos-paperclip nixos-t3'
 Restart=on-failure
 RestartSec=15min
 TimeoutStartSec=1h

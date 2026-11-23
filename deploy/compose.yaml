@@ -115,7 +115,13 @@ services:
     networks: [crm]
     restart: unless-stopped
     mem_limit: 128m
-    command: [--maxmemory-policy, noeviction, --save, '', --appendonly, 'no']
+    # Persist BullMQ queues (pending/delayed jobs survive the nightly cold stop and restore).
+    command: [--maxmemory-policy, noeviction, --appendonly, 'yes', --appendfsync, everysec]
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/redis
+        target: /data
+        bind: {create_host_path: false}
     healthcheck:
       test: [CMD, redis-cli, ping]
       interval: 10s

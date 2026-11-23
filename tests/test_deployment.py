@@ -245,6 +245,24 @@ class DeploymentTests(unittest.TestCase):
             (state / 'twenty/db.env').unlink()
             with self.assertRaisesRegex(ValueError, 'half-present'):
                 apply('4' * 40, ROOT, state, Path(td) / 'current', run=with_crm)
+            (state / 'twenty/server.env').unlink()
+            (state / 'twenty/db/PG_VERSION').write_text('16')
+            with self.assertRaisesRegex(ValueError, 'never regenerate'):
+                apply('5' * 40, ROOT, state, Path(td) / 'current', run=with_crm)
+
+    def test_disabling_crm_stops_running_twenty_containers(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            calls = []
+            runner = self.healthy_runner(calls)
+            def with_leftover(argv):
+                if argv[:2] == ['docker', 'ps']:
+                    calls.append(argv)
+                    return 'aaa\nbbb'
+                return runner(argv)
+            apply('6' * 40, ROOT, state, Path(td) / 'current', run=with_leftover)
+            self.assertIn(['docker', 'stop', '--time', '90', 'aaa', 'bbb'], calls)
+            self.assertFalse(any('rm' in c or 'down' in c for c in calls))
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):

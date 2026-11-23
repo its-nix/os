@@ -61,7 +61,7 @@ def ensure_twenty_state(state, token=None):
     root = state / 'twenty'
     if root.is_symlink():
         raise ValueError('Twenty state path is not a plain directory')
-    for name, (uid, gid) in (('db', TWENTY_DB_OWNER), ('storage', TWENTY_APP_OWNER)):
+    for name, (uid, gid) in (('db', TWENTY_DB_OWNER), ('storage', TWENTY_APP_OWNER), ('redis', TWENTY_DB_OWNER)):
         path = root / name
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ValueError('Twenty state path is not a plain directory')
@@ -70,12 +70,15 @@ def ensure_twenty_state(state, token=None):
             os.chown(path, uid, gid)
     db_env, server_env = root / 'db.env', root / 'server.env'
     if not db_env.exists() and not server_env.exists():
+        if any((root / 'db').iterdir()):
+            raise ValueError('Twenty database exists but its secrets are missing; restore them, never regenerate')
         password = token()
         for path, body in ((db_env, f'POSTGRES_DB=default\nPOSTGRES_USER=twenty\nPOSTGRES_PASSWORD={password}\n'),
                            (server_env, f'PG_DATABASE_URL=postgres://twenty:{password}@twenty-db:5432/default\n'
                                         f'APP_SECRET={token()}\nENCRYPTION_KEY={token()}\n')):
-            path.write_text(body)
-            path.chmod(0o600)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(body)
     elif not (db_env.exists() and server_env.exists()):
         raise ValueError('Twenty secrets are half-present; restore them from recovery, do not regenerate')
 
@@ -234,6 +237,11 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         crm = crm_enabled(state)
         if crm:
             ensure_twenty_state(state)
+        else:
+            # A disabled CRM must not keep writing: stop (never remove) any running Twenty container.
+            running = run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-twenty-']).split()
+            if running:
+                run(['docker', 'stop', '--time', '90', *running])
         compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
                    '--file', str(source / 'deploy/compose.yaml')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
