@@ -112,6 +112,19 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
 
 
+class DiagnosticsTests(unittest.TestCase):
+    def test_failed_command_names_only_program_and_subcommand(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='secret-output')):
+            with self.assertRaises(module.Refusal) as caught:
+                module.run(['docker', 'push', 'docker.io/acct/private:tag'])
+        self.assertIn('docker push', str(caught.exception))
+        self.assertNotIn('acct', str(caught.exception))
+        self.assertNotIn('secret-output', str(caught.exception))
+
+
 class CrmRecoveryTests(unittest.TestCase):
     def test_crm_containers_join_capture_only_when_enabled(self):
         spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')

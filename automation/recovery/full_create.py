@@ -59,7 +59,10 @@ def twenty_db_check(image, restored):
 def run(argv, **kwargs):
     result = subprocess.run(argv, capture_output=True, text=True, timeout=1800, **kwargs)
     if result.returncode:
-        raise Refusal('A native recovery command failed; private diagnostics suppressed')
+        # Name only the program and its subcommand (e.g. "docker push"): never arguments or output.
+        name = ' '.join(a for a in argv[:2] if re.fullmatch(r'[a-z][a-z-]*', a))
+        raise Refusal(f'A native recovery command failed ({name or "unknown"}, exit {result.returncode}); '
+                      'private diagnostics suppressed')
     return result.stdout.strip()
 
 
