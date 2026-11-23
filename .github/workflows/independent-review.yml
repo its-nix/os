@@ -1,0 +1,49 @@
+name: independent-review
+
+# Runs the BASE branch's definition of this workflow and reviewer (pull_request_target), so a
+# pull request cannot change the evaluator that judges it. The PR head is never checked out or
+# executed; the diff is read through the API. Fork PRs are refused.
+# Only PRs into main: for other bases, pull_request_target would load that (builder-writable)
+# branch's reviewer with the secret. Requires the repository to allow pull_request_target.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+# A newer event for the same PR head supersedes an in-flight review of that head (cancelled is not
+# a pass). Different heads never cancel each other.
+concurrency:
+  group: independent-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+jobs:
+  independent-review:
+    # No job-level skip (a skipped required check counts as passing); drafts fail in the script.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # github.sha = current main for pull_request_target: always the newest trusted reviewer,
+          # never the PR's (possibly older) base and never the PR's own commits.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned reviewer client
+        run: python3 -m pip install --disable-pip-version-check anthropic==2.12.0
+      - name: Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.REVIEW_ANTHROPIC_API_KEY }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [ -n "$ANTHROPIC_API_KEY" ] || { echo 'Reviewer credential is not configured; failing closed.'; exit 1; }
+          python3 .github/review/independent_review.py
