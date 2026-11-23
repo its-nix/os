@@ -42,7 +42,7 @@ For T3 Code, create its empty state directories and pin its build tag (the CI/CD
 ```bash
 install -d -m 700 -o 10010 -g 10010 /srv/nix-clean/t3 /srv/nix-clean/t3/home /srv/nix-clean/t3/work
 echo "T3_BUILD_TAG=\"$(sha256sum deploy/t3/Dockerfile | cut -c1-16)\"" >> /srv/nix-clean/deployment.env
-docker compose --env-file /srv/nix-clean/deployment.env -f deploy/compose.yaml build t3
+docker build -t "nixos-t3:$(sha256sum deploy/t3/Dockerfile | cut -c1-16)" deploy/t3
 ```
 
 Start the native entrypoints:
