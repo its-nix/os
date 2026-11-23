@@ -113,11 +113,12 @@ def snapshot(root, archive):
 
 
 def require_state(inventory):
-    required = ['hermes/config.yaml', 'paperclip/instances/default/db/PG_VERSION']
-    if any(inventory.get(name, {}).get('type') != 'file' for name in required):
+    if inventory.get('hermes/config.yaml', {}).get('type') != 'file':
         raise Refusal('Snapshot lacks required native state')
-    if not any(name.startswith('paperclip/instances/default/secrets/') and row.get('size', 0) > 0
-               for name, row in inventory.items()):
+    # Archived Paperclip state (retired 2026-11-23) must stay complete wherever it exists.
+    if inventory.get('paperclip/instances/default/db/PG_VERSION', {}).get('type') == 'file' and not any(
+            name.startswith('paperclip/instances/default/secrets/') and row.get('size', 0) > 0
+            for name, row in inventory.items()):
         raise Refusal('Snapshot lacks Paperclip encryption keys')
     for name in inventory:
         for parent in PurePosixPath(name).parents:

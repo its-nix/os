@@ -261,7 +261,7 @@ class DeploymentTests(unittest.TestCase):
                     return 'nixos-twenty-db\nnixos-twenty-worker'
                 return runner(argv)
             apply('6' * 40, ROOT, state, Path(td) / 'current', run=with_leftover)
-            stops = [c[-1] for c in calls if c[:2] == ['docker', 'stop']]
+            stops = [c[-1] for c in calls if c[:2] == ['docker', 'stop'] and 'twenty' in c[-1]]
             self.assertEqual(['nixos-twenty-worker', 'nixos-twenty-db'], stops)
             self.assertFalse(any('rm' in c or 'down' in c for c in calls))
     def test_health_publication_refuses_symlinked_nix_and_never_fails_deploy(self):
@@ -274,6 +274,23 @@ class DeploymentTests(unittest.TestCase):
             nix.symlink_to(outside)
             deployment.publish_health(state, {'status': 'healthy', 'revision': 'r'})  # no exception
             self.assertEqual([], list(outside.iterdir()))
+
+    def test_paperclip_is_stopped_never_removed_and_not_required(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            (state / 'paperclip/archived.db').write_text('history')
+            calls = []
+            runner = self.healthy_runner(calls)
+            def paperclip_running(argv):
+                if argv[:2] == ['docker', 'ps'] and 'name=^nixos-paperclip$' in argv:
+                    calls.append(argv)
+                    return 'pc123'
+                return runner(argv)
+            apply('7' * 40, ROOT, state, Path(td) / 'current', run=paperclip_running)
+            self.assertIn(['docker', 'stop', '--time', '90', 'nixos-paperclip'], calls)
+            self.assertFalse(any(c[:2] == ['docker', 'rm'] or 'down' in c for c in calls))
+            self.assertEqual('history', (state / 'paperclip/archived.db').read_text())
+        self.assertNotIn('paperclip:', (ROOT / 'deploy/compose.yaml').read_text())
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):

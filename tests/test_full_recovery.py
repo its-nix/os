@@ -87,9 +87,21 @@ class FullRecoveryTests(unittest.TestCase):
         unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
         create = (ROOT / 'automation/recovery/full_create.py').read_text()
         hook = next(l for l in unit.splitlines() if l.startswith('ExecStopPost='))
-        for name in ('nixos-hermes', 'nixos-paperclip', 'nixos-t3'):
+        for name in ('nixos-hermes', 'nixos-t3'):
             self.assertIn(name, hook)
             self.assertIn(repr(name), create)
+        self.assertNotIn('nixos-paperclip', hook)  # retired: never restarted by recovery
+
+    def test_snapshot_without_paperclip_is_valid_but_partial_archive_is_not(self):
+        recovery = self.module()
+        recovery.require_state({'hermes': {'type': 'directory'}, 'hermes/config.yaml': {'type': 'file'}})
+        with self.assertRaises(recovery.Refusal):
+            recovery.require_state({'hermes': {'type': 'directory'}, 'hermes/config.yaml': {'type': 'file'},
+                                    'paperclip': {'type': 'directory'},
+                                    'paperclip/instances': {'type': 'directory'},
+                                    'paperclip/instances/default': {'type': 'directory'},
+                                    'paperclip/instances/default/db': {'type': 'directory'},
+                                    'paperclip/instances/default/db/PG_VERSION': {'type': 'file'}})
 
     def test_missing_state_or_key_material_refused(self):
         recovery = self.module()
