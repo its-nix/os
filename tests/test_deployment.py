@@ -187,7 +187,7 @@ class DeploymentTests(unittest.TestCase):
                     (hermes / 'profiles' / name / 'nix-venture.json').write_text('{"venture": "acme"}')
             apply('e' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
             for skills in (hermes / 'skills', hermes / 'profiles/acme/skills'):
-                self.assertEqual({'venture-factory', 'venture-lead', 't3-delegate'}, {p.name for p in (skills / 'nix-os').iterdir()})
+                self.assertEqual({'venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops'}, {p.name for p in (skills / 'nix-os').iterdir()})
                 self.assertEqual((ROOT / 'skills/venture-lead/SKILL.md').read_text(),
                                  (skills / 'nix-os/venture-lead/SKILL.md').read_text())
                 self.assertEqual([], [p.name for p in skills.iterdir() if p.name.startswith('.nix-os')])
