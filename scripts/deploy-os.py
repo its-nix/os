@@ -140,7 +140,7 @@ def native_inputs(source):
 
 # First-party OS skills. The deployment is the ONLY writer of each profile's `skills/nix-os/`
 # category; NixKit owns its own skill directories. Copies (not links) pin the reviewed revision.
-OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops')
+OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops', 'company-ops')
 OS_SKILL_CATEGORY = 'nix-os'
 
 
@@ -201,6 +201,59 @@ def sync_os_skills(source, state):
             raise
         if old.exists():
             shutil.rmtree(old)
+
+
+def _root_write(directory, name, text, mode):
+    """Root-safe write: refuse symlinked directories, random O_EXCL staging file, atomic rename."""
+    import tempfile
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError(f'{directory.name} must be a real directory')
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix='.' + name + '.')
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, directory / name)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def publish_health(state, receipt, recovery=Path('/var/lib/nixos-recovery')):
+    """Non-secret status for the no-agent company health loop (Hermes cannot read root receipts).
+    Best effort: a failure here never changes the deployment outcome."""
+    def read(path):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {}
+    try:
+        previous = read(state / 'deployment.json')
+        success, attempt = read(recovery / 'last-success.json'), read(recovery / 'last-attempt.json')
+        status = {'deployed_revision': previous.get('revision'), 'deployed_at': previous.get('completed_at'),
+                  'deploy_attempt_status': receipt['status'], 'deploy_attempt_revision': receipt['revision'],
+                  'backup_last_success': success.get('completed_at'),
+                  'backup_last_attempt_status': attempt.get('status')}
+        _root_write(state / 'hermes' / 'nix', 'health.json', json.dumps(status, indent=2) + '\n', 0o644)
+    except (OSError, ValueError, KeyError):
+        print('Health status publication failed; deployment outcome unchanged.', file=sys.stderr)
+
+
+def install_health_script(source, state):
+    """Deployment-owned copy of the health check for Hermes' no-agent cron (scripts/nix-os/)."""
+    hermes = state / 'hermes'
+    scripts = hermes / 'scripts'
+    owner = hermes.stat()
+    if scripts.is_symlink():
+        raise ValueError('Hermes scripts path must not be a symlink')
+    if not scripts.exists():
+        scripts.mkdir(mode=0o755)
+        os.chown(scripts, owner.st_uid, owner.st_gid)
+    target = scripts / 'nix-os'
+    if target.is_symlink():
+        raise ValueError('Hermes scripts/nix-os must not be a symlink')
+    target.mkdir(mode=0o755, exist_ok=True)
+    _root_write(target, 'health.py', (source / 'skills/company-ops/scripts/health.py').read_text(), 0o755)
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
@@ -274,6 +327,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
         units(source, run)
         sync_os_skills(source, state)
+        install_health_script(source, state)
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.
@@ -287,9 +341,11 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                        images={name: versions[name]['image'] for name in ('hermes', 'paperclip')})
         write_json(state / 'deployment.json', receipt)
         write_json(state / 'deployment-attempt.json', receipt)
+        publish_health(state, receipt)
         print('Healthy deployment recorded: ' + revision)
     except Exception:
         write_json(state / 'deployment-attempt.json', dict(attempt, status='failed'))
+        publish_health(state, dict(attempt, status='failed'))
         raise
     finally:
         candidate.unlink(missing_ok=True)
