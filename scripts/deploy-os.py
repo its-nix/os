@@ -92,6 +92,71 @@ def native_inputs(source):
     }
 
 
+# First-party OS skills. The deployment is the ONLY writer of each profile's `skills/nix-os/`
+# category; NixKit owns its own skill directories. Copies (not links) pin the reviewed revision.
+OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate')
+OS_SKILL_CATEGORY = 'nix-os'
+
+
+def _plain_dir_within(path, root):
+    """True only for a real directory reached from root without any symlink component."""
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink() or not current.is_dir():
+            return False
+    return path.resolve().is_relative_to(root.resolve())
+
+
+def os_skill_targets(state):
+    """Default (LNX) profile plus every profile created by the venture registry."""
+    hermes = state / 'hermes'
+    targets = [hermes / 'skills']
+    profiles = hermes / 'profiles'
+    if profiles.is_dir() and not profiles.is_symlink():
+        for marker in sorted(profiles.glob('*/nix-venture.json')):
+            if not marker.is_file() or marker.is_symlink():
+                continue
+            try:
+                owner = json.loads(marker.read_text()).get('venture')
+            except (OSError, ValueError):
+                continue
+            if owner == marker.parent.name:  # `profile create --clone-all` copies markers verbatim
+                targets.append(marker.parent / 'skills')
+    return [t for t in targets if _plain_dir_within(t, hermes)]
+
+
+def sync_os_skills(source, state):
+    owner = (state / 'hermes').stat()
+    for skills in os_skill_targets(state):
+        final, staged, old = (skills / OS_SKILL_CATEGORY, skills / ('.' + OS_SKILL_CATEGORY + '.next'),
+                              skills / ('.' + OS_SKILL_CATEGORY + '.prev'))
+        for path in (final, staged, old):
+            if path.is_symlink():
+                raise ValueError('The nix-os skill category paths must not be symlinks')
+        if old.exists() and not final.exists():
+            old.replace(final)  # a previous run died between its two renames: restore first
+        for leftover in (staged, old):
+            if leftover.exists():
+                shutil.rmtree(leftover)
+        staged.mkdir(mode=0o755)
+        for name in OS_SKILLS:
+            shutil.copytree(source / 'skills' / name, staged / name, symlinks=False)
+        for path in [staged, *staged.rglob('*')]:
+            os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
+        if final.exists() and not final.is_dir():
+            raise ValueError('The nix-os skill category is not a deployment-owned directory')
+        if final.exists():
+            final.replace(old)
+        try:
+            staged.replace(final)
+        except OSError:
+            old.replace(final)
+            raise
+        if old.exists():
+            shutil.rmtree(old)
+
+
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
           t3_loaded=confirm_t3_credential, units=sync_recovery_units):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
@@ -151,6 +216,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
         units(source, run)
+        sync_os_skills(source, state)
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.
