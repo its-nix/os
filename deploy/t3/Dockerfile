@@ -36,10 +36,10 @@ RUN npm install -g --no-fund --no-audit \
 
 # Non-root service identity. Provider logins (~/.claude, ~/.codex, ...) and T3 state live in
 # the persistent home volume; repositories and worktrees in the separate /work volume.
-RUN groupadd --gid 10010 t3 && useradd --uid 10010 --gid 10010 --create-home --home-dir /home/t3 t3 \
+RUN groupadd --gid 10010 t3 && useradd --uid 10010 --gid 10010 --create-home --home-dir /var/lib/t3 t3 \
  && mkdir -p /work && chown t3:t3 /work
 USER t3
-ENV HOME=/home/t3 T3CODE_HOME=/home/t3/.t3 T3CODE_PORT=3773
+ENV HOME=/var/lib/t3 T3CODE_HOME=/var/lib/t3/.t3 T3CODE_PORT=3773
 WORKDIR /work
 EXPOSE 3773
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=4 \

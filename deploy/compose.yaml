@@ -80,7 +80,7 @@ services:
     volumes:
       - type: bind
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/t3/home
-        target: /home/t3
+        target: /var/lib/t3
         bind: {create_host_path: false}
       - type: bind
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/t3/work
