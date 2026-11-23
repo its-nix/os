@@ -51,9 +51,24 @@ class HealthTests(unittest.TestCase):
         (venture / 'manifest.json').write_text(json.dumps({'id': 'acme', 'lifecycle': 'operating', 'board': 'acme'}))
         (venture / 'actions/acme-x-1.json').write_text(json.dumps({'action_id': 'acme-x-1', 'status': 'queued-local'}))
         old = (NOW - timedelta(hours=30)).timestamp()
-        problems = self.run_check(kanban=lambda b: [{'id': 't_1', 'status': 'blocked', 'title': 'waiting', 'created_at': old}])
+        recent = (NOW - timedelta(minutes=5)).timestamp()
+        quiet = self.run_check(kanban=lambda b: [{'id': 't_0', 'status': 'blocked', 'title': 'new', 'created_at': old,
+                                                  'blocked_since': recent}])
+        self.assertFalse(any('t_0' in p for p in quiet))  # old card, blocked just now: no alert
+        problems = self.run_check(kanban=lambda b: [{'id': 't_1', 'status': 'blocked', 'title': 'waiting', 'blocked_since': old}])
         self.assertTrue(any('not delivered' in p for p in problems))
         self.assertTrue(any('t_1 blocked >24h' in p for p in problems))
+
+    def test_unreadable_board_and_bad_timestamps_do_not_hide_other_findings(self):
+        (self.home / 'nix/health.json').write_text(json.dumps({'backup_last_success': 'garbage', 'deployed_at': None}))
+        venture = self.home / 'ventures/acme'
+        venture.mkdir(parents=True)
+        (venture / 'manifest.json').write_text(json.dumps({'id': 'acme', 'lifecycle': 'operating', 'board': 'acme'}))
+        def broken(board):
+            raise RuntimeError('timeout')
+        problems = '\n'.join(self.run_check(kanban=broken, t3_ok=False))
+        for needle in ('backup stale', 'No healthy deployment', 'board acme unreadable', 'T3 Code is unreachable'):
+            self.assertIn(needle, problems)
 
     def test_paused_ventures_are_ignored(self):
         self.status()

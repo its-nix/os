@@ -42,12 +42,13 @@ def main(argv=None):
         if job['name'] in have:
             print(f'present: {job["name"]}')
             continue
-        cmd = [os.environ.get('HERMES_BIN', 'hermes'), 'cron', 'create', job['schedule']]
+        # Explicit profile: a sticky `hermes profile use` must not redirect LNX's loops.
+        cmd = [os.environ.get('HERMES_BIN', 'hermes'), '-p', 'default', 'cron', 'create', job['schedule']]
         if job.get('prompt'):
             cmd.append(job['prompt'])
         cmd += ['--name', job['name'], '--catch-up', 'off', *job['argv']]
         if args.dry_run:
-            print('plan: ' + ' '.join(cmd[1:6]) + ' …')
+            print('plan: ' + ' '.join(cmd[1:8]) + ' …')
             continue
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode:

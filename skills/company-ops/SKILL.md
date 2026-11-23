@@ -6,7 +6,7 @@ license: MIT
 
 # Company operating loops (LNX)
 
-LNX is the portfolio CEO, not a router. Venture leads keep running without it. These loops are native Hermes cron jobs in the default profile. Install or reconcile them with `scripts/setup_loops.py`, which is idempotent.
+LNX is the portfolio CEO, not a router. Venture leads keep running without it. These loops are native Hermes cron jobs in the default profile. Install or reconcile them with `scripts/setup_loops.py`, which is idempotent. Discord delivery requires the configured home channel, which LNX has.
 
 | Loop | Trigger | Mode | Output |
 | --- | --- | --- | --- |

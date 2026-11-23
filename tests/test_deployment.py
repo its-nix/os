@@ -264,6 +264,16 @@ class DeploymentTests(unittest.TestCase):
             stops = [c[-1] for c in calls if c[:2] == ['docker', 'stop']]
             self.assertEqual(['nixos-twenty-worker', 'nixos-twenty-db'], stops)
             self.assertFalse(any('rm' in c or 'down' in c for c in calls))
+    def test_health_publication_refuses_symlinked_nix_and_never_fails_deploy(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            outside = Path(td) / 'outside'
+            outside.mkdir()
+            nix = state / 'hermes/nix'
+            nix.rename(Path(td) / 'real-nix')
+            nix.symlink_to(outside)
+            deployment.publish_health(state, {'status': 'healthy', 'revision': 'r'})  # no exception
+            self.assertEqual([], list(outside.iterdir()))
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):
