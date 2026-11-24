@@ -48,7 +48,7 @@
       "claude-code": "2.1.330",
       "codex": "0.171.0",
       "opencode": "1.19.6",
-      "gemini-cli": "0.70.0",
+      "antigravity-cli": "1.5.16",
       "grok": "1.0.92",
       "gh": "2.105.0"
     }

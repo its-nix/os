@@ -27,6 +27,8 @@ const STALE_MS = 45 * 60 * 1000;
 const NO_TOOLS_OPENCODE = JSON.stringify({ tools: Object.fromEntries(
   ['bash', 'edit', 'write', 'read', 'grep', 'glob', 'list', 'patch', 'todowrite', 'todoread', 'webfetch', 'websearch', 'task', 'skill']
     .map((t) => [t, false])), mcp: {} });
+const AGY_SETTINGS = JSON.stringify({ toolPermission: 'strict',
+  permissions: { deny: ['command(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'] } });
 export const PROVIDERS = {
   // --tools "" = no built-in tools at all; empty strict MCP config = no MCP tools.
   claude: (prompt) => ['claude', ['-p', prompt, '--tools', '', '--max-turns', '1', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']],
@@ -34,13 +36,16 @@ export const PROVIDERS = {
   opencode: (prompt) => ['opencode', ['run', ...(process.env.OPENCODE_REVIEW_MODEL ? ['-m', process.env.OPENCODE_REVIEW_MODEL] : []), prompt],
     { OPENCODE_CONFIG_CONTENT: NO_TOOLS_OPENCODE }],
   grok: (prompt) => ['grok', ['-p', prompt, '--max-turns', '1', '--permission-mode', 'plan', '--no-subagents', '--disable-web-search']],
-  gemini: (prompt) => ['gemini', ['-p', prompt, '--approval-mode', 'plan']],
+  // Google AI subscriptions run through Antigravity CLI (Gemini CLI dropped them on 2026-06-18).
+  // Plan mode; strict permissions soft-deny every tool call in headless mode, and deny rules
+  // (enforced in every mode) block shell, URL and MCP tools. Session-only settings, never saved.
+  antigravity: (prompt) => ['agy', ['-p', prompt, '--mode', 'plan', '--disable-slash-commands', '--settings', AGY_SETTINGS]],
 };
 
 // Words in a builder line or co-author trailer that identify the authoring provider.
 const AUTHOR_ALIASES = {
   claude: ['claude', 'anthropic', 'claudeagent'], codex: ['codex', 'openai', 'chatgpt'],
-  opencode: ['opencode'], grok: ['grok', 'xai'], gemini: ['gemini', 'google', 'antigravity'],
+  opencode: ['opencode'], grok: ['grok', 'xai'], antigravity: ['antigravity', 'agy', 'gemini', 'google'],
 };
 
 export function authorsOf(prBody, commitMessages) {
@@ -203,6 +208,13 @@ async function collect(repo, token, pr) {
   return { diff: parts.join('\n\n'), commits: (cmp.commits || []).map((c) => c.commit.message) };
 }
 
+// `gemini` is the pre-Antigravity name for the Google subscription; older reviewer.env files use it.
+export function parsePool(value) {
+  const names = (value || 'claude,codex,opencode,grok,antigravity').split(',').map((s) => s.trim())
+    .map((p) => (p === 'gemini' ? 'antigravity' : p)).filter((p) => PROVIDERS[p]);
+  return [...new Set(names)];
+}
+
 const RETRYABLE = 'No reviewer available';
 const RETRY_AFTER_MS = 30 * 60 * 1000;
 
@@ -268,7 +280,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     appId: process.env.REVIEW_APP_ID,
     keyPath: process.env.REVIEW_APP_KEY || '/run/reviewer/app.pem',
     seed: (() => { try { return readFileSync(process.env.REVIEW_SEED || '/run/reviewer/seed', 'utf8').trim(); } catch { return ''; } })(),
-    pool: (process.env.REVIEW_POOL || 'claude,codex,opencode,grok,gemini').split(',').map((s) => s.trim()).filter((p) => PROVIDERS[p]),
+    pool: parsePool(process.env.REVIEW_POOL),
     timeoutMs: Number(process.env.REVIEW_TIMEOUT_MS || 600000),
     intervalMs: Number(process.env.REVIEW_INTERVAL_MS || 60000),
   };

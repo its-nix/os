@@ -161,7 +161,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('ARG T3_VERSION=' + versions['version'], dockerfile)
         self.assertIn('ARG T3_SHA256=' + versions['sha256'], dockerfile)
         names = {'claude-code': 'CLAUDE_CODE', 'codex': 'CODEX', 'opencode': 'OPENCODE',
-                 'gemini-cli': 'GEMINI_CLI', 'grok': 'GROK', 'gh': 'GH'}
+                 'antigravity-cli': 'AGY', 'grok': 'GROK', 'gh': 'GH'}
         for key, arg in names.items():
             self.assertIn(f'ARG {arg}_VERSION={versions["harnesses"][key]}', dockerfile)
 

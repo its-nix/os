@@ -6,7 +6,7 @@ license: MIT
 
 # Delegate coding to T3
 
-T3 Code runs the coding harnesses (Claude Code, Codex, OpenCode, Grok, Gemini) in its own isolated container. You reach it through the `t3` MCP server (tools named `t3_*` and `pull_request_*`). You never run code changes in the Hermes runtime yourself.
+T3 Code runs the coding harnesses (Claude Code, Codex, OpenCode, Grok, Antigravity) in its own isolated container. You reach it through the `t3` MCP server (tools named `t3_*` and `pull_request_*`). You never run code changes in the Hermes runtime yourself.
 
 ## Launch (idempotent)
 1. **Preflight.** Run `hermes -p <your-profile> mcp test t3`. It must report `Connected`. If the command fails or does not report `Connected`, block the card with the error and do not launch.
