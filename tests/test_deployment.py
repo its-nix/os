@@ -46,6 +46,8 @@ class DeploymentTests(unittest.TestCase):
                 if name == 't3':
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' healthy'
                 return images[name]['image'] + ' healthy'
+            if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
+                return '{"url": "http://127.0.0.1:3773/mcp", "enabled": true}'
             if argv == ['ss', '-lntH']:
                 return '\n'.join('LISTEN 0 128 127.0.0.1:' + port + ' 0.0.0.0:*'
                                  for port in ('18642', '19119', '13100', '3773'))
@@ -173,6 +175,58 @@ class DeploymentTests(unittest.TestCase):
                              (units / 'nixos-recovery.service').read_text())
             self.assertEqual([['systemctl', 'daemon-reload']], calls)
             self.assertFalse((units / 'nixos-recovery.timer').exists())
+
+    def test_t3_registration_retries_disabled_server_after_sharing_credential(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            profile = state / 'hermes/profiles/demo'
+            profile.mkdir(parents=True)
+            (profile / 'nix-venture.json').write_text('{"venture": "demo"}')
+            calls = []
+            healthy = self.healthy_runner(calls)
+
+            def run(argv):
+                if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
+                    self.assertIn(['credential shared'], calls)
+                    return json.dumps({'url': 'http://127.0.0.1:3773/mcp', 'enabled': False,
+                                       'headers': {'Authorization': 'masked'}})
+                if argv[-3:] == ['mcp', 'test', 't3']:
+                    return '✓ Tools discovered: 59'
+                if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3.enabled']:
+                    self.assertTrue(any(call[-5:] == ['config', 'set', '--force', 'mcp_servers.t3.enabled', 'true']
+                                        for call in calls))
+                    return 'true'
+                return healthy(argv)
+
+            def share(_):
+                calls.append(['credential shared'])
+                return False
+
+            apply('a' * 40, ROOT, state, Path(td) / 'current', run=run, t3_credential=share)
+            self.assertIn(['docker', 'restart', '--timeout', '60', 'nixos-hermes'], calls)
+
+    def test_t3_registration_preserves_custom_filters_and_retries_pending_reload(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            profile = state / 'hermes/profiles/demo'
+            profile.mkdir(parents=True)
+            (profile / 'nix-venture.json').write_text('{"venture": "demo"}')
+            pending = state / '.t3-registration-reload'
+            pending.touch()
+            calls = []
+            healthy = self.healthy_runner(calls)
+
+            def run(argv):
+                if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
+                    return json.dumps({'url': 'http://127.0.0.1:3773/mcp', 'enabled': False,
+                                       'headers': {'Authorization': 'masked'},
+                                       'tools': {'include': ['orchestrator_capabilities']}})
+                return healthy(argv)
+
+            apply('a' * 40, ROOT, state, Path(td) / 'current', run=run)
+            self.assertFalse(any('mcp' in call or 'set' in call for call in calls))
+            self.assertIn(['docker', 'restart', '--timeout', '60', 'nixos-hermes'], calls)
+            self.assertFalse(pending.exists())
 
     def test_os_skills_sync_only_owned_category_for_lnx_and_venture_leads(self):
         with tempfile.TemporaryDirectory() as td:

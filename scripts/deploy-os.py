@@ -108,14 +108,40 @@ def renew_t3_credential(state):
 
 
 def register_t3_for_leads(state, run):
-    """Native `hermes mcp add` for each registry-owned lead that lacks the t3 server."""
+    """Install T3 after sharing the credential, and verify Hermes enabled it."""
+    endpoint = 'http://127.0.0.1:3773/mcp'
+    pending = state / '.t3-registration-reload'
     for profile in _token_module().venture_profiles(state / 'hermes'):
-        config = profile / 'config.yaml'
-        text = config.read_text() if config.is_file() else ''
-        if 'http://127.0.0.1:3773/mcp' in text:
-            continue
-        run(['docker', 'exec', '-i', '-u', '10000', 'nixos-hermes', 'sh', '-c',
-             f'printf "Y\\nY\\nY\\n" | hermes -p {profile.name} mcp add t3 --url http://127.0.0.1:3773/mcp --auth header'])
+        cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes', '-p', profile.name]
+        key = 'mcp_servers.t3'
+        try:
+            server = json.loads(run(cli + ['config', 'get', '--json', key]))
+        except subprocess.CalledProcessError as exc:
+            diagnostic = (exc.stdout or '') + (exc.stderr or '')
+            if exc.returncode != 1 or diagnostic.strip() != f'Config key not set: {key}':
+                raise
+            server = None
+        if server is not None:
+            if server.get('url') != endpoint:
+                raise ValueError('Venture T3 registration uses an unexpected endpoint')
+            if server.get('enabled', True):
+                continue
+            # The old deployment saved exactly these fields after failed discovery.
+            # Leave disabled entries with operator-supplied options or filters alone.
+            if set(server) != {'url', 'headers', 'enabled'} or set(server['headers']) != {'Authorization'}:
+                continue
+            if '✓ Tools discovered:' not in run(cli + ['mcp', 'test', 't3']):
+                raise ValueError('Hermes could not discover venture T3 tools')
+        _root_write(state, pending.name, '', 0o600)
+        if server is None:
+            run(['docker', 'exec', '-i', '-u', '10000', 'nixos-hermes', 'sh', '-c',
+                 'printf "Y\\nY\\n" | hermes -p "$1" mcp add t3 --url "$2" --auth header',
+                 'register-t3', profile.name, endpoint])
+        else:
+            run(cli + ['config', 'set', '--force', key + '.enabled', 'true'])
+        if run(cli + ['config', 'get', '--json', key + '.enabled']) != 'true':
+            raise ValueError('Hermes did not enable the venture T3 registration')
+    return pending
 
 
 def confirm_t3_credential(state):
@@ -337,12 +363,14 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                 raise ValueError('A pilot listener is missing or is not exclusively loopback')
         run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nixos-hermes',
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
-        register_t3_for_leads(state, run)
-        if t3_credential(state):
+        credential_changed = t3_credential(state)
+        registration_pending = register_t3_for_leads(state, run)
+        if credential_changed or registration_pending.exists():
             # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
             run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
             run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
+            registration_pending.unlink(missing_ok=True)
         units(source, run)
         sync_os_skills(source, state)
         install_health_script(source, state)
