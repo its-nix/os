@@ -26,6 +26,14 @@ One-time registration in the LNX profile (after the first deployment):
 docker exec -u 10000 nixos-hermes hermes mcp add t3 --url http://127.0.0.1:3773/mcp --auth header
 ```
 
+Deployment registers T3 for registry-owned venture leads. To test a connection, substitute your profile name for `demo`:
+
+```bash
+docker exec -u 10000 nixos-hermes hermes -p demo mcp test t3
+```
+
+A successful test verifies MCP connectivity and tool discovery.
+
 ## Operator cockpit and provider logins
 
 ```bash
