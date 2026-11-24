@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
-import { authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt } from './reviewer.mjs';
+import { authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'gemini'];
 
@@ -9,9 +9,16 @@ test('builder is excluded from review via Builder line or co-author trailer', ()
   assert.deepEqual(authorsOf('Summary\n\nBuilder: codex', []), ['codex']);
   assert.deepEqual(authorsOf('', ['fix\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>']), ['claude']);
   assert.deepEqual(authorsOf('mentions claude in prose only', []), []);
+  assert.deepEqual(authorsOf('Builder: codex, grok, claude', []), []);  // cannot exclude competitors
+  assert.deepEqual(authorsOf('Builder: gptfoo-tool', []), []);           // no substring false positives
   for (const sha of ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]) {
     assert.ok(!reviewerOrder(sha, POOL, ['codex']).includes('codex'));
   }
+});
+
+test('selection depends on the secret seed', () => {
+  const orders = new Set(['s1', 's2', 's3', 's4', 's5', 's6'].map((seed) => reviewerOrder('a'.repeat(40), POOL, [], seed)[0]));
+  assert.ok(orders.size > 1);
 });
 
 test('selection is stable per revision and spreads across revisions', () => {
@@ -27,9 +34,17 @@ test('verdict parsing takes the last valid object and fails closed', () => {
   assert.equal(parseVerdict(echoed).verdict, 'REQUEST_CHANGES');
   assert.equal(parseVerdict('{"verdict":"APPROVE","summary":"ok {braces} \\"q\\"","findings":[]}').verdict, 'APPROVE');
   assert.equal(parseVerdict('I approve!'), null);
+  assert.equal(parseVerdict('{not json "verdict"'), null);                                        // terminates
+  assert.equal(parseVerdict('{"verdict":"APPROVE","summary":"x","findings":[]} but also more prose'), null);
+  assert.equal(parseVerdict('{"verdict":"APPROVE","summary":"x"}'), null);                         // findings required
   assert.equal(decide(null).conclusion, 'failure');
   assert.equal(decide({ verdict: 'APPROVE', summary: '', findings: [{ severity: 'blocking' }] }).conclusion, 'failure');
   assert.equal(decide({ verdict: 'APPROVE', summary: 'fine', findings: [{ severity: 'non-blocking' }] }).conclusion, 'success');
+});
+
+test('credentials never reach a published summary', () => {
+  const out = redact('key -----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY----- tok ghp_' + 'a'.repeat(36) + ' ok');
+  assert.ok(!out.includes('BEGIN RSA') && !out.includes('ghp_') && out.endsWith('ok'));
 });
 
 test('untrusted PR text is escaped in the prompt', () => {
@@ -56,7 +71,8 @@ function fakeApi(state) {
     return {};
   };
 }
-const PR = { number: 5, title: 't', body: 'Builder: codex', head: { sha: 'd'.repeat(40) } };
+const PR = { number: 5, title: 't', body: 'Builder: codex', draft: false, base: { ref: 'main' },
+  head: { sha: 'd'.repeat(40), repo: { full_name: 'its-nix/os' } } };
 const CFG = { repo: 'its-nix/os', appId: '1', pool: POOL, timeoutMs: 1000 };
 
 test('review falls back past unavailable providers, never uses the builder, and publishes a conclusion', async () => {
@@ -81,7 +97,22 @@ test('no available reviewer, moved head, or already-reviewed revision', async ()
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
     run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
   assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.title, /Head moved/);
-  state = { calls: [], existing: [{ status: 'completed' }] };
+  state = { calls: [], existing: [{ status: 'completed', output: { title: 'APPROVE by grok' } }] };
   assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(state) }), null);
   assert.ok(!state.calls.some(([m]) => m === 'POST'));
+});
+
+test('drafts are never claimed; stale runs are reused; infra failures are retried', async () => {
+  let state = { calls: [] };
+  assert.equal(await reviewOne(CFG, 't', { ...PR, draft: true }, { gh: fakeApi(state) }), null);
+  assert.equal(state.calls.length, 0);
+  const old = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
+  const ok = async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' });
+  state = { calls: [], headAfter: PR.head.sha, existing: [{ id: 9, status: 'in_progress', started_at: old }] };
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: ok });
+  assert.ok(!state.calls.some(([m]) => m === 'POST'));                       // no duplicate run
+  assert.ok(state.calls.some(([m, path]) => m === 'PATCH' && path.endsWith('/9')));
+  state = { calls: [], headAfter: PR.head.sha, existing: [{ status: 'completed', completed_at: old, output: { title: 'No reviewer available' } }] };
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: ok });
+  assert.ok(state.calls.some(([m]) => m === 'POST'));                        // retried
 });

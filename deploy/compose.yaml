@@ -72,8 +72,14 @@ services:
     stop_grace_period: 30s
     mem_limit: 1g
     pids_limit: 1024
+    # The orchestrator runs as root ONLY to hold the root-only App key and selection seed; it spawns
+    # every reviewer CLI as uid 10010 (the login user), which cannot read them.
+    user: '0:0'
     cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN]
     security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: true  # the T3 image's probe targets port 3773, which the reviewer never serves
     command: [node, /opt/reviewer/reviewer.mjs]
     env_file:
       - path: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/reviewer.env

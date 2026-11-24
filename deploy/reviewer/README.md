@@ -2,9 +2,11 @@
 
 `reviewer.mjs` produces the required `independent-review` check for every PR into `main`.
 
-- **Selection.** One reviewer per head SHA, chosen pseudo-randomly from the eligible subscription pool and seeded by the SHA, so reruns keep the same reviewer. The PR's builder is excluded: a `Builder: <provider>` line, which `skills/t3-delegate` requires, or a co-author trailer. An unavailable provider falls through to the next. If none answers, the check fails.
+- **Selection.** One reviewer per head SHA, chosen pseudo-randomly from the eligible subscription pool, keyed by the head SHA and a secret seed, so reruns keep the same reviewer and a builder cannot predict it. The PR's builder is excluded: a `Builder: <provider>` line, which `skills/t3-delegate` requires, or a co-author trailer. An unavailable provider falls through to the next. If none answers, the check fails.
 - **Isolation.** It runs in `nixos-reviewer`: the pinned T3 image, but its own container, network (`nixos-review`) and login home (`/srv/nix-clean/reviewer/home`). Builders in `nixos-t3` can't read its logins or its App key. No ports.
 - **Untrusted input.** It never checks out PR code. The diff comes from the compare API and goes to the CLI in an empty directory, with tools disabled or plan-only.
+- **Key isolation.** The orchestrator alone (root in the container, only SETUID/SETGID/CHOWN) reads the App key and the secret selection seed (`secrets/`, root 0400). Every reviewer CLI runs as uid 10010 and cannot read them. Published summaries are also redacted for anything token-shaped.
+- **Known limits.** The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes; any other failure needs a new commit.
 - **Unforgeable check.** It publishes as a dedicated GitHub App. The `main` ruleset requires the check from that App's id; builder tokens can't create check runs as the App.
 
 ## One-time setup (founder)
@@ -12,17 +14,18 @@
 1. **GitHub App** (Settings → Developer settings → GitHub Apps → New, owner `its-nix`): name it e.g. `nix-reviewer`. Disable the webhook. Permissions: **Checks: read & write**, **Pull requests: read**, **Contents: read**, Metadata: read. Install it on `its-nix/os` only, then generate a private key.
 2. **Key and id** on the VPS as root:
    ```bash
-   install -m 0440 -o root -g 10010 ~/nix-reviewer.private-key.pem /srv/nix-clean/reviewer/secrets/app.pem
+   install -m 0400 -o root -g root ~/nix-reviewer.private-key.pem /srv/nix-clean/reviewer/secrets/app.pem
    sed -i 's/^# REVIEW_APP_ID=.*/REVIEW_APP_ID=<app id>/' /srv/nix-clean/reviewer/reviewer.env
-   docker restart nixos-reviewer
+   # recreate (not restart) so the edited env file is read:
+   docker compose -p nixos --env-file /srv/nix-clean/deployment.env -f /opt/nix-clean-source/deploy/compose.yaml up -d reviewer
    ```
 3. **Subscription logins inside the reviewer**. These are separate from T3's, so a builder can never reuse a reviewer session.
    ```bash
-   docker exec -it nixos-reviewer claude                      # /login (Claude Pro)
-   docker exec -it nixos-reviewer codex login --device-auth   # ChatGPT Plus
-   docker exec -it nixos-reviewer opencode auth login         # OpenCode Go key, Extra Usage off
-   docker exec -it nixos-reviewer grok                        # SuperGrok sign-in
-   docker exec -it nixos-reviewer gemini                      # Google AI Pro sign-in (if supported headless)
+   docker exec -it -u t3 nixos-reviewer claude                      # /login (Claude Pro)
+   docker exec -it -u t3 nixos-reviewer codex login --device-auth   # ChatGPT Plus
+   docker exec -it -u t3 nixos-reviewer opencode auth login         # OpenCode Go key, Extra Usage off
+   docker exec -it -u t3 nixos-reviewer grok                        # SuperGrok sign-in
+   docker exec -it -u t3 nixos-reviewer gemini                      # Google AI Pro sign-in (if supported headless)
    ```
    A provider without a working login simply drops out of rotation. Set `OPENCODE_REVIEW_MODEL` in `reviewer.env` to pin the OpenCode model.
 4. **Ruleset** on `main` (empty bypass list):

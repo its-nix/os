@@ -107,7 +107,7 @@ def ensure_reviewer_state(source, state):
     reviewer script. The App private key is founder-provided in reviewer/secrets/app.pem."""
     root = state / 'reviewer'
     for path, owner, mode in ((root, (ROOT_UID, ROOT_GID), 0o755), (root / 'home', (T3_UID, T3_GID), 0o700),
-                              (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, T3_GID), 0o750)):
+                              (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, ROOT_GID), 0o700)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ValueError('Reviewer state path is not a plain directory')
         if not path.exists():
@@ -115,6 +115,9 @@ def ensure_reviewer_state(source, state):
             os.chown(path, *owner)
     if not (root / 'reviewer.env').exists():
         _root_write(root, 'reviewer.env', REVIEWER_ENV_TEMPLATE, 0o644)
+    if not (root / 'secrets' / 'seed').exists():
+        import secrets as _secrets  # selection seed: a builder must not be able to predict its reviewer
+        _root_write(root / 'secrets', 'seed', _secrets.token_hex(32) + '\n', 0o400)
     _root_write(root / 'app', 'reviewer.mjs', (source / 'deploy/reviewer/reviewer.mjs').read_text(), 0o644)
 
 
