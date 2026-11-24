@@ -26,8 +26,8 @@ const NO_TOOLS_OPENCODE = JSON.stringify({ tools: Object.fromEntries(
   ['bash', 'edit', 'write', 'read', 'grep', 'glob', 'list', 'patch', 'todowrite', 'todoread', 'webfetch', 'websearch', 'task']
     .map((t) => [t, false])), mcp: {} });
 export const PROVIDERS = {
-  claude: (prompt) => ['claude', ['-p', prompt, '--max-turns', '1', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-    '--disallowedTools', 'Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Glob,Grep,LS,Task,WebFetch,WebSearch,TodoWrite']],
+  // --tools "" = no built-in tools at all; empty strict MCP config = no MCP tools.
+  claude: (prompt) => ['claude', ['-p', prompt, '--tools', '', '--max-turns', '1', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']],
   codex: (prompt) => ['codex', ['exec', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', prompt]],
   opencode: (prompt) => ['opencode', ['run', ...(process.env.OPENCODE_REVIEW_MODEL ? ['-m', process.env.OPENCODE_REVIEW_MODEL] : []), prompt],
     { OPENCODE_CONFIG_CONTENT: NO_TOOLS_OPENCODE }],
