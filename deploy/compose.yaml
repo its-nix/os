@@ -76,7 +76,7 @@ services:
     # every reviewer CLI as uid 10010 (the login user), which cannot read them.
     user: '0:0'
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, CHOWN]
+    cap_add: [SETUID, SETGID, CHOWN, KILL]  # KILL: stop a timed-out CLI running as another uid
     security_opt: [no-new-privileges:true]
     healthcheck:
       disable: true  # the T3 image's probe targets port 3773, which the reviewer never serves

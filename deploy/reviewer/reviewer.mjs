@@ -11,7 +11,7 @@
 
 import { createHmac, createSign } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { chownSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, chownSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -175,13 +175,17 @@ const CLI_UID = Number(process.env.REVIEW_CLI_UID || 10010);
 function run(cmd, args, timeoutMs, extraEnv = {}) {
   return new Promise((resolve) => {
     const cwd = mkdtempSync(join(tmpdir(), 'review-'));  // empty dir: nothing for a tool to touch
+    // The spawn chdirs into cwd before dropping to CLI_UID, and root here has no DAC_READ_SEARCH:
+    // without the search bit for others, every spawn fails with EACCES.
+    chmodSync(cwd, 0o711);
     chownSync(cwd, CLI_UID, CLI_UID);
     const env = { PATH: process.env.PATH, HOME: '/var/lib/t3', LANG: 'C.UTF-8', NO_COLOR: '1', ...extraEnv };
     // The orchestrator holds the App key (root-only); reviewer CLIs run as the login user, which
     // cannot read it or the selection seed.
-    execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env,
+    const child = execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env,
       ...(process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : {}) },
     (err, stdout) => { cleanup(cwd); resolve({ ok: !err, out: stdout || '' }); });
+    child.stdin?.end();  // codex exec (and others) read stdin until EOF when it is not a TTY
   });
 }
 
