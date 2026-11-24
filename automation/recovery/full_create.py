@@ -27,7 +27,7 @@ spec = importlib.util.spec_from_file_location('full_restore', HERE / 'full_resto
 state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
-CONTAINERS = ['nixos-hermes', 'nixos-t3']  # Paperclip retired: archived state only
+CONTAINERS = ['nixos-hermes', 'nixos-t3', 'nixos-reviewer']  # Paperclip retired: archived state only
 # Optional CRM: stopped app-first, started database-first.
 CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
 # Probe image for a restored Twenty database, independent of whether the profile is active now
@@ -216,9 +216,9 @@ def deployment_model(root, versions, deployed_source):
     model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
-    for name in ('hermes', 't3'):
+    for name in ('hermes', 't3', 'reviewer'):
         actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
-        expected = versions[name].get('image') or model['services'][name]['image']  # t3: pinned local build
+        expected = versions.get(name, {}).get('image') or model['services'][name]['image']  # t3/reviewer: local build
         if actual['Config']['Image'] != expected:
             raise Refusal('Running runtime differs from the immutable OS image pins')
         environment = dict(row.split('=', 1) for row in actual['Config']['Env'] if '=' in row)

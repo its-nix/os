@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('deployment', ROOT / 'scripts/deploy-os.py')
 deployment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deployment)
-deployment.T3_UID, deployment.T3_GID = os.getuid(), os.getgid()  # tests run unprivileged; production chowns to the T3 service user
+deployment.T3_UID, deployment.T3_GID = os.getuid(), os.getgid()
+deployment.ROOT_UID, deployment.ROOT_GID = os.getuid(), os.getgid()  # tests run unprivileged; production chowns to the T3 service user
 
 
 _real_apply = deployment.apply
@@ -45,6 +46,8 @@ class DeploymentTests(unittest.TestCase):
                 name = argv[-1].removeprefix('nixos-')
                 if name == 't3':
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' healthy'
+                if name == 'reviewer':
+                    return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' running'
                 return images[name]['image'] + ' healthy'
             if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
                 return '{"url": "http://127.0.0.1:3773/mcp", "enabled": true}'
@@ -345,6 +348,22 @@ class DeploymentTests(unittest.TestCase):
             self.assertFalse(any(c[:2] == ['docker', 'rm'] or 'down' in c for c in calls))
             self.assertEqual('history', (state / 'paperclip/archived.db').read_text())
         self.assertNotIn('paperclip:', (ROOT / 'deploy/compose.yaml').read_text())
+
+    def test_reviewer_state_script_and_isolation(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            apply('8' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
+            root = state / 'reviewer'
+            self.assertEqual((ROOT / 'deploy/reviewer/reviewer.mjs').read_text(), (root / 'app/reviewer.mjs').read_text())
+            self.assertIn('REVIEW_POOL=', (root / 'reviewer.env').read_text())
+            (root / 'reviewer.env').write_text('REVIEW_APP_ID=42\n')
+            apply('9' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
+            self.assertEqual('REVIEW_APP_ID=42\n', (root / 'reviewer.env').read_text())  # settings never overwritten
+        reviewer = (ROOT / 'deploy/compose.yaml').read_text().split('  reviewer:', 1)[1].split('\n  # Optional CRM', 1)[0]
+        for required in ('networks: [review]', 'cap_drop: [ALL]', 'read_only: true'):
+            self.assertIn(required, reviewer)
+        for forbidden in ('ports:', 'docker.sock', '/t3/home', 'network_mode'):
+            self.assertNotIn(forbidden, reviewer)
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):

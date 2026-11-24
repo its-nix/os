@@ -8,14 +8,13 @@ Path: branch → PR with the original acceptance criteria → required checks �
 
 The `main` ruleset requires:
 1. A pull request. No direct pushes and no force-pushes.
-2. Required check runs **from the GitHub Actions app**:
-   - `verify`: unit tests, Compose contract, repository verifier.
-   - `independent-review`: a different model reviews the diff against the description. It runs from `main`'s definition (`pull_request_target`), never executes PR code, refuses forks and fails closed when unconfigured.
-   Any write token can post a commit *status*, but only the Actions app produces these *check runs*, so a builder cannot forge them.
-3. Code-owner review for the root-policy paths above, with stale approvals dismissed and an empty bypass list. Checks must be up to date with `main`.
-4. Repository settings allow `pull_request_target` for this workflow. GitHub blocks it by default from 2026-12-02.
+2. Required check runs:
+   - `verify` **from the GitHub Actions app**: unit tests, Compose contract, repository verifier, reviewer tests.
+   - `independent-review` **from the Nix reviewer GitHub App**. It is produced by `deploy/reviewer/reviewer.mjs` on the VPS, in its own container with its own subscription logins, separate from T3 where builders run. For each PR head SHA it picks one reviewer, pseudo-randomly from the eligible pool (Claude, Codex, OpenCode, Grok, Gemini) and seeded by the SHA so reruns are stable. It excludes the builder, named by the PR's `Builder:` line or co-author trailers. Unavailable providers fall through to the next; if none answers, the check fails. The PR head is never checked out or executed; the diff comes from the API and goes to a reviewer CLI with tools disabled.
+   Builder tokens can't create check runs as that App, so they can't forge the check.
+3. Code-owner review for the root-policy paths above (including `deploy/reviewer/`), with stale approvals dismissed and an empty bypass list. Checks must be up to date with `main`.
 
-A same-named check from another workflow would also come from the Actions app. That is prevented because adding or changing workflow files requires the `workflow` permission, which builders don't hold, and because `.github/` is founder-owned. The reviewer judges exactly the event's base...head range, re-checks that the head did not move, and fails on drafts, forks, non-`main` bases, and incomplete, binary or oversized diffs. File modes are not visible in the reviewed diff, so mode-only effects rely on CI. Description edits during a review fail it. An edit *after* approval can change the stated criteria but never the merged code, because new code means a new head SHA and a new review. The description is advisory and the diff is authoritative. The model verdict judges code quality; enforcement comes from the ruleset and token permissions, not from the model.
+The reviewer reviews exactly the PR's base...head range, re-checks that the head did not move before publishing, and fails on drafts, forks, non-`main` bases, and incomplete, binary or oversized diffs. File modes are not visible in the reviewed diff, so mode-only effects rely on CI. The description is advisory and the diff is authoritative. The model verdict judges code quality; enforcement comes from the ruleset and token permissions, not from the model.
 
 Builders (T3 coding threads, venture leads) use a GitHub identity **without** admin, ruleset bypass or workflow-file permission. A red check blocks the merge. A builder may not edit the tests or metric that judge its own change; PRs that touch evaluation files fall under CODEOWNERS.
 

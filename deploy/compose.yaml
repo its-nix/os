@@ -60,6 +60,45 @@ services:
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/t3/work
         target: /work
         bind: {create_host_path: false}
+  reviewer:
+    # Rotating independent PR reviewer (deploy/reviewer/reviewer.mjs). Same pinned image as T3 but a
+    # separate container, network and login home: builders running in T3 cannot reach its logins
+    # or its GitHub App key. No ports; outbound only.
+    container_name: nixos-reviewer
+    image: nixos-t3:${T3_BUILD_TAG:?Prepare the pinned deployment environment first}
+    pull_policy: never
+    networks: [review]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 1g
+    pids_limit: 1024
+    # The orchestrator runs as root ONLY to hold the root-only App key and selection seed; it spawns
+    # every reviewer CLI as uid 10010 (the login user), which cannot read them.
+    user: '0:0'
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      disable: true  # the T3 image's probe targets port 3773, which the reviewer never serves
+    command: [node, /opt/reviewer/reviewer.mjs]
+    env_file:
+      - path: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/reviewer.env
+        required: false  # absent => no App id => the reviewer idles and the gate stays closed
+    volumes:
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/home
+        target: /var/lib/t3
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/app
+        target: /opt/reviewer
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/secrets
+        target: /run/reviewer
+        read_only: true
+        bind: {create_host_path: false}
   # Optional CRM (PRD 7.2): started only when $NIX_CLEAN_ROOT/twenty/ENABLED exists, i.e. when a
   # venture actually needs one. One platform; ventures get their own workspaces.
   twenty-db:
@@ -158,5 +197,7 @@ services:
 networks:
   coding:
     name: nixos-coding
+  review:
+    name: nixos-review
   crm:
     name: nixos-crm
