@@ -37,13 +37,16 @@ test('verdict parsing takes the last valid object and fails closed', () => {
   assert.equal(parseVerdict('{not json "verdict"'), null);                                        // terminates
   assert.equal(parseVerdict('{"verdict":"APPROVE","summary":"x","findings":[]} but also more prose'), null);
   assert.equal(parseVerdict('{"verdict":"APPROVE","summary":"x"}'), null);                         // findings required
+  assert.equal(parseVerdict('{"verdict":"APPROVE","summary":"x","findings":[{"severity":"critical","file":"a","issue":"b"}]}'), null);
+  assert.equal(decide(parseVerdict('{"verdict":"APPROVE","summary":"x","findings":[{"severity":"BLOCKING","file":"a","issue":"b"}]}')).conclusion, 'failure');
   assert.equal(decide(null).conclusion, 'failure');
   assert.equal(decide({ verdict: 'APPROVE', summary: '', findings: [{ severity: 'blocking' }] }).conclusion, 'failure');
   assert.equal(decide({ verdict: 'APPROVE', summary: 'fine', findings: [{ severity: 'non-blocking' }] }).conclusion, 'success');
 });
 
 test('credentials never reach a published summary', () => {
-  const out = redact('key -----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY----- tok ghp_' + 'a'.repeat(36) + ' ok');
+  const pemLabel = ['RSA', 'PRIVATE', 'KEY'].join(' ');  // built at runtime: no key-shaped literal in the repo
+  const out = redact(`key -----BEGIN ${pemLabel}-----\nabc\n-----END ${pemLabel}----- tok ` + 'gh' + 'p_' + 'a'.repeat(36) + ' ok');
   assert.ok(!out.includes('BEGIN RSA') && !out.includes('ghp_') && out.endsWith('ok'));
 });
 
@@ -100,6 +103,15 @@ test('no available reviewer, moved head, or already-reviewed revision', async ()
   state = { calls: [], existing: [{ status: 'completed', output: { title: 'APPROVE by grok' } }] };
   assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(state) }), null);
   assert.ok(!state.calls.some(([m]) => m === 'POST'));
+});
+
+test('an oversized prompt is refused before any provider runs', async () => {
+  const state = { calls: [], headAfter: PR.head.sha };
+  let ran = false;
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: 'x'.repeat(130000), commits: [] }),
+    run: async () => { ran = true; return { ok: false, out: '' }; } });
+  assert.equal(ran, false);
+  assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.title, /Not reviewable/);
 });
 
 test('drafts are never claimed; stale runs are reused; infra failures are retried', async () => {

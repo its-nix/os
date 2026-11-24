@@ -6,7 +6,7 @@
 - **Isolation.** It runs in `nixos-reviewer`: the pinned T3 image, but its own container, network (`nixos-review`) and login home (`/srv/nix-clean/reviewer/home`). Builders in `nixos-t3` can't read its logins or its App key. No ports.
 - **Untrusted input.** It never checks out PR code. The diff comes from the compare API and goes to the CLI in an empty directory, with tools disabled or plan-only.
 - **Key isolation.** The orchestrator alone (root in the container, only SETUID/SETGID/CHOWN) reads the App key and the secret selection seed (`secrets/`, root 0400). Every reviewer CLI runs as uid 10010 and cannot read them. Published summaries are also redacted for anything token-shaped.
-- **Known limits.** The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes; any other failure needs a new commit.
+- **Known limits.** Reviewer CLIs can still read their own login home (Codex read-only, Gemini plan mode) but never the App key or seed; published text is redacted. Don't configure MCP servers in the reviewer home. PRs above about 100 KB of diff are refused for review and must be split. The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes; any other failure needs a new commit.
 - **Unforgeable check.** It publishes as a dedicated GitHub App. The `main` ruleset requires the check from that App's id; builder tokens can't create check runs as the App.
 
 ## One-time setup (founder)
@@ -38,4 +38,4 @@
 
 ## Operate
 
-`docker logs nixos-reviewer` shows one line per failure (never PR contents). Each check run's summary names the reviewer, the excluded builder and any providers skipped. To take a provider out of rotation, edit `REVIEW_POOL` in `reviewer.env` and restart the container.
+`docker logs nixos-reviewer` shows one line per failure (never PR contents). Each check run's summary names the reviewer, the excluded builder and any providers skipped. To take a provider out of rotation, edit `REVIEW_POOL` in `reviewer.env` and recreate the container with the same `docker compose … up -d reviewer` command as in step 2 (a plain restart keeps the old environment).

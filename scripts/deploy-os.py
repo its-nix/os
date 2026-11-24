@@ -118,7 +118,11 @@ def ensure_reviewer_state(source, state):
     if not (root / 'secrets' / 'seed').exists():
         import secrets as _secrets  # selection seed: a builder must not be able to predict its reviewer
         _root_write(root / 'secrets', 'seed', _secrets.token_hex(32) + '\n', 0o400)
-    _root_write(root / 'app', 'reviewer.mjs', (source / 'deploy/reviewer/reviewer.mjs').read_text(), 0o644)
+    script = (source / 'deploy/reviewer/reviewer.mjs').read_text()
+    current = root / 'app' / 'reviewer.mjs'
+    changed = not current.is_file() or current.read_text() != script
+    _root_write(root / 'app', 'reviewer.mjs', script, 0o644)
+    return changed  # a bind-mounted script change does not recreate the container by itself
 
 
 def _token_module():
@@ -352,7 +356,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
-        ensure_reviewer_state(source, state)
+        reviewer_changed = ensure_reviewer_state(source, state)
         candidate.chmod(0o600)
         crm = crm_enabled(state)
         if crm:
@@ -369,6 +373,8 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         run(compose + ['pull', '--ignore-buildable'])
         ensure_t3_image(source, run)
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
+        if reviewer_changed:  # the evaluator's new code must actually be the code that runs
+            run(compose + ['up', '--detach', '--no-deps', '--force-recreate', 'reviewer'])
         # Paperclip is retired (no work since 2026-11-23): stop, never remove; its state stays under
         # NIX_CLEAN_ROOT/paperclip and in every recovery image for rollback.
         if run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-paperclip$']).strip():

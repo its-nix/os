@@ -17,13 +17,15 @@ import { join } from 'node:path';
 
 export const CHECK = 'independent-review';
 const API = 'https://api.github.com';
-const MAX_PATCH_CHARS = 400_000;
+// Each CLI receives the prompt as ONE argv entry; Linux caps a single argument at 128 KiB.
+const MAX_PATCH_CHARS = 100_000;
+const MAX_PROMPT_BYTES = 120_000;
 const MAX_FILES = 250;
 const STALE_MS = 45 * 60 * 1000;
 
 // Headless invocations. Each returns the model's final text; the verdict JSON is parsed from it.
 const NO_TOOLS_OPENCODE = JSON.stringify({ tools: Object.fromEntries(
-  ['bash', 'edit', 'write', 'read', 'grep', 'glob', 'list', 'patch', 'todowrite', 'todoread', 'webfetch', 'websearch', 'task']
+  ['bash', 'edit', 'write', 'read', 'grep', 'glob', 'list', 'patch', 'todowrite', 'todoread', 'webfetch', 'websearch', 'task', 'skill']
     .map((t) => [t, false])), mcp: {} });
 export const PROVIDERS = {
   // --tools "" = no built-in tools at all; empty strict MCP config = no MCP tools.
@@ -85,7 +87,13 @@ export function parseVerdict(text) {
     try {
       const v = JSON.parse(candidate);
       if (!['APPROVE', 'REQUEST_CHANGES'].includes(v.verdict) || !Array.isArray(v.findings)) return null;
-      return { verdict: v.verdict, summary: String(v.summary ?? ''), findings: v.findings.filter((f) => f && typeof f === 'object') };
+      const findings = [];
+      for (const f of v.findings) {  // full schema: an unknown severity invalidates the whole verdict
+        const severity = String(f?.severity ?? '').toLowerCase();
+        if (!f || typeof f !== 'object' || !['blocking', 'non-blocking'].includes(severity)) return null;
+        findings.push({ severity, file: String(f.file ?? ''), issue: String(f.issue ?? '') });
+      }
+      return { verdict: v.verdict, summary: String(v.summary ?? ''), findings };
     } catch { return null; }
   }
   return null;
@@ -213,8 +221,10 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const excluded = authorsOf(pr.body, data.commits);
   const order = reviewerOrder(pr.head.sha, cfg.pool, excluded, cfg.seed || '');
   const attempts = [];
+  const prompt = buildPrompt(pr, data.diff);
+  if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) return finish('failure', 'Not reviewable', 'PR text plus diff too large to review in one pass; split the PR.');
   for (const provider of order) {
-    const [cmd, args, env] = PROVIDERS[provider](buildPrompt(pr, data.diff));
+    const [cmd, args, env] = PROVIDERS[provider](prompt);
     const result = await exec(cmd, args, cfg.timeoutMs, env);
     const verdict = result.ok ? parseVerdict(result.out) : null;
     if (!verdict) { attempts.push(`${provider}: unavailable or no valid verdict`); continue; }
