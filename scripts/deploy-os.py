@@ -94,6 +94,30 @@ def ensure_t3_state(state):
             os.chown(path, T3_UID, T3_GID)
 
 
+ROOT_UID = ROOT_GID = 0
+REVIEWER_ENV_TEMPLATE = '''# Rotating independent reviewer (non-secret settings). Secrets: reviewer/secrets/app.pem.
+# REVIEW_APP_ID=<GitHub App id>
+REVIEW_POOL=claude,codex,opencode,grok,gemini
+# OPENCODE_REVIEW_MODEL=opencode-go/<model>
+'''
+
+
+def ensure_reviewer_state(source, state):
+    """Reviewer state dirs (new ones only), non-secret settings template, and the deployment-owned
+    reviewer script. The App private key is founder-provided in reviewer/secrets/app.pem."""
+    root = state / 'reviewer'
+    for path, owner, mode in ((root, (ROOT_UID, ROOT_GID), 0o755), (root / 'home', (T3_UID, T3_GID), 0o700),
+                              (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, T3_GID), 0o750)):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('Reviewer state path is not a plain directory')
+        if not path.exists():
+            path.mkdir(mode=mode)
+            os.chown(path, *owner)
+    if not (root / 'reviewer.env').exists():
+        _root_write(root, 'reviewer.env', REVIEWER_ENV_TEMPLATE, 0o644)
+    _root_write(root / 'app', 'reviewer.mjs', (source / 'deploy/reviewer/reviewer.mjs').read_text(), 0o644)
+
+
 def _token_module():
     spec = importlib.util.spec_from_file_location('hermes_token', Path(__file__).resolve().parents[1] / 'deploy/t3/hermes_token.py')
     module = importlib.util.module_from_spec(spec)
@@ -325,6 +349,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
+        ensure_reviewer_state(source, state)
         candidate.chmod(0o600)
         crm = crm_enabled(state)
         if crm:
@@ -353,6 +378,9 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-t3']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' healthy':
             raise ValueError('T3 image or health readback differs from the declared deployment')
+        if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Status}}', 'nixos-reviewer']) \
+                != 'nixos-t3:' + t3_build_tag(source) + ' running':
+            raise ValueError('Reviewer image or state readback differs from the declared deployment')
         if crm and run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', 'nixos-twenty-server']) != 'healthy':
             raise ValueError('Twenty CRM health readback failed')
         listeners = run(['ss', '-lntH']).splitlines()

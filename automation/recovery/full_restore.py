@@ -59,7 +59,8 @@ def safe_link(name, target):
 # Rebuildable content kept out of recovery images: T3 repositories/worktrees come back from
 # GitHub, and caches are regenerated. The directories themselves are preserved (empty).
 REBUILDABLE = ('t3/work/', 't3/home/.t3/worktrees/', 't3/home/.t3/caches/', 't3/home/.cache/', 't3/home/.npm/',
-               't3/home/.codex/tmp/', 't3/home/.codex/.tmp/')
+               't3/home/.codex/tmp/', 't3/home/.codex/.tmp/',
+               'reviewer/home/.cache/', 'reviewer/home/.npm/', 'reviewer/home/.codex/tmp/', 'reviewer/home/.codex/.tmp/')
 
 
 def durable_paths(root):
