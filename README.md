@@ -8,7 +8,7 @@ An always-on company operating system: one multi-profile Hermes runtime runs ven
 | --- | --- | --- |
 | Hermes runtime (one container, multi-profile, native Kanban/Cron) | **Running** | `nixos-hermes`, official pinned 0.23.0; profiles hot-added without restart |
 | Venture Factory + dynamic venture leads | **Running** | `skills/venture-factory`; live `demo` venture: lead profile, board, 2 loops, mission run by the lead autonomously |
-| T3 Code (Dockerized, 5 harnesses) | **Running** | `nixos-t3` (v0.1.11 + Claude Code, Codex, OpenCode, Gemini CLI, Grok); isolated network, no Docker socket or Hermes state |
+| T3 Code (Dockerized, 5 harnesses) | **Running** | `nixos-t3` (v0.1.11 + Claude Code, Codex, OpenCode, Antigravity CLI, Grok); isolated network, no Docker socket or Hermes state |
 | Hermes → T3 delegation (full access, worktree per task) | **Running** | T3 MCP registered in LNX (59 tools); credential renewed by deploy; `skills/t3-delegate` |
 | Harness logins inside T3 | Blocked: founder | Interactive provider logins (Todoist request) |
 | Daily private recovery (Hermes, Paperclip, T3) | **Running** | Daily 03:17 UTC; last verified publish 2026-11-23 ([runbook](docs/DOCKERHUB-RECOVERY.md)) |

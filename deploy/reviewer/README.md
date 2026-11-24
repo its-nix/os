@@ -6,7 +6,7 @@
 - **Isolation.** It runs in `nixos-reviewer`: the pinned T3 image, but its own container, network (`nixos-review`) and login home (`/srv/nix-clean/reviewer/home`). Builders in `nixos-t3` can't read its logins or its App key. No ports.
 - **Untrusted input.** It never checks out PR code. The diff comes from the compare API and goes to the CLI in an empty directory, with tools disabled or plan-only.
 - **Key isolation.** The orchestrator alone (root in the container, only SETUID/SETGID/CHOWN) reads the App key and the secret selection seed (`secrets/`, root 0400). Every reviewer CLI runs as uid 10010 and cannot read them. Published summaries are also redacted for anything token-shaped.
-- **Known limits.** Reviewer CLIs can still read their own login home (Codex read-only, Gemini plan mode) but never the App key or seed; published text is redacted. Don't configure MCP servers in the reviewer home. PRs above about 100 KB of diff are refused for review and must be split. The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes; any other failure needs a new commit.
+- **Known limits.** Reviewer CLIs can still read their own login home (Codex read-only, Antigravity plan mode) but never the App key or seed; published text is redacted. Don't configure MCP servers in the reviewer home. PRs above about 100 KB of diff are refused for review and must be split. The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes; any other failure needs a new commit.
 - **Unforgeable check.** It publishes as a dedicated GitHub App. The `main` ruleset requires the check from that App's id; builder tokens can't create check runs as the App.
 
 ## One-time setup (founder)
@@ -25,7 +25,7 @@
    docker exec -it -u t3 nixos-reviewer codex login --device-auth   # ChatGPT Plus
    docker exec -it -u t3 nixos-reviewer opencode auth login         # OpenCode Go key, Extra Usage off
    docker exec -it -u t3 nixos-reviewer grok                        # SuperGrok sign-in
-   docker exec -it -u t3 nixos-reviewer gemini                      # Google AI Pro sign-in (if supported headless)
+   docker exec -it -u t3 nixos-reviewer agy                         # Google AI Pro: open the printed URL, paste the code back
    ```
    A provider without a working login simply drops out of rotation. Set `OPENCODE_REVIEW_MODEL` in `reviewer.env` to pin the OpenCode model.
 4. **Ruleset** on `main` (empty bypass list):

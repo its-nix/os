@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact } from './reviewer.mjs';
 
-const POOL = ['claude', 'codex', 'opencode', 'grok', 'gemini'];
+const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
 
 test('builder is excluded from review via Builder line or co-author trailer', () => {
   assert.deepEqual(authorsOf('Summary\n\nBuilder: codex', []), ['codex']);
@@ -127,4 +127,10 @@ test('drafts are never claimed; stale runs are reused; infra failures are retrie
   state = { calls: [], headAfter: PR.head.sha, existing: [{ status: 'completed', completed_at: old, output: { title: 'No reviewer available' } }] };
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: ok });
   assert.ok(state.calls.some(([m]) => m === 'POST'));                        // retried
+});
+
+test('pool maps the legacy gemini name to antigravity and drops unknowns', async () => {
+  const { parsePool } = await import('./reviewer.mjs');
+  assert.deepEqual(parsePool('claude,gemini,nope,antigravity'), ['claude', 'antigravity']);
+  assert.deepEqual(parsePool(''), ['claude', 'codex', 'opencode', 'grok', 'antigravity']);
 });
