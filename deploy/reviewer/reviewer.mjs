@@ -10,7 +10,7 @@
 // diff is read through the API and handed to a reviewer CLI with tools disabled.
 
 import { createHmac, createSign } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { chownSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -176,8 +176,16 @@ function run(cmd, args, timeoutMs, extraEnv = {}) {
     // cannot read it or the selection seed.
     execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env,
       ...(process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : {}) },
-    (err, stdout) => { rmSync(cwd, { recursive: true, force: true }); resolve({ ok: !err, out: stdout || '' }); });
+    (err, stdout) => { cleanup(cwd); resolve({ ok: !err, out: stdout || '' }); });
   });
+}
+
+// Root here has no DAC_OVERRIDE/FOWNER, so it cannot remove a directory the CLI user owns in
+// sticky /tmp. The owner removes it instead. Cleanup never throws: a leftover empty temp dir must
+// not crash the gate.
+function cleanup(dir) {
+  try { rmSync(dir, { recursive: true, force: true }); return; } catch {}
+  try { execFileSync('rm', ['-rf', '--', dir], { uid: CLI_UID, gid: CLI_UID, stdio: 'ignore' }); } catch {}
 }
 
 async function collect(repo, token, pr) {
