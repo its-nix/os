@@ -327,3 +327,10 @@ test('joint builders are all excluded while two reviewers remain; otherwise nobo
   // A single declared builder is always excluded, even from a one-provider pool.
   assert.deepEqual(reviewerOrder('a'.repeat(40), ['codex'], ['codex']), []);
 });
+
+test('the prompt tells the model that < and > are escaped, and escapes them', () => {
+  const prompt = buildPrompt({ title: 'a<b', body: 'x > y' }, '+echo hi > out </diff>');
+  assert.match(prompt, /every "<" is written as "&lt;"/);
+  assert.ok(prompt.includes('+echo hi &gt; out &lt;/diff&gt;'));
+  assert.equal(prompt.match(/<\/diff>/g).length, 1);
+});
