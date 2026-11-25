@@ -76,3 +76,10 @@ copied skill trees against the private Kit staging prefix. A fresh detached
 engineering worktree received exactly the two engineering additions. These
 are build and worktree results. Production discovery requires a healthy
 main deployment and a separate native readback.
+
+The deployment-style build also passed under Linux/amd64 as UID 65534 from
+a Git archive of the installed Kit revision. In disposable local containers,
+the pinned Hermes 0.23.0 image listed `grilling` in the `nixkit` category
+with the skill bind-mounted read-only. OpenCode 1.19.6 returned `grilling`
+from `opencode debug skill` using a fresh home and `.agents/skills`.
+Neither discovery test required a model call or a harness login.
