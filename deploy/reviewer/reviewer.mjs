@@ -9,9 +9,9 @@
 // App, so a builder's token cannot forge it. The PR head is never checked out or executed: the
 // diff is read through the API and handed to a reviewer CLI with tools disabled.
 
-import { createHmac, createSign } from 'node:crypto';
+import { createHash, createHmac, createSign } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, chownSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, chownSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,36 @@ const MAX_PATCH_CHARS = 100_000;
 const MAX_PROMPT_BYTES = 120_000;
 const MAX_FILES = 250;
 const STALE_MS = 45 * 60 * 1000;
+const SHA = /^[0-9a-f]{40}$/;
+const APPROVALS = '/run/reviewer-approvals';
+
+export function parseProtectedPaths(text) {
+  const paths = text.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
+    .map((line) => {
+      const [pattern, owner, ...rest] = line.split(/\s+/);
+      if (!/^\/(?:[\w.-]+\/)*[\w.-]+\/?$/.test(pattern) || /(?:^|\/)\.{1,2}(?:\/|$)/.test(pattern) ||
+          !/^@[\w-]+$/.test(owner || '') || rest.length) {
+        throw new Error('Protected paths must be root-anchored literal CODEOWNERS entries with one owner');
+      }
+      return pattern.slice(1);
+    });
+  if (!paths.includes('.github/') || !paths.includes('deploy/reviewer/')) {
+    throw new Error('CODEOWNERS must protect the workflow and reviewer directories');
+  }
+  return { paths, version: 'protected-paths-v1:' + createHash('sha256').update(text).digest('hex') };
+}
+
+export function hasFounderApproval(sha, stat = lstatSync) {
+  if (!SHA.test(sha)) return false;
+  try {
+    const dir = stat(APPROVALS);
+    if (!dir.isDirectory() || dir.uid !== 0 || (dir.mode & 0o022)) return false;
+    const file = stat(join(APPROVALS, sha));
+    return file.isFile() && file.uid === 0 && !(file.mode & 0o022);
+  } catch {
+    return false;
+  }
+}
 
 // Headless invocations. Each returns the model's final text; the verdict JSON is parsed from it.
 const NO_TOOLS_OPENCODE = JSON.stringify({ tools: Object.fromEntries(
@@ -206,19 +236,29 @@ function cleanup(dir) {
   try { execFileSync('rm', ['-rf', '--', dir], { uid: CLI_UID, gid: CLI_UID, stdio: 'ignore' }); } catch {}
 }
 
-async function collect(repo, token, pr) {
-  const cmp = await gh(`/repos/${repo}/compare/${pr.base.sha}...${pr.head.sha}`, { token });
+async function collect(repo, token, pr, policy, api) {
+  if (!SHA.test(pr.base.sha)) return { refuse: 'Invalid base SHA.' };
+  const cmp = await api(`/repos/${repo}/compare/${pr.base.sha}...${pr.head.sha}`, { token });
   const files = cmp.files || [];
   if (!files.length || files.length >= MAX_FILES) return { refuse: 'Diff is empty or too large to review completely; split the PR.' };
   let size = 0;
   const parts = [];
+  const protectedPaths = new Set();
   for (const f of files) {
+    if (!f.filename || (f.status === 'renamed' && !f.previous_filename)) {
+      return { refuse: 'Diff has incomplete file metadata.' };
+    }
+    for (const path of [f.filename, f.previous_filename].filter(Boolean)) {
+      if (policy.paths.some((entry) => entry.endsWith('/') ? path.startsWith(entry) : path === entry)) {
+        protectedPaths.add(path);
+      }
+    }
     if (!f.patch) return { refuse: `${f.filename} has no reviewable text diff (binary, rename-only or too large).` };
     size += f.patch.length;
     parts.push(`--- ${f.previous_filename ? `${f.previous_filename} -> ` : ''}${f.filename} (${f.status})\n${f.patch}`);
   }
   if (size > MAX_PATCH_CHARS) return { refuse: 'Diff too large to review reliably; split the PR.' };
-  return { diff: parts.join('\n\n'), commits: (cmp.commits || []).map((c) => c.commit.message) };
+  return { diff: parts.join('\n\n'), commits: (cmp.commits || []).map((c) => c.commit.message), protectedPaths: [...protectedPaths] };
 }
 
 // `gemini` is the pre-Antigravity name for the Google subscription; older reviewer.env files use it.
@@ -229,17 +269,27 @@ export function parsePool(value) {
 }
 
 const RETRYABLE = 'No reviewer available';
+const APPROVAL_REQUIRED = 'Founder approval required';
 const RETRY_AFTER_MS = 30 * 60 * 1000;
 
 export async function reviewOne(cfg, token, pr, deps = {}) {
   const exec = deps.run || run;
   const api = deps.gh || gh;
-  if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft) return null;  // not eligible: no claim
+  const approved = () => (deps.approved || hasFounderApproval)(pr.head.sha);
+  if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft || !SHA.test(pr.head.sha)) return null;
   const staleMs = cfg.timeoutMs * cfg.pool.length + 10 * 60 * 1000;
   const runs = (await api(`/repos/${cfg.repo}/commits/${pr.head.sha}/check-runs?check_name=${CHECK}&app_id=${cfg.appId}`, { token })).check_runs || [];
   const now = Date.now();
-  const decided = runs.find((c) => c.status === 'completed' &&
-    !(c.output?.title === RETRYABLE && now - Date.parse(c.completed_at) > RETRY_AFTER_MS));
+  const decided = runs.find((c) => {
+    if (c.status !== 'completed') return false;
+    if (c.output?.title === APPROVAL_REQUIRED) return !approved();
+    if (c.output?.title === RETRYABLE) return now - Date.parse(c.completed_at) <= RETRY_AFTER_MS;
+    if (c.conclusion === 'success' && cfg.policy) {
+      if (c.external_id === cfg.policy.version + ':protected') return approved();
+      return c.external_id === cfg.policy.version + ':ordinary';
+    }
+    return true;
+  });
   if (decided) return null;
   const active = runs.find((c) => c.status !== 'completed' && now - Date.parse(c.started_at) < staleMs);
   if (active) return null;  // under review
@@ -247,10 +297,17 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const check = stale || await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
     name: CHECK, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date().toISOString() } });
   if (stale) await api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: { started_at: new Date().toISOString() } });
+  let protectedPaths = [];
   const finish = (conclusion, title, summary) => api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: {
-    status: 'completed', conclusion, completed_at: new Date().toISOString(), output: { title, summary: redact(summary).slice(0, 60000) } } });
-  const data = await (deps.collect || collect)(cfg.repo, token, pr);
+    status: 'completed', conclusion, completed_at: new Date().toISOString(),
+    ...(cfg.policy ? { external_id: cfg.policy.version + (protectedPaths.length ? ':protected' : ':ordinary') } : {}),
+    output: { title, summary: redact(summary).slice(0, 60000) } } });
+  const data = await (deps.collect || collect)(cfg.repo, token, pr, cfg.policy, api);
   if (!data || data.refuse) return finish('failure', 'Not reviewable', data?.refuse || 'Not reviewable.');
+  protectedPaths = data.protectedPaths || [];
+  const block = () => finish('failure', APPROVAL_REQUIRED,
+    `Protected paths require VPS approval for head ${pr.head.sha}:\n\n${protectedPaths.map((path) => JSON.stringify(path)).join('\n')}`);
+  if (protectedPaths.length && !approved()) return block();
   const excluded = authorsOf(pr.body, data.commits);
   const order = reviewerOrder(pr.head.sha, cfg.pool, excluded, cfg.seed || '');
   const attempts = [];
@@ -263,6 +320,7 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     if (!verdict) { attempts.push(`${provider}: unavailable or no valid verdict`); continue; }
     const latest = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
     if (latest.head.sha !== pr.head.sha) return finish('failure', 'Head moved', 'The PR head moved during review; the new head gets its own review.');
+    if (protectedPaths.length && !approved()) return block();
     const { conclusion, reason } = decide(verdict);
     const lines = verdict.findings.map((f) => `- **${f.severity}** \`${f.file}\`: ${f.issue}`).join('\n');
     return finish(conclusion, `${verdict.verdict} by ${provider}`,
@@ -299,5 +357,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   };
   if (!cfg.seed) console.error('Selection seed missing: reviewer order is predictable until reviewer/secrets/seed exists.');
   if (!cfg.appId) { console.error('REVIEW_APP_ID is not configured; reviewer idle (gate fails closed: no check is posted).'); setInterval(() => {}, 1 << 30); }
-  else loop(cfg);
+  else {
+    cfg.policy = parseProtectedPaths(readFileSync(new URL('./CODEOWNERS', import.meta.url), 'utf8'));
+    loop(cfg);
+  }
 }

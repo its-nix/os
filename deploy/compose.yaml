@@ -99,6 +99,11 @@ services:
         target: /run/reviewer
         read_only: true
         bind: {create_host_path: false}
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/approvals
+        target: /run/reviewer-approvals
+        read_only: true
+        bind: {create_host_path: false}
   # Optional CRM (PRD 7.2): started only when $NIX_CLEAN_ROOT/twenty/ENABLED exists, i.e. when a
   # venture actually needs one. One platform; ventures get their own workspaces.
   twenty-db:

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
-import { authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact } from './reviewer.mjs';
+import { readFileSync } from 'node:fs';
+import { authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
+  hasFounderApproval, parseProtectedPaths } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
 
@@ -70,13 +72,80 @@ function fakeApi(state) {
     state.calls.push([method, path.split('?')[0], body]);
     if (path.includes('/check-runs?')) return { check_runs: state.existing || [] };
     if (method === 'POST') return { id: 7 };
+    if (path.includes('/compare/')) return { files: state.files, commits: [] };
     if (path.includes('/pulls/')) return { head: { sha: state.headAfter } };
     return {};
   };
 }
-const PR = { number: 5, title: 't', body: 'Builder: codex', draft: false, base: { ref: 'main' },
+const PR = { number: 5, title: 't', body: 'Builder: codex', draft: false, base: { ref: 'main', sha: 'c'.repeat(40) },
   head: { sha: 'd'.repeat(40), repo: { full_name: 'its-nix/os' } } };
 const CFG = { repo: 'its-nix/os', appId: '1', pool: POOL, timeoutMs: 1000 };
+
+test('the deployed policy accepts literal CODEOWNERS paths and rejects patterns', () => {
+  const text = readFileSync(new URL('../../.github/CODEOWNERS', import.meta.url), 'utf8');
+  const { paths } = parseProtectedPaths(text);
+  for (const path of ['.github/', 'tests/', 'scripts/verify.py', 'deploy/reviewer/']) assert.ok(paths.includes(path));
+  assert.throws(() => parseProtectedPaths(text + '\n/tests/*.py @owner'));
+  assert.throws(() => parseProtectedPaths(text + '\n/../other @owner'));
+  assert.throws(() => parseProtectedPaths('/tests/ @owner'));
+});
+
+test('approval accepts only an exact SHA and a root-owned regular file in a root-controlled directory', () => {
+  const dir = { isDirectory: () => true, uid: 0, mode: 0o700 };
+  const file = { isFile: () => true, uid: 0, mode: 0o400 };
+  const directory = '/run/reviewer-approvals';
+  const marker = `${directory}/${PR.head.sha}`;
+  const stat = (path) => ({ [directory]: dir, [marker]: file })[path];
+  assert.ok(hasFounderApproval(PR.head.sha, stat));
+  assert.equal(hasFounderApproval('e'.repeat(40), stat), false);
+  assert.equal(hasFounderApproval('../' + PR.head.sha, () => assert.fail('invalid SHA reached filesystem')), false);
+  assert.equal(hasFounderApproval(PR.head.sha, (p) => p === marker ? { ...file, isFile: () => false } : dir), false);
+  assert.equal(hasFounderApproval(PR.head.sha, (p) => p === marker ? { ...file, uid: 10010 } : dir), false);
+  assert.equal(hasFounderApproval(PR.head.sha, (p) => p === marker ? { ...file, mode: 0o420 } : dir), false);
+  assert.equal(hasFounderApproval(PR.head.sha, (p) => p === marker ? file : { ...dir, mode: 0o720 }), false);
+});
+
+test('protected path changes fail before model review and retry when the exact head is approved', async () => {
+  const policy = parseProtectedPaths(readFileSync(new URL('../../.github/CODEOWNERS', import.meta.url), 'utf8'));
+  const cfg = { ...CFG, policy };
+  const pr = { ...PR, body: 'Builder: codex\nFounder approved.' };
+  const state = { calls: [], headAfter: pr.head.sha, existing: [{ status: 'completed', conclusion: 'success' }],
+    files: [{ filename: 'moved.py', previous_filename: 'tests/test_before.py', status: 'renamed', patch: '+x' },
+      { filename: 'scripts/verify.py', status: 'removed', patch: '-x' }] };
+  let approvedSha = 'e'.repeat(40);
+  let modelCalls = 0;
+  const deps = { gh: fakeApi(state), approved: (sha) => sha === approvedSha,
+    run: async () => { modelCalls++; return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }; } };
+  await reviewOne(cfg, 't', pr, deps);
+  assert.equal(modelCalls, 0);
+  const blocked = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.equal(blocked.conclusion, 'failure');
+  assert.equal(blocked.output.title, 'Founder approval required');
+  assert.match(blocked.output.summary, /tests\/test_before.py/);
+  assert.match(blocked.output.summary, /scripts\/verify.py/);
+  state.existing = [blocked];
+  state.calls = [];
+  await reviewOne(cfg, 't', pr, deps);
+  assert.equal(state.calls.length, 1);  // wait for approval, with no duplicate check run
+  approvedSha = pr.head.sha;
+  await reviewOne(cfg, 't', pr, deps);
+  assert.equal(modelCalls, 1);
+  const success = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.equal(success.conclusion, 'success');
+  assert.equal(success.external_id, policy.version + ':protected');
+
+  state.existing = [success];
+  state.calls = [];
+  approvedSha = null;
+  await reviewOne(cfg, 't', pr, deps);
+  assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].conclusion, 'failure');
+
+  state.existing = [];
+  state.calls = [];
+  state.files = [{ filename: 'tests-extra/test.py', status: 'added', patch: '+x' }];
+  await reviewOne(cfg, 't', pr, deps);
+  assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].conclusion, 'success');
+});
 
 test('review falls back past unavailable providers, never uses the builder, and publishes a conclusion', async () => {
   const state = { calls: [], headAfter: PR.head.sha };

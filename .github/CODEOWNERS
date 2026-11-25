@@ -1,6 +1,8 @@
-# Founder-gated root authority: the evaluator, CI/deploy enforcement and ownership rules.
-# Everything else merges on independent AI review + required checks without a human.
+# Deployed reviewer policy. Use root-anchored literal files or directories ending in /.
+# GitHub can request reviews from this list. The reviewer App requires VPS approval.
 /.github/                       @Lior-Nis
+/.gitattributes                 @Lior-Nis
+/tests/                         @Lior-Nis
 /scripts/deploy-os.sh           @Lior-Nis
 /scripts/verify.py              @Lior-Nis
 # Code executed as root on the production host (deploy) or that restores production state.
@@ -10,5 +12,5 @@
 /automation/recovery/           @Lior-Nis
 # The evaluator: rotating independent reviewer and its tests.
 /deploy/reviewer/               @Lior-Nis
-/deploy/t3/Dockerfile           @Lior-Nis  # also the reviewer's runtime
+/deploy/t3/Dockerfile           @Lior-Nis
 /docs/AUTHORITY.md              @Lior-Nis
