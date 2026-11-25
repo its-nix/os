@@ -182,11 +182,22 @@ def disk_used_percent(path='/'):
     return -(-100 * used // visible) if visible else 100
 
 
+def compose_files(root, source):
+    """The files the deployment itself layers (scripts/deploy-os.py): the release's compose.yaml plus the
+    pinned NixKit mounts it generated into the state root. Every deployment since #100 requires the
+    override; without it Hermes/T3 would be described or recreated without their skill mounts, so a
+    missing override is a refusal, never a silent fallback to compose.yaml alone."""
+    packs = Path(root) / 'packs.compose.json'
+    if not packs.is_file() or packs.is_symlink():
+        raise Refusal('The deployment Compose override (NixKit mounts) is missing; redeploy before relying on recovery')
+    return ['-f', str(source / 'deploy/compose.yaml'), '-f', str(packs)]
+
+
 def recreate_missing(root=Path('/srv/nix-clean')):
     """Recreate deleted OS containers from the deployed release; existing ones are left alone."""
     source = Path('/opt/nix-clean-source').resolve()
     run(['docker', 'compose', '-p', 'nixos', '--env-file', str(root / 'deployment.env'),
-         '-f', str(source / 'deploy/compose.yaml'), *(['--profile', 'crm'] if crm_enabled(root) else []),
+         *compose_files(root, source), *(['--profile', 'crm'] if crm_enabled(root) else []),
          'up', '--detach', '--no-recreate'])
 
 
@@ -245,6 +256,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         names = containers(root)
+        compose_files(root, Path('/opt/nix-clean-source').resolve())  # required override present, before stopping
         used = disk_used_percent()
         if used >= DISK_LIMIT_PERCENT:
             raise Refusal(f'Disk is {used:.0f}% full; a cold capture needs it below {DISK_LIMIT_PERCENT}% '
@@ -270,7 +282,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
 def deployment_model(root, versions, deployed_source):
     env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes']['image'],
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
-    model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
+    model = json.loads(run(['docker', 'compose', *compose_files(root, deployed_source),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
     # Every running OS service is cross-checked against the compose model: image pin, and exactly
