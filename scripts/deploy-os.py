@@ -200,6 +200,7 @@ def register_t3_for_leads(state, run):
 HINDSIGHT_IMAGE = ('ghcr.io/vectorize-io/hindsight-api@sha256:'
                    'ef1a5ac515a7652fbff605277d44a39e7616e421503c61841189e63ef6db6705')
 HINDSIGHT_PLUGIN_SHA = 'f14cc1eb5624b0374cb4d82768eb2e0b9c21ae24'
+HINDSIGHT_PLUGIN_FILES = Path(__file__).resolve().parents[1] / 'deploy/hindsight/plugin-files.json'
 HINDSIGHT_URL = 'http://127.0.0.1:18888'
 HINDSIGHT_UID = HINDSIGHT_GID = 1000  # the image's unprivileged `hindsight` user
 HINDSIGHT_CATALOG = ('repo: https://github.com/vectorize-io/hindsight', 'sha: ' + HINDSIGHT_PLUGIN_SHA,
@@ -290,7 +291,8 @@ def hindsight_profile_config(profile, bank, api_key):
 def check_hindsight_config(config, bank, api_key):
     """An existing profile config must still be ours: loopback server, own bank, nothing shared."""
     if config.get('mode') != 'local_external' or config.get('api_url') != HINDSIGHT_URL \
-            or config.get('bank_id') != bank or config.get('api_key') != api_key:
+            or config.get('bank_id') != bank or config.get('api_key') != api_key \
+            or config.get('apiKey', api_key) != api_key:
         raise ValueError('A profile memory config points away from its own local Hindsight bank; reconcile it by hand')
     if any(config.get(key) for key in HINDSIGHT_CROSS_BANK_KEYS):
         raise ValueError('A profile memory config reaches other banks; reconcile it by hand')
@@ -322,6 +324,60 @@ def check_hindsight_catalog(run):
     lines |= {line.replace('"', '') for line in lines}
     if not all(expected in lines for expected in HINDSIGHT_CATALOG):
         raise ValueError('The Hermes catalog does not pin the reviewed Hindsight plugin; memory stays off')
+
+
+def check_installed_plugin(home):
+    plugin = home / 'plugins' / 'hindsight'
+    catalog = plugin / '.hermes-catalog.json'
+    if home.is_symlink() or plugin.parent.is_symlink() or plugin.is_symlink() or catalog.is_symlink() \
+            or not catalog.is_file() or json.loads(catalog.read_text()).get('sha') != HINDSIGHT_PLUGIN_SHA:
+        raise ValueError('Installed Hindsight plugin is not the reviewed commit')
+    # Generated from every tracked file in hindsight-integrations/hermes at HINDSIGHT_PLUGIN_SHA.
+    # The installer adds only its catalog sidecar. Extra code (including bytecode) also fails.
+    expected = json.loads(HINDSIGHT_PLUGIN_FILES.read_text())
+    if plugin_file_hashes(plugin) != expected:
+        raise ValueError('Installed Hindsight plugin contents differ from the reviewed revision')
+
+
+def plugin_file_hashes(plugin):
+    hashes = {}
+    for path in plugin.rglob('*'):
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            raise ValueError('Installed Hindsight plugin contains a non-regular entry')
+        if path.is_file() and path != plugin / '.hermes-catalog.json':
+            hashes[path.relative_to(plugin).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
+
+
+def preflight_memory(source, state, image, run):
+    hermes = state / 'hermes'
+    profiles = hermes / 'profiles'
+    banks = {home: bank for _, home, bank in memory_banks(state)}
+    if profiles.is_symlink() or os.path.lexists(hermes / '.hindsight/config.json'):
+        raise ValueError('Shared Hindsight config or linked profile directory')
+    homes = [hermes] + (sorted(profiles.iterdir()) if profiles.exists() else [])
+    probe = (source / 'deploy/hindsight/active_provider.py').read_text()
+    key = hindsight_api_key(state)
+    for home in homes:
+        if home.is_symlink():
+            raise ValueError('Cannot validate a linked Hermes profile')
+        if not home.is_dir():
+            continue
+        container_home = Path('/opt/data') / home.relative_to(hermes)
+        result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '10000', '--cap-drop', 'ALL',
+                      '--security-opt', 'no-new-privileges', '--env', f'HERMES_HOME={container_home}',
+                      '--mount', f'type=bind,source={hermes},target=/opt/data,readonly',
+                      '--entrypoint', '/opt/hermes/.venv/bin/python', image, '-I', '-c', probe])
+        provider, overrides = json.loads(result)
+        if overrides and (home in banks or provider == 'hindsight'):
+            raise ValueError('A profile .env sets HINDSIGHT_* values')
+        if provider != 'hindsight':
+            continue
+        path = home / 'hindsight/config.json'
+        if home not in banks or path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            raise ValueError('Invalid active Hindsight profile configuration')
+        check_hindsight_config(json.loads(path.read_text()), banks[home], key)
+        check_installed_plugin(home)
 
 
 def _write_in_hermes(hermes, parts, name, text, mode):
@@ -414,9 +470,7 @@ def configure_memory(state, run):
             _root_write(markers, enabling.name, '', 0o600)
             _root_write(state, pending.name, '', 0o600)
             run(cli + ['plugins', 'install', 'hindsight', '--ref', HINDSIGHT_PLUGIN_SHA, '--yes-deps', '--no-enable'])
-        if catalog.is_symlink() or not catalog.is_file() \
-                or json.loads(catalog.read_text()).get('sha') != HINDSIGHT_PLUGIN_SHA:
-            raise ValueError('Installed Hindsight plugin is not the reviewed commit; it stays disabled')
+        check_installed_plugin(home)
         if _config_value(run, cli, 'memory.provider') != 'hindsight':
             _root_write(state, pending.name, '', 0o600)
             run(cli + ['config', 'set', 'memory.provider', 'hindsight'])
@@ -806,7 +860,8 @@ def install_health_script(source, state):
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
           t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory,
-          login=install_hindsight_login, redaction=probe_hermes_redaction, personal=ensure_personal_profile):
+          login=install_hindsight_login, redaction=probe_hermes_redaction, personal=ensure_personal_profile,
+          memory_preflight=preflight_memory):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -853,6 +908,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                    '--file', str(source / 'deploy/compose.yaml'), '--file', str(state / 'packs.compose.json')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
+        memory_preflight(source, state, versions['hermes']['image'], run)
         redaction(source, versions['hermes']['image'], run)  # before up: a failure changes nothing running
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         if reviewer_changed:  # the evaluator's new code must actually be the code that runs
@@ -887,6 +943,14 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
         credential_changed = t3_credential(state)
         registration_pending = register_t3_for_leads(state, run)
+        try:
+            personal(source, state, run)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
+            # Additive and retried by every deployment: never block the company runtime on it. Only our
+            # own validation messages are printed; native command output and argv can hold role text.
+            detail = f': {exc}' if type(exc) is ValueError else ''
+            print('Personal profile provisioning failed; deployment continues and retries next run' + detail,
+                  file=sys.stderr)
         memory_pending = memory(state, run)
         if credential_changed or registration_pending.exists() or memory_pending.exists():
             # Hermes reads MCP_T3_API_KEY from its private .env at start (renewals are ~monthly), and
@@ -896,14 +960,6 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
             registration_pending.unlink(missing_ok=True)
             memory_pending.unlink(missing_ok=True)
-        try:
-            personal(source, state, run)
-        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
-            # Additive and retried by every deployment: never block the company runtime on it. Only our
-            # own validation messages are printed; native command output and argv can hold role text.
-            detail = f': {exc}' if type(exc) is ValueError else ''
-            print('Personal profile provisioning failed; deployment continues and retries next run' + detail,
-                  file=sys.stderr)
         units(source, run)
         login(source)
         sync_os_skills(source, state)

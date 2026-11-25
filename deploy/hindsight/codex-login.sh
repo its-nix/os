@@ -5,6 +5,10 @@
 # It uses the Codex CLI already pinned in the deployed T3 image (no new download), writes
 # auth.json as the Hindsight server's user into its state, then restarts that server so it loads it.
 set -eu
+# Deploy creates this root-owned lock. Linux flock permits an exclusive lock on a
+# read-only descriptor, so the operator can share it without write privileges.
+exec 9</run/lock/nix-os-deploy.lock
+flock -w 300 9 || { echo 'Deployment or recovery capture still running' >&2; exit 1; }
 image=$(docker inspect --format '{{.Config.Image}}' nixos-t3)
 docker inspect --format '{{.Name}}' nixos-hindsight >/dev/null
 docker run --rm -it --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \

@@ -16,16 +16,10 @@ Samples are assembled from fragments at runtime so this public file holds no cre
 literal. Nothing is printed except category names.
 """
 
-import ast
-import inspect
+from unittest.mock import Mock
 import sys
-import textwrap
 
 FILLER = 'A1b2C3d4E5f6G7h8J9k0L1m2N3p4Q5r6S7t8'
-# Every manager method that hands text to a provider must call the scrub.
-HAND_OFFS = ('sync_all', 'prefetch_all', 'queue_prefetch_all', 'handle_tool_call', 'on_memory_write',
-             'on_turn_start', 'on_session_end', 'on_pre_compress', 'on_delegation')
-SCRUBS = ('_redact_for_provider', '_redact_messages_for_egress')
 
 
 def samples():
@@ -44,48 +38,50 @@ def samples():
     }
 
 
-def calls_scrub(function):
-    """True when the function's code (not merely its docstring or a comment) calls a scrub."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            target = node.func
-            name = target.id if isinstance(target, ast.Name) else getattr(target, 'attr', None)
-            if name in SCRUBS:
-                return True
-    return False
-
-
-def check(redact, manager):
-    """Names of the failed checks; empty when every sample is masked and every hand-off scrubs."""
+def check(manager):
+    """Check the arguments actually delivered, including queued work and nested transcripts."""
+    provider = Mock()
+    provider.name = 'hindsight'
+    provider.get_tool_schemas.return_value = [{'name': 'probe_memory', 'parameters': {'type': 'object'}}]
+    provider.prefetch.return_value = provider.on_pre_compress.return_value = ''
+    provider.handle_tool_call.return_value = '{}'
+    manager.add_provider(provider)
     failures = []
-    for name, (text, secret) in samples().items():
-        try:
-            out = redact(text)
-        except Exception:
-            failures.append('raises: ' + name)
-            continue
-        if not isinstance(out, str) or secret in out:
-            failures.append('leaks: ' + name)
-    for method in HAND_OFFS:
-        try:
-            scrubbed = calls_scrub(getattr(manager, method))
-        except Exception:
-            failures.append('missing hand-off: ' + method)
-            continue
-        if not scrubbed:
-            failures.append('unscrubbed hand-off: ' + method)
+    for category, (text, secret) in samples().items():
+        messages = [{'role': 'user', 'content': text}]
+        provider.reset_mock()
+        manager.sync_all(text, text, messages=messages)
+        manager.prefetch_all(text)
+        manager.queue_prefetch_all(text)
+        manager.handle_tool_call('probe_memory', {'nested': [text]})
+        manager.on_memory_write('add', 'memory', text, metadata={'previous_content': text})
+        manager.on_turn_start(1, text)
+        manager.on_session_end(messages)
+        provider.pre_compress_checkpoint_api_version = 1
+        manager.on_pre_compress(messages)
+        provider.pre_compress_checkpoint_api_version = 2
+        manager.on_pre_compress([], evidence_messages=messages, require_checkpoint=True)
+        manager.on_delegation(text, text)
+        if not manager.flush_pending(timeout=10):
+            return ['timed out waiting for provider']
+        for hook in ('sync_turn', 'prefetch', 'queue_prefetch', 'handle_tool_call', 'on_memory_write',
+                     'on_turn_start', 'on_session_end', 'on_pre_compress', 'on_delegation'):
+            calls = getattr(provider, hook).call_args_list
+            if len(calls) != (2 if hook == 'on_pre_compress' else 1):
+                failures.append('missing delivery: ' + hook)
+            elif any(secret in repr(call) for call in calls):
+                failures.append('leaks: ' + hook + ' / ' + category)
     return failures
 
 
 def main():
     sys.path.insert(0, '/opt/hermes')
     try:
-        from agent.memory_manager import MemoryManager, _redact_for_provider
+        from agent.memory_manager import MemoryManager
     except Exception:
         print('redaction-probe: failed: Hermes memory scrub not importable')
         return
-    failures = check(_redact_for_provider, MemoryManager)
+    failures = check(MemoryManager())
     print('redaction-probe: ' + ('failed: ' + '; '.join(failures) if failures else 'ok'))
 
 

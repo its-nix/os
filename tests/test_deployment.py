@@ -33,6 +33,7 @@ def apply(*args, **kwargs):
     kwargs.setdefault('units', lambda source, run: False)
     kwargs.setdefault('memory', lambda state, run: state / '.hindsight-plugin-reload')  # see test_hindsight_memory
     kwargs.setdefault('login', lambda source: None)
+    kwargs.setdefault('memory_preflight', lambda source, state, image, run: None)
     kwargs.setdefault('redaction', lambda source, image, run: None)  # see test_hindsight_memory
     kwargs.setdefault('personal', lambda source, state, run: 'present')
     return _real_apply(*args, **kwargs)
@@ -134,6 +135,31 @@ class DeploymentTests(unittest.TestCase):
                     self.assertLess(probes[0], ups[0])
                 else:
                     self.assertEqual([], ups)  # nothing running was changed
+
+    def test_invalid_active_memory_refuses_before_compose_up(self):
+        for problem in ('wrong bank', 'missing plugin'):
+            with self.subTest(problem), tempfile.TemporaryDirectory() as td:
+                state = self.prepare_state(td)
+                deployment.ensure_hindsight_state(state)
+                config = state / 'hermes/hindsight/config.json'
+                config.parent.mkdir()
+                bank = 'personal' if problem == 'wrong bank' else 'lnx'
+                config.write_text(json.dumps(deployment.hindsight_profile_config(
+                    'default', bank, deployment.hindsight_api_key(state))))
+                calls = []
+                healthy = self.healthy_runner([])
+
+                def run(argv):
+                    calls.append(argv)
+                    if argv[:2] == ['docker', 'run'] and 'HERMES_HOME=/opt/data' in argv:
+                        self.assertIn('--network', argv)
+                        self.assertIn(f'type=bind,source={state}/hermes,target=/opt/data,readonly', argv)
+                        return '["hindsight", false]'
+                    return healthy(argv)
+                with self.assertRaisesRegex(ValueError, 'own local Hindsight bank|reviewed commit'):
+                    apply('b' * 40, ROOT, state, Path(td) / 'current', run=run,
+                          memory_preflight=deployment.preflight_memory)
+                self.assertFalse(any('up' in call or 'restart' in call for call in calls))
 
     def test_changed_native_inputs_refuse_before_running_commands(self):
         with tempfile.TemporaryDirectory() as td:

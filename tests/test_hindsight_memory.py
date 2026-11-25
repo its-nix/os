@@ -1,5 +1,6 @@
 """Hindsight memory (PRD 7.4): pinned local server, one bank per profile, never a shared or cloud bank."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('deployment_memory', ROOT / 'scripts/deploy-os.py')
@@ -53,6 +55,7 @@ class FakeHermes:
             plugin = self.home(profile) / 'plugins/hindsight'
             plugin.mkdir(parents=True)
             (plugin / '.hermes-catalog.json').write_text(json.dumps({'sha': self.sha}))
+            (plugin / '__init__.py').write_bytes(b'# reviewed fixture')
             if '--enable' in command:
                 self.providers[profile] = 'hindsight'
             return ''
@@ -73,6 +76,11 @@ class HindsightMemoryTests(unittest.TestCase):
         if 'demo' in profiles:
             (state / 'hermes/profiles/demo/nix-venture.json').write_text('{"venture": "demo"}')
         deployment.ensure_hindsight_state(state)
+        manifest = Path(td) / 'reviewed-files.json'
+        manifest.write_text(json.dumps({'__init__.py': hashlib.sha256(b'# reviewed fixture').hexdigest()}))
+        patched = patch.object(deployment, 'HINDSIGHT_PLUGIN_FILES', manifest)
+        patched.start()
+        self.addCleanup(patched.stop)
         return state
 
     def key(self, state):
@@ -147,6 +155,23 @@ class HindsightMemoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'reviewed commit'):  # never mistaken for `memory off`
                 deployment.configure_memory(state, again)
             self.assertEqual([], [c for c in again.calls if 'set' in c])
+
+    def test_changed_plugin_bytes_with_valid_catalog_refuse_activation(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.state(td, ())
+            hermes = FakeHermes(state, fail_set=True)
+            with self.assertRaises(subprocess.CalledProcessError):
+                deployment.configure_memory(state, hermes)
+            plugin = state / 'hermes/plugins/hindsight'
+            (plugin / '__init__.py').write_text('# changed after install')
+            retry = FakeHermes(state)
+            with self.assertRaisesRegex(ValueError, 'contents differ'):
+                deployment.configure_memory(state, retry)
+            self.assertFalse(any('set' in call for call in retry.calls))
+            (plugin / '__init__.py').write_bytes(b'# reviewed fixture')
+            (plugin / 'unexpected.pyc').write_bytes(b'extra')
+            with self.assertRaisesRegex(ValueError, 'contents differ'):
+                deployment.check_installed_plugin(state / 'hermes')
 
     def test_interrupted_activation_is_finished_not_mistaken_for_memory_off(self):
         with tempfile.TemporaryDirectory() as td:
@@ -276,6 +301,8 @@ class HindsightMemoryTests(unittest.TestCase):
     def test_founder_login_is_hindsights_own_codex_device_login(self):
         script = (ROOT / 'deploy/hindsight/codex-login.sh').read_text()
         self.assertIn("docker inspect --format '{{.Config.Image}}' nixos-t3", script)  # pinned codex, no new fetch
+        self.assertLess(script.index('exec 9</run/lock/nix-os-deploy.lock'), script.index('flock -w 300 9 ||'))
+        self.assertLess(script.index('flock -w 300 9 ||'), script.index('image=$(docker'))
         self.assertIn('login --device-auth', script)
         self.assertIn('cli_auth_credentials_store="file"', script)
         self.assertIn('source=/srv/nix-clean/hindsight/codex,target=/codex', script)
@@ -299,41 +326,29 @@ class HindsightMemoryTests(unittest.TestCase):
 class RedactionProbeTests(unittest.TestCase):
     """deploy/hindsight/redaction_probe.py runs inside the Hermes image before every rollout."""
 
-    class Manager:
-        def sync_all(self, user, assistant):
-            return _redact_for_provider(user, assistant)
-        prefetch_all = queue_prefetch_all = handle_tool_call = on_memory_write = sync_all
-        on_turn_start = on_delegation = on_pre_compress = sync_all
+    def test_probe_requires_delivery_and_checks_nested_arguments(self):
+        manager = Mock()
+        provider = None
 
-        def on_session_end(self, messages):
-            return _redact_messages_for_egress(messages)
+        def register(recording_provider):
+            nonlocal provider
+            provider = recording_provider
 
-    def test_a_scrub_that_masks_every_category_passes(self):
-        def mask(text):
-            for _, secret in probe.samples().values():
-                text = text.replace(secret, '[redacted]')
-            return text
-        self.assertEqual([], probe.check(mask, self.Manager))
-
-    def test_leaks_and_unscrubbed_hand_offs_fail(self):
-        failures = probe.check(lambda text: text, self.Manager)
-        self.assertEqual(len(probe.samples()), len(failures))
-        self.assertTrue(all(f.startswith('leaks: ') for f in failures))
-
-        class Unscrubbed(self.Manager):
-            def sync_all(self, user, assistant):
-                return user, assistant
-        self.assertIn('unscrubbed hand-off: sync_all', probe.check(lambda t: '[redacted]', Unscrubbed))
-
-        class DocstringOnly(self.Manager):
-            def sync_all(self, user, assistant):
-                """Goes through _redact_for_provider (it says)."""
-                return user, assistant  # _redact_for_provider(user)
-        self.assertIn('unscrubbed hand-off: sync_all', probe.check(lambda t: '[redacted]', DocstringOnly))
-
-        def broken(text):
-            raise RuntimeError
-        self.assertIn('raises: jwt', probe.check(broken, self.Manager))
+        manager.add_provider.side_effect = register
+        for source, destination in [('sync_all', 'sync_turn'), ('prefetch_all', 'prefetch'),
+                                    ('queue_prefetch_all', 'queue_prefetch'), ('handle_tool_call', 'handle_tool_call'),
+                                    ('on_memory_write', 'on_memory_write'), ('on_turn_start', 'on_turn_start'),
+                                    ('on_session_end', 'on_session_end'), ('on_pre_compress', 'on_pre_compress'),
+                                    ('on_delegation', 'on_delegation')]:
+            getattr(manager, source).side_effect = lambda *a, hook=destination, **k: getattr(provider, hook)('masked')
+        self.assertEqual([], probe.check(manager))
+        # Simulate masking one field but forwarding the original transcript, plus a skipped callback.
+        manager.sync_all.side_effect = lambda *a, **k: provider.sync_turn('masked', messages=k['messages'])
+        manager.prefetch_all.side_effect = None
+        failures = probe.check(manager)
+        self.assertIn('missing delivery: prefetch', failures)
+        for category in probe.samples():
+            self.assertIn('leaks: sync_turn / ' + category, failures)
 
     def test_probe_covers_common_credential_shapes_without_committing_any(self):
         self.assertGreaterEqual(set(probe.samples()), {'openai-style key', 'github token', 'aws access key',
@@ -361,14 +376,6 @@ class RedactionProbeTests(unittest.TestCase):
             argv = calls[0]
             self.assertEqual(['docker', 'run', '--rm', '--network', 'none', '--user', '10000'], argv[:7])
             self.assertEqual([image, '-c', (ROOT / 'deploy/hindsight/redaction_probe.py').read_text()], argv[-3:])
-
-
-def _redact_for_provider(*values):
-    return values
-
-
-def _redact_messages_for_egress(messages):
-    return messages
 
 
 if __name__ == '__main__':

@@ -64,7 +64,7 @@ What the setup does keep out:
 
 Hermes itself scrubs secrets before the plugin sees any text. In the pinned Hermes (0.23.0) the memory manager passes every provider hand-off through `_redact_for_provider`: turn sync, recall queries, tool arguments (`retain`/`recall`), built-in memory mirrors, session-end and pre-compress transcripts, and delegation results. That function uses Hermes's egress scrub (`redact_for_egress`), which is forced on regardless of `security.redact_secrets` and fails closed. A value it masks anywhere in a hand-off is then masked everywhere in that hand-off. The plugin has no other input. Its automatic capture (`sync_turn`) takes only the user and assistant text of a turn, already scrubbed, and it reads no transcripts or files of its own.
 
-The deploy proves this on every rollout. Before `compose up`, it runs [`redaction_probe.py`](redaction_probe.py) inside the Hermes image it is about to start, in a throwaway container with no network. The probe feeds synthetic credentials through the scrub: OpenAI-style, GitHub and AWS keys, a `Bearer` header, a JWT, a PEM private key, and `PASSWORD=` / `API_KEY=` lines in `.env` form. It also checks that every hand-off method calls the scrub. Unless it prints `redaction-probe: ok`, the deploy refuses and nothing running changes.
+The deploy proves this on every rollout. Before `compose up`, it runs [`redaction_probe.py`](redaction_probe.py) inside the Hermes image it is about to start, in a throwaway container with no network. The probe feeds synthetic credentials through the scrub: OpenAI-style, GitHub and AWS keys, a `Bearer` header, a JWT, a PEM private key, and `PASSWORD=` / `API_KEY=` lines in `.env` form. It registers a recording provider, exercises each hand-off, drains queued work, and checks every recorded payload for the sample secrets. Missing callbacks fail the probe. Unless it prints `redaction-probe: ok`, the deploy refuses and nothing running changes.
 
 Residual risk:
 
@@ -78,7 +78,7 @@ Residual risk:
 ssh -t -l nixos vps nix-hindsight-login
 ```
 
-The deploy installs [`codex-login.sh`](codex-login.sh) as `/usr/local/bin/nix-hindsight-login`. Approve the device code it prints. The script then:
+The deploy installs [`codex-login.sh`](codex-login.sh) as `/usr/local/bin/nix-hindsight-login`. It takes the deployment and recovery lock before sign-in and holds it through the model check. Approve the device code it prints. The script then:
 
 1. Runs the Codex CLI pinned in the deployed T3 image as the server's user.
 2. Stores `auth.json` in a file under `hindsight/codex`.
@@ -95,12 +95,12 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18888/v1/default/banks
 docker logs nixos-hindsight 2>&1 | grep -ci 'vectorize.io'                # 0
 ```
 
-Updating the plugin or the server is a reviewed PR that changes the pins. Plugin auto-update is off in Hermes. For a profile without the plugin, the deploy follows this order:
+Updating the plugin or the server is a reviewed PR that changes the pins. Plugin auto-update is off in Hermes. Before starting the gateway, the candidate image reads each profile’s provider with its home mounted read-only. Active Hindsight profiles must have a recognized bank, a valid config and the reviewed plugin bytes. For a profile without the plugin, the deploy follows this order:
 
 1. It checks that the Hermes image's catalog entry names the reviewed repository, commit and directory. On a mismatch it stops before writing, downloading or installing anything.
 2. It writes the profile's config.
 3. It installs the plugin **disabled** at that exact commit (`--ref <sha> --yes-deps --no-enable`).
-4. It checks the installed commit. On a mismatch it stops with the plugin disabled and the provider unset.
+4. It checks the catalog sidecar and compares every installed file against the SHA-256 manifest for the pinned upstream directory. On a mismatch it stops with the plugin disabled and the provider unset.
 5. Only then does it set `memory.provider`.
 
-A marker in the profile's `hindsight/` directory lets an interrupted run finish the activation rather than mistake it for `memory off`.
+A marker in the root-owned `hindsight-enable/` directory outside the Hermes home lets an interrupted run finish the activation rather than mistake it for `memory off`.
