@@ -77,6 +77,35 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual('none', argv[argv.index('--network') + 1])
         self.assertIn('SELECT', run.call_args.kwargs['input'])
 
+    def test_frozen_paperclip_db_is_opened_once_then_skipped_until_bytes_change(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            restored = Path(td) / 'state'
+            db = restored / 'paperclip/instances/default/db'
+            db.mkdir(parents=True)
+            (db / 'PG_VERSION').write_text('17\n')
+            validated = Path(td) / 'paperclip-validated.json'
+            with patch.object(module, 'postgres_check') as check:
+                self.assertTrue(module.paperclip_check('img@sha256:a', restored, validated))
+                self.assertFalse(module.paperclip_check('img@sha256:a', restored, validated))
+                self.assertEqual(1, check.call_count)
+                (db / 'PG_VERSION').write_text('18\n')
+                self.assertTrue(module.paperclip_check('img@sha256:a', restored, validated))
+                self.assertTrue(module.paperclip_check('img@sha256:b', restored, validated))
+                self.assertTrue(module.paperclip_check('img@sha256:b', restored))  # no record: always
+                self.assertEqual(4, check.call_count)
+
+    def test_failed_paperclip_check_records_nothing(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            restored = Path(td) / 'state'
+            (restored / 'paperclip').mkdir(parents=True)
+            validated = Path(td) / 'paperclip-validated.json'
+            with patch.object(module, 'postgres_check', side_effect=module.Refusal('bad')):
+                with self.assertRaises(module.Refusal):
+                    module.paperclip_check('img@sha256:a', restored, validated)
+            self.assertFalse(validated.exists())
+
     def test_public_destination_failure_preserves_previous_success_and_never_captures(self):
         module = self.module()
         class Hub:
