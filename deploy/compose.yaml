@@ -66,6 +66,13 @@ services:
     # daemon: that daemon would be fetched at runtime (uvx, torch stack) into Hermes's cgroup.
     # Extraction uses its OWN ChatGPT sign-in (hindsight/codex/auth.json, deploy/hindsight/README.md);
     # embeddings run locally (bge-small, baked into the image); reranking is rank fusion (no model).
+    # Threat model: banks separate Hermes profiles organizationally, NOT confidentially. All profiles
+    # run in nixos-hermes as one uid and can read each other's bank names and this server's API key,
+    # so any Hermes profile can address any bank, personal included; hard isolation needs a separate
+    # container and uid (out of scope). The API key keeps non-Hermes host processes out; T3 and the
+    # reviewer cannot reach this loopback-published port from their own bridge networks.
+    # Secrets: the pinned Hermes scrubs every memory hand-off before the plugin sees it (the deploy
+    # proves it with deploy/hindsight/redaction_probe.py); the retain mission below is a second layer.
     container_name: nixos-hindsight
     image: ghcr.io/vectorize-io/hindsight-api@sha256:ef1a5ac515a7652fbff605277d44a39e7616e421503c61841189e63ef6db6705  # 1.2.0
     networks: [memory]
@@ -81,12 +88,18 @@ services:
     # Writable home (database, the server's own Codex login) on the state mount; the embedding
     # model stays in the image's read-only cache, which is why HF_HOME keeps the image's home.
     command: [sh, -c, 'HF_HOME="$$HOME/.cache/huggingface" HOME=/var/lib/hindsight exec /app/start-all.sh']
+    env_file:
+      - path: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/hindsight.env
+        required: true  # HINDSIGHT_API_TENANT_API_KEY, generated once by the deploy (root-only file)
     environment:
       HINDSIGHT_API_HOST: 0.0.0.0  # inside its own network; published on host loopback only
       HINDSIGHT_API_PORT: '8888'
       HINDSIGHT_ENABLE_CP: 'false'
       HINDSIGHT_API_MCP_ENABLED: 'false'
       HINDSIGHT_API_ENABLE_BANK_CONFIG_API: 'false'  # missions below are reviewed config, not agent-editable
+      # Every bank call needs the key (/health does not); the plugin sends it from each profile's config.
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+      HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH: 'true'  # the founder sign-in's one model check (off by default: 404)
       HINDSIGHT_API_LLM_PROVIDER: openai-codex
       HINDSIGHT_API_LLM_MODEL: gpt-6-luna
       HINDSIGHT_API_LLM_CODEX_HOME: /var/lib/hindsight/codex

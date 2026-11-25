@@ -24,6 +24,7 @@ def apply(*args, **kwargs):
     kwargs.setdefault('units', lambda source, run: False)
     kwargs.setdefault('memory', lambda state, run: state / '.hindsight-plugin-reload')  # see test_hindsight_memory
     kwargs.setdefault('login', lambda source: None)
+    kwargs.setdefault('redaction', lambda source, image, run: None)  # see test_hindsight_memory
     return _real_apply(*args, **kwargs)
 
 
@@ -94,6 +95,34 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual('Learning must survive failed deployment', (state / 'hermes/memory.md').read_text())
             self.assertTrue(any('unittest' in call for call in calls))
             self.assertFalse(any('down' in call or '--volumes' in call for call in calls))
+
+    def test_memory_redaction_probe_runs_on_the_new_hermes_image_before_anything_starts(self):
+        image = json.loads((ROOT / 'deploy/versions.json').read_text())['hermes']['image']
+        for verdict in ('redaction-probe: ok', 'redaction-probe: failed: leaks: jwt', ''):
+            with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as td:
+                state = self.prepare_state(td)
+                calls, healthy = [], self.healthy_runner([])
+
+                def run(argv):
+                    calls.append(argv)
+                    if argv[:2] == ['docker', 'run'] and '--network' in argv:
+                        return verdict
+                    return healthy(argv)
+                probe = lambda source, img, runner: deployment.probe_hermes_redaction(source, img, runner)
+                if verdict.endswith(': ok'):
+                    apply('b' * 40, ROOT, state, Path(td) / 'current', run=run, redaction=probe)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'scrub secrets'):
+                        apply('b' * 40, ROOT, state, Path(td) / 'current', run=run, redaction=probe)
+                probes = [i for i, c in enumerate(calls) if c[:2] == ['docker', 'run'] and '--network' in c]
+                self.assertEqual(1, len(probes))
+                self.assertIn(image, calls[probes[0]])
+                self.assertEqual(['none'], [calls[probes[0]][calls[probes[0]].index('--network') + 1]])
+                ups = [i for i, c in enumerate(calls) if 'up' in c and c[:2] == ['docker', 'compose']]
+                if verdict.endswith(': ok'):
+                    self.assertLess(probes[0], ups[0])
+                else:
+                    self.assertEqual([], ups)  # nothing running was changed
 
     def test_changed_native_inputs_refuse_before_running_commands(self):
         with tempfile.TemporaryDirectory() as td:

@@ -23,7 +23,13 @@ until [ "$(docker inspect --format '{{.State.Health.Status}}' nixos-hindsight)" 
     sleep 5
 done
 # One real extraction-model call through the new login (status only; no model or token is printed).
-result=$(curl -fsS -X POST http://127.0.0.1:18888/v1/default/banks/lnx/health/llm || true)
+# Made inside the server's container with its own API key, so the key never appears in a host argv.
+result=$(docker exec nixos-hindsight /app/api/.venv/bin/python -c '
+import os, urllib.request
+request = urllib.request.Request("http://127.0.0.1:8888/v1/default/banks/lnx/health/llm", method="POST",
+    headers={"Authorization": "Bearer " + os.environ["HINDSIGHT_API_TENANT_API_KEY"]})
+print(urllib.request.urlopen(request, timeout=120).read().decode())
+' 2>/dev/null || true)
 case "$result" in
     *'"ok":true'*) case "$result" in *'"ok":false'*) ;; *) echo 'Hindsight is signed in and its model answered.'; exit 0;; esac;;
 esac
