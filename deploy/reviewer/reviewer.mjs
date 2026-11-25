@@ -24,14 +24,10 @@ const MAX_FILES = 250;
 const STALE_MS = 45 * 60 * 1000;
 const SHA = /^[0-9a-f]{40}$/;
 const APPROVALS = '/run/reviewer-approvals';
-// New files here cannot weaken an existing check; modifying, renaming or deleting one needs approval.
-const ADDITIONS_ALLOWED = ['tests/'];
-
+// Any change under a protected path needs approval, additions included: a new test module can
+// still alter discovery or patch the runner.
 export function isProtectedChange(policy, f) {
   const hit = (path) => policy.paths.some((entry) => entry.endsWith('/') ? path.startsWith(entry) : path === entry);
-  if (f.status === 'added' && !f.previous_filename && ADDITIONS_ALLOWED.some((dir) => f.filename.startsWith(dir))) {
-    return false;
-  }
   return [f.filename, f.previous_filename].filter(Boolean).some(hit);
 }
 
@@ -293,8 +289,9 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     if (c.output?.title === APPROVAL_REQUIRED) return !approved();
     if (c.output?.title === RETRYABLE) return now - Date.parse(c.completed_at) <= RETRY_AFTER_MS;
     if (c.conclusion === 'success' && cfg.policy) {
-      if (c.external_id === cfg.policy.version + ':protected') return approved();
-      return c.external_id === cfg.policy.version + ':ordinary';
+      // A verdict covers one exact base...head diff: a moved base invalidates it.
+      if (c.external_id === `${cfg.policy.version}:protected:${pr.base.sha}`) return approved();
+      return c.external_id === `${cfg.policy.version}:ordinary:${pr.base.sha}`;
     }
     return true;
   });
@@ -308,7 +305,7 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   let protectedPaths = [];
   const finish = (conclusion, title, summary) => api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: {
     status: 'completed', conclusion, completed_at: new Date().toISOString(),
-    ...(cfg.policy ? { external_id: cfg.policy.version + (protectedPaths.length ? ':protected' : ':ordinary') } : {}),
+    ...(cfg.policy ? { external_id: `${cfg.policy.version}:${protectedPaths.length ? 'protected' : 'ordinary'}:${pr.base.sha}` } : {}),
     output: { title, summary: redact(summary).slice(0, 60000) } } });
   const data = await (deps.collect || collect)(cfg.repo, token, pr, cfg.policy, api);
   if (!data || data.refuse) return finish('failure', 'Not reviewable', data?.refuse || 'Not reviewable.');
@@ -327,6 +324,7 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     const verdict = result.ok ? parseVerdict(result.out) : null;
     if (!verdict) { attempts.push(`${provider}: unavailable or no valid verdict`); continue; }
     const latest = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+    if (latest.base.sha !== pr.base.sha) return finish('failure', 'Base moved', 'The base moved during review; the new base...head diff gets its own review.');
     if (latest.head.sha !== pr.head.sha) return finish('failure', 'Head moved', 'The PR head moved during review; the new head gets its own review.');
     if (protectedPaths.length && !approved()) return block();
     const { conclusion, reason } = decide(verdict);

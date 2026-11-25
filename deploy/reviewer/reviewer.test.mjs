@@ -73,7 +73,7 @@ function fakeApi(state) {
     if (path.includes('/check-runs?')) return { check_runs: state.existing || [] };
     if (method === 'POST') return { id: 7 };
     if (path.includes('/compare/')) return { files: state.files, commits: [] };
-    if (path.includes('/pulls/')) return { head: { sha: state.headAfter } };
+    if (path.includes('/pulls/')) return { head: { sha: state.headAfter }, base: { sha: state.baseAfter || 'c'.repeat(40) } };
     return {};
   };
 }
@@ -132,7 +132,7 @@ test('protected path changes fail before model review and retry when the exact h
   assert.equal(modelCalls, 1);
   const success = state.calls.find(([method]) => method === 'PATCH')[2];
   assert.equal(success.conclusion, 'success');
-  assert.equal(success.external_id, policy.version + ':protected');
+  assert.equal(success.external_id, policy.version + ':protected:' + pr.base.sha);
 
   state.existing = [success];
   state.calls = [];
@@ -225,14 +225,29 @@ test('opencode reviews are pinned to the Go endpoint with tools off', async () =
   assert.ok(Object.values(cfg.tools).every((v) => v === false));
 });
 
-test('new test files are free; modifying, renaming or deleting existing tests is protected', async () => {
+test('every change under a protected path is protected, additions included', async () => {
   const { isProtectedChange, parseProtectedPaths } = await import('./reviewer.mjs');
   const policy = parseProtectedPaths('/.github/ @o\n/tests/ @o\n/deploy/reviewer/ @o\n');
-  assert.equal(isProtectedChange(policy, { filename: 'tests/test_new.py', status: 'added' }), false);
-  assert.equal(isProtectedChange(policy, { filename: 'tests/test_old.py', status: 'modified' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'tests/test_new.py', status: 'added' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'tests/__init__.py', status: 'added' }), true);
   assert.equal(isProtectedChange(policy, { filename: 'tests/test_old.py', status: 'removed' }), true);
-  assert.equal(isProtectedChange(policy, { filename: 'tests/x.py', previous_filename: 'tests/test_old.py', status: 'renamed' }), true);
   assert.equal(isProtectedChange(policy, { filename: 'other/x.py', previous_filename: 'tests/test_old.py', status: 'renamed' }), true);
-  assert.equal(isProtectedChange(policy, { filename: '.github/workflows/new.yml', status: 'added' }), true);
-  assert.equal(isProtectedChange(policy, { filename: 'deploy/reviewer/new.mjs', status: 'added' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'skills/x/test_y.py', status: 'added' }), false);
+});
+
+test('a verdict is bound to its exact base; a moved base is re-reviewed', async () => {
+  const { parseProtectedPaths } = await import('./reviewer.mjs');
+  const policy = parseProtectedPaths('/.github/ @o\n/deploy/reviewer/ @o\n');
+  const cfg = { ...CFG, policy };
+  const ok = { diff: '+x', commits: [], protectedPaths: [] };
+  const run = async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' });
+  const done = (base) => ({ status: 'completed', conclusion: 'success', external_id: `${policy.version}:ordinary:${base}` });
+  let state = { calls: [], headAfter: PR.head.sha, existing: [done(PR.base.sha)] };
+  assert.equal(await reviewOne(cfg, 't', PR, { gh: fakeApi(state), collect: async () => ok, run }), null);
+  state = { calls: [], headAfter: PR.head.sha, existing: [done('e'.repeat(40))] };
+  await reviewOne(cfg, 't', PR, { gh: fakeApi(state), collect: async () => ok, run });
+  assert.ok(state.calls.some(([m]) => m === 'POST'));
+  state = { calls: [], headAfter: PR.head.sha, baseAfter: 'e'.repeat(40) };
+  await reviewOne(cfg, 't', PR, { gh: fakeApi(state), collect: async () => ok, run });
+  assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.title, /Base moved/);
 });
