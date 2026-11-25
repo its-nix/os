@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "profile": "personal",
+  "title": "Personal assistant",
+  "description": "Founder's personal assistant: daily help, reminders, personal tasks and private notes. Not a company worker.",
+  "role_file": "deploy/roles/personal.md",
+  "model": {"source": "deploy/pilot.json", "credentials": "shared Hermes provider login; no token files are copied"},
+  "config": {
+    "platforms.discord.enabled": false,
+    "approvals.mode": "manual",
+    "approvals.cron_mode": "deny",
+    "terminal.cwd": "/opt/data/workspaces/personal"
+  },
+  "scope": {
+    "in": ["daily assistance", "reminders", "personal tasks", "private notes", "email and calendar triage (once connected)"],
+    "out": ["company repositories", "venture CRM", "T3 delegation", "Discord", "company knowledge base writes", "spending, public posts and outbound messages"]
+  },
+  "memory": {
+    "store": "profile-native (profiles/personal/memories and state.db)",
+    "shared_with_company_profiles": false,
+    "hindsight_bank": "personal (planned: a separate bank, never the company bank)"
+  },
+  "isolation": "logical",
+  "isolation_note": "Same container and same Hermes data volume as the company profiles: this is a logical separation, not confidentiality against another profile or a container operator.",
+  "connectors": {
+    "email": "blocked on founder: needs a founder-authorized Google session",
+    "calendar": "blocked on founder: needs a founder-authorized Google session",
+    "private_documents": "blocked on founder: needs a scoped Drive location"
+  }
+}

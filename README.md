@@ -18,6 +18,7 @@ An always-on company operating system: one multi-profile Hermes runtime runs ven
 | Lead → CRM → approval-gated action procedure | Staged (#77) | Mock-tested; live proof needs a Twenty key and a Todoist queue token |
 | Hindsight memory | Deployed; sign-in pending | `nixos-hindsight` (pinned 1.2.0, loopback): one bank per profile, local embeddings, extraction via the founder's ChatGPT plan. Extraction starts after the founder's one-time device sign-in ([how](deploy/hindsight/README.md)) |
 | Drive + Obsidian knowledge | Not started | Needs the vault folder and scoped access; the KB snapshot stays authoritative meanwhile |
+| Personal agent profile (`personal`) | Contract + idempotent deploy step ([contract](docs/PERSONAL-PROFILE.md)) | Logical separation only; email/calendar blocked on the founder |
 | Paperclip | Running, idle | 0 issues/projects, 3 paused agents; retire after cutover with state kept in recovery |
 | LNX Discord bot | **Running** | Default profile; unchanged |
 
