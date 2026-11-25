@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "packs": {
+    "core": [
+      "grilling",
+      "brainstorming",
+      "to-spec",
+      "handoff",
+      "verification-before-completion",
+      "requesting-code-review",
+      "executing-plans"
+    ],
+    "engineering": [
+      "using-git-worktrees",
+      "finishing-a-development-branch"
+    ]
+  },
+  "kit_lock": {
+    "version": 2,
+    "skills": {
+      "brainstorming": {
+        "repo": "obra/superpowers",
+        "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+        "sha256": "68c45524d3657a11bc19453fdeac4d3925e76f71c02026d008761815797c781f"
+      },
+      "grilling": {
+        "repo": "its-nix/kit",
+        "ref": "a24db53de681fd3bfe8e5ab8a13ef2cf01c6ae2e",
+        "sha256": "b487d8503f338e8bfefebcb41e2cdaa88a287115c296889094442be65f0cde48"
+      },
+      "handoff": {
+        "repo": "mattpocock/skills",
+        "ref": "49dd158d1076134a641b33efb035946536778336",
+        "sha256": "df7452842e651c71ae0fe5cd579cc7d057efc370356d4351603c48d10e390fcf"
+      },
+      "to-spec": {
+        "repo": "its-nix/kit",
+        "ref": "a24db53de681fd3bfe8e5ab8a13ef2cf01c6ae2e",
+        "sha256": "b52f2552e37a5abbc159d3dd6409bd04974d488b477b0fb216a3ec446be9db6d"
+      },
+      "requesting-code-review": {
+        "repo": "obra/superpowers",
+        "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+        "sha256": "e60fe5ce8f92b364213dafeff219916f5dfeacc4bc651a95e134fdaf21cf66b5"
+      },
+      "verification-before-completion": {
+        "repo": "obra/superpowers",
+        "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+        "sha256": "7de438851bb136811a4711cbdb6f76692821d43d4d20a6d9d35f0505b4f7ee9f"
+      },
+      "executing-plans": {
+        "repo": "obra/superpowers",
+        "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+        "sha256": "b11d30386150a084a444932bca49771fefd8debfeba27de618a88a4263dc0b57"
+      },
+      "using-git-worktrees": {
+        "repo": "obra/superpowers",
+        "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+        "sha256": "e9c260528b84579768c93bc3ba65215e1f714b1024add0b70c97dbbf576f609d"
+      },
+      "finishing-a-development-branch": {
+        "repo": "obra/superpowers",
+        "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
+        "sha256": "c19140295060235e72f78792d24b95f6566ef8a53f5617d572ac465b543272b3"
+      }
+    }
+  }
+}
