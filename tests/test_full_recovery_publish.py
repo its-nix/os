@@ -1,5 +1,8 @@
 import importlib.util
 from pathlib import Path
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -234,6 +237,56 @@ class DeletedContainerTests(unittest.TestCase):
                 with module.stopped_services(Path(td) / 'lock'):
                     self.fail('must not capture')
         self.assertFalse([c for c in calls if c[:2] in (['docker', 'stop'], ['docker', 'start'])])
+
+
+    def test_disk_percent_matches_df_with_reserved_blocks(self):
+        module = self.module()
+        # 100 blocks, 10 free of which 5 are root-reserved: df shows 90 / (90 + 5) -> 95%.
+        st = SimpleNamespace(f_blocks=100, f_bfree=10, f_bavail=5, f_frsize=4096)
+        with patch.object(module.os, 'statvfs', return_value=st):
+            self.assertEqual(95, module.disk_used_percent('/'))
+        st = SimpleNamespace(f_blocks=1000, f_bfree=160, f_bavail=110, f_frsize=4096)  # 840/950 = 88.4 -> 89
+        with patch.object(module.os, 'statvfs', return_value=st):
+            self.assertGreaterEqual(module.disk_used_percent('/'), module.DISK_LIMIT_PERCENT)
+        if sys.platform.startswith('linux'):  # APFS shares free space across volumes
+            real = subprocess.run(['df', '-P', '/'], capture_output=True, text=True).stdout.split('\n')[1].split()[4]
+            self.assertLessEqual(abs(module.disk_used_percent('/') - int(real.rstrip('%'))), 1)
+
+    def hook_run(self, td, missing, crm):
+        unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        line = next(l for l in unit.splitlines() if l.startswith('ExecStopPost='))
+        script = line.split("/bin/sh -c '", 1)[1].rsplit("'", 1)[0].replace('$$', '$')
+        flag = Path(td) / 'ENABLED'
+        if crm:
+            flag.write_text('')
+        script = script.replace('/srv/nix-clean/twenty/ENABLED', str(flag))
+        bindir, log = Path(td) / 'bin', Path(td) / 'calls'
+        bindir.mkdir(exist_ok=True)
+        docker = bindir / 'docker'
+        docker.write_text('#!/bin/sh\necho "$*" >> "%s"\nif [ "$1" = start ]; then for m in %s; do '
+                          '[ "$2" = "$m" ] && exit 1; done; fi\nexit 0\n' % (log, ' '.join(missing) or 'none'))
+        docker.chmod(0o755)
+        env = dict(os.environ, PATH=f'{bindir}:/usr/bin:/bin')
+        rc = subprocess.run(['/bin/sh', '-c', script], env=env).returncode
+        return rc, log.read_text().splitlines() if log.exists() else []
+
+    def test_stop_hook_recreates_missing_crm_container_with_crm_profile(self):
+        with tempfile.TemporaryDirectory() as td:
+            rc, calls = self.hook_run(td, ['nixos-twenty-db'], crm=True)
+        compose = [c for c in calls if c.startswith('compose')]
+        self.assertEqual(0, rc)
+        self.assertEqual(1, len(compose))
+        self.assertIn('--profile crm up --detach --no-recreate', compose[0])
+
+    def test_stop_hook_without_crm_starts_only_core_and_no_profile(self):
+        with tempfile.TemporaryDirectory() as td:
+            rc, calls = self.hook_run(td, [], crm=False)
+            self.assertEqual(0, rc)
+            self.assertEqual(['start nixos-hermes', 'start nixos-t3', 'start nixos-reviewer'], calls)
+            rc, calls = self.hook_run(td, ['nixos-t3'], crm=False)
+        compose = [c for c in calls if c.startswith('compose')]
+        self.assertEqual(1, len(compose))
+        self.assertNotIn('--profile', compose[0])
 
 
 class RecoveryUnitTests(unittest.TestCase):

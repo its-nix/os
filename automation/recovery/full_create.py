@@ -167,8 +167,12 @@ DISK_LIMIT_PERCENT = 85
 
 
 def disk_used_percent(path='/'):
-    usage = shutil.disk_usage(path)
-    return 100 * usage.used / usage.total
+    """Use% exactly as df (and the host monitor) reports it: used / (used + available to
+    non-root), rounded up. Root-reserved blocks are excluded, so this is never lower than df."""
+    st = os.statvfs(path)
+    used = (st.f_blocks - st.f_bfree) * st.f_frsize
+    visible = used + st.f_bavail * st.f_frsize
+    return -(-100 * used // visible) if visible else 100
 
 
 def recreate_missing(root=Path('/srv/nix-clean')):
