@@ -306,6 +306,12 @@ def configure_memory(state, run):
     return pending
 
 
+def install_hindsight_login(source, bin_dir=Path('/usr/local/bin')):
+    """Root-owned copy of the founder's one-time Hindsight sign-in, runnable by the `nixos` operator
+    (who cannot read the release directory)."""
+    _root_write(bin_dir, 'nix-hindsight-login', (source / 'deploy/hindsight/codex-login.sh').read_text(), 0o755)
+
+
 def confirm_t3_credential(state):
     _token_module().mark_loaded(state / 'hermes')
 
@@ -458,7 +464,8 @@ def install_health_script(source, state):
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
-          t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory):
+          t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory,
+          login=install_hindsight_login):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -548,6 +555,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             registration_pending.unlink(missing_ok=True)
             memory_pending.unlink(missing_ok=True)
         units(source, run)
+        login(source)
         sync_os_skills(source, state)
         install_health_script(source, state)
         link = current.with_name(current.name + '.next')

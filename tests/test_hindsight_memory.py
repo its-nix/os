@@ -209,6 +209,12 @@ class HindsightMemoryTests(unittest.TestCase):
         for forbidden in ('/srv/nix-clean/hermes', 't3/home', 'reviewer/home', 'auth.json /', 'cp '):
             self.assertNotIn(forbidden, script)
         self.assertEqual(0, subprocess.run(['sh', '-n', str(ROOT / 'deploy/hindsight/codex-login.sh')]).returncode)
+        with tempfile.TemporaryDirectory() as td:
+            deployment.install_hindsight_login(ROOT, Path(td))
+            installed = Path(td) / 'nix-hindsight-login'
+            self.assertEqual(script, installed.read_text())
+            self.assertEqual(0o755, installed.stat().st_mode & 0o777)
+        self.assertIn('ssh -t -l nixos vps nix-hindsight-login', (ROOT / 'deploy/hindsight/README.md').read_text())
 
 
 if __name__ == '__main__':

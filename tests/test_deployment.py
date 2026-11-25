@@ -23,6 +23,7 @@ def apply(*args, **kwargs):
     kwargs.setdefault('t3_loaded', lambda state: None)
     kwargs.setdefault('units', lambda source, run: False)
     kwargs.setdefault('memory', lambda state, run: state / '.hindsight-plugin-reload')  # see test_hindsight_memory
+    kwargs.setdefault('login', lambda source: None)
     return _real_apply(*args, **kwargs)
 
 

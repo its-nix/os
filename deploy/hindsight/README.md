@@ -47,14 +47,14 @@ Isolation is by bank on one local server. Company profiles cannot name another b
 ## Founder: one-time sign-in
 
 ```bash
-ssh -t -l nixos vps sh /opt/nix-clean-source/deploy/hindsight/codex-login.sh
+ssh -t -l nixos vps nix-hindsight-login
 ```
 
-Approve the device code it prints. The script then:
+The deploy installs [`codex-login.sh`](codex-login.sh) as `/usr/local/bin/nix-hindsight-login`. Approve the device code it prints. The script then:
 
 1. Runs the Codex CLI pinned in the deployed T3 image as the server's user.
 2. Stores `auth.json` in a file under `hindsight/codex`.
-3. Restarts `nixos-hindsight`. The server loads its login only at start.
+3. Restarts `nixos-hindsight` (the server loads its login only at start) and makes one test call to the extraction model, reporting success or failure without printing the model or token.
 
 From then on Hindsight refreshes its own tokens. Until the sign-in is done, recall works but new turns are not extracted.
 
