@@ -1,5 +1,8 @@
 import importlib.util
 from pathlib import Path
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -40,7 +43,7 @@ class PublicationTests(unittest.TestCase):
             if 'inspect' in argv:
                 return 'exited 0' if 'ExitCode' in argv[3] else 'running'
             return ''
-        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'wait_services') as health:
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'wait_services') as health:
             with self.assertRaisesRegex(RuntimeError, 'capture failed'):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     raise RuntimeError('capture failed')
@@ -58,7 +61,7 @@ class PublicationTests(unittest.TestCase):
             if 'stop' in argv:
                 raise module.Refusal('partial stop')
             return ''
-        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'wait_services'):
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'wait_services'):
             with self.assertRaises(module.Refusal):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     self.fail('Capture cannot run after failed stop')
@@ -167,6 +170,7 @@ class ServiceControlTests(unittest.TestCase):
                 return 'abc123'
             return 'running'
         with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), \
+                patch.object(module, 'disk_used_percent', return_value=50), \
                 patch.object(module, 'crm_enabled', return_value=False):
             with self.assertRaisesRegex(module.Refusal, 'CRM containers run'):
                 with module.stopped_services(Path(td) / 'lock'):
@@ -184,6 +188,8 @@ class CrmRestartTests(unittest.TestCase):
                 started.append(argv[2])
                 if argv[2] == 'nixos-twenty-db':
                     raise module.Refusal('failed')
+            if argv[:2] == ['docker', 'compose']:
+                raise module.Refusal('compose failed')
             return ''
         with patch.object(module, 'run', side_effect=command):
             with self.assertRaisesRegex(module.Refusal, 'nixos-twenty-db'):
@@ -193,6 +199,94 @@ class CrmRestartTests(unittest.TestCase):
         hook = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
         self.assertIn('|| rc=1', hook)
         self.assertNotIn('|| exit 1', hook)
+
+
+class DeletedContainerTests(unittest.TestCase):
+    def module(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_deleted_container_is_recreated_from_deployed_compose(self):
+        module = self.module()
+        calls, gone = [], {'nixos-t3'}
+        def command(argv):
+            calls.append(argv)
+            if argv[:2] == ['docker', 'start'] and argv[2] in gone:
+                raise module.Refusal('no such container')
+            if argv[:2] == ['docker', 'compose']:
+                gone.clear()
+            return ''
+        with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+            module.start_all(list(reversed(module.CONTAINERS)))
+        compose = [c for c in calls if c[:2] == ['docker', 'compose']]
+        self.assertEqual(1, len(compose))
+        self.assertEqual(['up', '--detach', '--no-recreate'], compose[0][-3:])
+        self.assertIn('nixos', compose[0])
+        self.assertEqual(2, sum(1 for c in calls if c == ['docker', 'start', 'nixos-t3']))
+        hook = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        self.assertIn('up --detach --no-recreate', hook)
+
+    def test_capture_refuses_without_disk_headroom_and_never_stops_services(self):
+        module = self.module()
+        calls = []
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=lambda a: calls.append(a) or 'running'), \
+                patch.object(module, 'disk_used_percent', return_value=91), patch.object(module, 'crm_enabled', return_value=False):
+            with self.assertRaisesRegex(module.Refusal, 'Disk is 91% full'):
+                with module.stopped_services(Path(td) / 'lock'):
+                    self.fail('must not capture')
+        self.assertFalse([c for c in calls if c[:2] in (['docker', 'stop'], ['docker', 'start'])])
+
+
+    def test_disk_percent_matches_df_with_reserved_blocks(self):
+        module = self.module()
+        # 100 blocks, 10 free of which 5 are root-reserved: df shows 90 / (90 + 5) -> 95%.
+        st = SimpleNamespace(f_blocks=100, f_bfree=10, f_bavail=5, f_frsize=4096)
+        with patch.object(module.os, 'statvfs', return_value=st):
+            self.assertEqual(95, module.disk_used_percent('/'))
+        st = SimpleNamespace(f_blocks=1000, f_bfree=160, f_bavail=110, f_frsize=4096)  # 840/950 = 88.4 -> 89
+        with patch.object(module.os, 'statvfs', return_value=st):
+            self.assertGreaterEqual(module.disk_used_percent('/'), module.DISK_LIMIT_PERCENT)
+        if sys.platform.startswith('linux'):  # APFS shares free space across volumes
+            real = subprocess.run(['df', '-P', '/'], capture_output=True, text=True).stdout.split('\n')[1].split()[4]
+            self.assertLessEqual(abs(module.disk_used_percent('/') - int(real.rstrip('%'))), 1)
+
+    def hook_run(self, td, missing, crm):
+        unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        line = next(l for l in unit.splitlines() if l.startswith('ExecStopPost='))
+        script = line.split("/bin/sh -c '", 1)[1].rsplit("'", 1)[0].replace('$$', '$')
+        flag = Path(td) / 'ENABLED'
+        if crm:
+            flag.write_text('')
+        script = script.replace('/srv/nix-clean/twenty/ENABLED', str(flag))
+        bindir, log = Path(td) / 'bin', Path(td) / 'calls'
+        bindir.mkdir(exist_ok=True)
+        docker = bindir / 'docker'
+        docker.write_text('#!/bin/sh\necho "$*" >> "%s"\nif [ "$1" = start ]; then for m in %s; do '
+                          '[ "$2" = "$m" ] && exit 1; done; fi\nexit 0\n' % (log, ' '.join(missing) or 'none'))
+        docker.chmod(0o755)
+        env = dict(os.environ, PATH=f'{bindir}:/usr/bin:/bin')
+        rc = subprocess.run(['/bin/sh', '-c', script], env=env).returncode
+        return rc, log.read_text().splitlines() if log.exists() else []
+
+    def test_stop_hook_recreates_missing_crm_container_with_crm_profile(self):
+        with tempfile.TemporaryDirectory() as td:
+            rc, calls = self.hook_run(td, ['nixos-twenty-db'], crm=True)
+        compose = [c for c in calls if c.startswith('compose')]
+        self.assertEqual(0, rc)
+        self.assertEqual(1, len(compose))
+        self.assertIn('--profile crm up --detach --no-recreate', compose[0])
+
+    def test_stop_hook_without_crm_starts_only_core_and_no_profile(self):
+        with tempfile.TemporaryDirectory() as td:
+            rc, calls = self.hook_run(td, [], crm=False)
+            self.assertEqual(0, rc)
+            self.assertEqual(['start nixos-hermes', 'start nixos-t3', 'start nixos-reviewer'], calls)
+            rc, calls = self.hook_run(td, ['nixos-t3'], crm=False)
+        compose = [c for c in calls if c.startswith('compose')]
+        self.assertEqual(1, len(compose))
+        self.assertNotIn('--profile', compose[0])
 
 
 class RecoveryUnitTests(unittest.TestCase):
