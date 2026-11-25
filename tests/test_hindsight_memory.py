@@ -325,6 +325,12 @@ class RedactionProbeTests(unittest.TestCase):
                 return user, assistant
         self.assertIn('unscrubbed hand-off: sync_all', probe.check(lambda t: '[redacted]', Unscrubbed))
 
+        class DocstringOnly(self.Manager):
+            def sync_all(self, user, assistant):
+                """Goes through _redact_for_provider (it says)."""
+                return user, assistant  # _redact_for_provider(user)
+        self.assertIn('unscrubbed hand-off: sync_all', probe.check(lambda t: '[redacted]', DocstringOnly))
+
         def broken(text):
             raise RuntimeError
         self.assertIn('raises: jwt', probe.check(broken, self.Manager))

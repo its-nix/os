@@ -16,8 +16,10 @@ Samples are assembled from fragments at runtime so this public file holds no cre
 literal. Nothing is printed except category names.
 """
 
+import ast
 import inspect
 import sys
+import textwrap
 
 FILLER = 'A1b2C3d4E5f6G7h8J9k0L1m2N3p4Q5r6S7t8'
 # Every manager method that hands text to a provider must call the scrub.
@@ -42,6 +44,18 @@ def samples():
     }
 
 
+def calls_scrub(function):
+    """True when the function's code (not merely its docstring or a comment) calls a scrub."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            target = node.func
+            name = target.id if isinstance(target, ast.Name) else getattr(target, 'attr', None)
+            if name in SCRUBS:
+                return True
+    return False
+
+
 def check(redact, manager):
     """Names of the failed checks; empty when every sample is masked and every hand-off scrubs."""
     failures = []
@@ -55,11 +69,11 @@ def check(redact, manager):
             failures.append('leaks: ' + name)
     for method in HAND_OFFS:
         try:
-            source = inspect.getsource(getattr(manager, method))
+            scrubbed = calls_scrub(getattr(manager, method))
         except Exception:
             failures.append('missing hand-off: ' + method)
             continue
-        if not any(scrub in source for scrub in SCRUBS):
+        if not scrubbed:
             failures.append('unscrubbed hand-off: ' + method)
     return failures
 
