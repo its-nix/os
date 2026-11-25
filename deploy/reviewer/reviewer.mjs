@@ -26,14 +26,19 @@ const STALE_MS = 45 * 60 * 1000;
 // Headless invocations. Each returns the model's final text; the verdict JSON is parsed from it.
 const NO_TOOLS_OPENCODE = JSON.stringify({ tools: Object.fromEntries(
   ['bash', 'edit', 'write', 'read', 'grep', 'glob', 'list', 'patch', 'todowrite', 'todoread', 'webfetch', 'websearch', 'task', 'skill']
-    .map((t) => [t, false])), mcp: {} });
+    .map((t) => [t, false])), mcp: {},
+  // OpenCode Go only: the built-in `opencode` provider is pointed at the Go endpoint, so a review
+  // is covered by the subscription and can never bill pay-as-you-go credits (the CLI's catalog has
+  // no separate Go provider; the Go endpoint needs the CLI's own session headers).
+  provider: { opencode: { options: { baseURL: 'https://opencode.ai/zen/go/v1' } } } });
+const OPENCODE_MODEL = () => process.env.OPENCODE_REVIEW_MODEL || 'opencode/kimi-k3.1-pro';
 const AGY_SETTINGS = JSON.stringify({ toolPermission: 'strict',
   permissions: { deny: ['command(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'] } });
 export const PROVIDERS = {
   // --tools "" = no built-in tools at all; empty strict MCP config = no MCP tools.
   claude: (prompt) => ['claude', ['-p', prompt, '--tools', '', '--max-turns', '1', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']],
   codex: (prompt) => ['codex', ['exec', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', prompt]],
-  opencode: (prompt) => ['opencode', ['run', ...(process.env.OPENCODE_REVIEW_MODEL ? ['-m', process.env.OPENCODE_REVIEW_MODEL] : []), prompt],
+  opencode: (prompt) => ['opencode', ['run', '-m', OPENCODE_MODEL(), prompt],
     { OPENCODE_CONFIG_CONTENT: NO_TOOLS_OPENCODE }],
   grok: (prompt) => ['grok', ['-p', prompt, '--max-turns', '1', '--permission-mode', 'plan', '--no-subagents', '--disable-web-search']],
   // Google AI subscriptions run through Antigravity CLI (Gemini CLI dropped them on 2026-06-18).

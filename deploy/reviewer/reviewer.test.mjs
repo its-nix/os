@@ -134,3 +134,13 @@ test('pool maps the legacy gemini name to antigravity and drops unknowns', async
   assert.deepEqual(parsePool('claude,gemini,nope,antigravity'), ['claude', 'antigravity']);
   assert.deepEqual(parsePool(''), ['claude', 'codex', 'opencode', 'grok', 'antigravity']);
 });
+
+test('opencode reviews are pinned to the Go endpoint with tools off', async () => {
+  const { PROVIDERS } = await import('./reviewer.mjs');
+  const [cmd, args, env] = PROVIDERS.opencode('p');
+  assert.equal(cmd, 'opencode');
+  assert.deepEqual(args, ['run', '-m', 'opencode/kimi-k3.1-pro', 'p']);
+  const cfg = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
+  assert.equal(cfg.provider.opencode.options.baseURL, 'https://opencode.ai/zen/go/v1');
+  assert.ok(Object.values(cfg.tools).every((v) => v === false));
+});
