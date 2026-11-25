@@ -16,7 +16,7 @@ An always-on company operating system: one multi-profile Hermes runtime runs ven
 | Independent AI review gate + ruleset + auto-merge | Staged (#73) | Needs `REVIEW_ANTHROPIC_API_KEY`; then the ruleset is enabled ([policy](docs/AUTHORITY.md)) |
 | Twenty CRM (optional profile) | Staged (#76) | Starts only when a venture needs it; workspace key is founder-created |
 | Lead → CRM → approval-gated action procedure | Staged (#77) | Mock-tested; live proof needs a Twenty key and a Todoist queue token |
-| Hindsight memory | Blocked: decision | Extraction LLM choice (local GPU vs hosted) is a privacy decision |
+| Hindsight memory | Deployed; sign-in pending | `nixos-hindsight` (pinned 1.2.0, loopback): one bank per profile, local embeddings, extraction via the founder's ChatGPT plan. Extraction starts after the founder's one-time device sign-in ([how](deploy/hindsight/README.md)) |
 | Drive + Obsidian knowledge | Not started | Needs the vault folder and scoped access; the KB snapshot stays authoritative meanwhile |
 | Paperclip | Running, idle | 0 issues/projects, 3 paused agents; retire after cutover with state kept in recovery |
 | LNX Discord bot | **Running** | Default profile; unchanged |
@@ -45,7 +45,7 @@ docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/venture-factor
 
 | Path | Role |
 | --- | --- |
-| `deploy/` | Compose, pins (`versions.json`), T3 image |
+| `deploy/` | Compose, pins (`versions.json`), T3 image, Hindsight memory (`deploy/hindsight`) |
 | `scripts/deploy-os.{sh,py}` | Root deploy launcher and release application |
 | `automation/recovery/` | Cold capture, verified private publish, restore |
 | `skills/` | First-party OS skills distributed to `skills/nix-os/` (Venture Factory, venture lead, T3 delegate, CRM lead ops) |

@@ -12,6 +12,7 @@ deployment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deployment)
 deployment.T3_UID, deployment.T3_GID = os.getuid(), os.getgid()
 deployment.ROOT_UID, deployment.ROOT_GID = os.getuid(), os.getgid()  # tests run unprivileged; production chowns to the T3 service user
+deployment.HINDSIGHT_UID, deployment.HINDSIGHT_GID = os.getuid(), os.getgid()
 
 
 _real_apply = deployment.apply
@@ -21,6 +22,7 @@ def apply(*args, **kwargs):
     kwargs.setdefault('t3_credential', lambda state: False)
     kwargs.setdefault('t3_loaded', lambda state: None)
     kwargs.setdefault('units', lambda source, run: False)
+    kwargs.setdefault('memory', lambda state, run: state / '.hindsight-plugin-reload')  # see test_hindsight_memory
     return _real_apply(*args, **kwargs)
 
 
@@ -48,12 +50,14 @@ class DeploymentTests(unittest.TestCase):
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' healthy'
                 if name == 'reviewer':
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' running'
+                if name == 'hindsight':
+                    return deployment.HINDSIGHT_IMAGE + ' healthy'
                 return images[name]['image'] + ' healthy'
             if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
                 return '{"url": "http://127.0.0.1:3773/mcp", "enabled": true}'
             if argv == ['ss', '-lntH']:
                 return '\n'.join('LISTEN 0 128 127.0.0.1:' + port + ' 0.0.0.0:*'
-                                 for port in ('18642', '19119', '13100', '3773'))
+                                 for port in ('18642', '19119', '13100', '3773', '18888'))
             return ''
         return healthy
 

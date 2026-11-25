@@ -27,7 +27,8 @@ spec = importlib.util.spec_from_file_location('full_restore', HERE / 'full_resto
 state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
-CONTAINERS = ['nixos-hermes', 'nixos-t3', 'nixos-reviewer']  # Paperclip retired: archived state only
+# Hindsight after Hermes: its only client drains first, its Postgres stops cleanly before capture.
+CONTAINERS = ['nixos-hermes', 'nixos-t3', 'nixos-reviewer', 'nixos-hindsight']  # Paperclip retired: archived state only
 # Optional CRM: stopped app-first, started database-first.
 CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
 # Probe image for a restored Twenty database, independent of whether the profile is active now

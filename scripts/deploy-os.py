@@ -176,6 +176,136 @@ def register_t3_for_leads(state, run):
     return pending
 
 
+# Hindsight memory (PRD 7.4). The server is the `hindsight` Compose service; each Hermes profile
+# gets the catalog plugin in local_external mode with its OWN bank. Existing memory config is
+# validated, never rewritten. Pins: the image digest (compose.yaml, equal to this constant by test)
+# and the plugin commit (the Hermes image's catalog pin, which `plugins install hindsight` uses).
+HINDSIGHT_IMAGE = ('ghcr.io/vectorize-io/hindsight-api@sha256:'
+                   'ef1a5ac515a7652fbff605277d44a39e7616e421503c61841189e63ef6db6705')
+HINDSIGHT_PLUGIN_SHA = 'f14cc1eb5624b0374cb4d82768eb2e0b9c21ae24'
+HINDSIGHT_URL = 'http://127.0.0.1:18888'
+HINDSIGHT_UID = HINDSIGHT_GID = 1000  # the image's unprivileged `hindsight` user
+# Keys that would widen what a profile reads or writes beyond its own bank.
+HINDSIGHT_CROSS_BANK_KEYS = ('additional_banks', 'recall_additional_banks', 'recallAdditionalBanks',
+                             'trusted_project_dirs', 'mirror_to_own_bank', 'bank_id_template')
+FIXED_BANKS = {'default': 'lnx', 'engineer': 'engineer', 'reviewer': 'reviewer', 'personal': 'personal'}
+
+
+def ensure_hindsight_state(state):
+    """New, empty Hindsight directories only: the server's home (its database is created there as
+    .pg0 on first start) and its own Codex login. The root-only state parent keeps host users out."""
+    root = state / 'hindsight'
+    for path in (root, root / 'codex'):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('Hindsight state path is not a plain directory')
+        if not path.exists():
+            path.mkdir(mode=0o700)
+            os.chown(path, HINDSIGHT_UID, HINDSIGHT_GID)
+
+
+def memory_banks(state):
+    """(profile, Hermes home, bank) for every profile that gets memory. A profile not listed here
+    (an ad-hoc clone, say) is left without a provider rather than guessed into a shared bank."""
+    hermes = state / 'hermes'
+    found = [('default', hermes, FIXED_BANKS['default'])]
+    ventures = {path.name for path in _token_module().venture_profiles(hermes)}
+    profiles = hermes / 'profiles'
+    if profiles.is_dir() and not profiles.is_symlink():
+        for home in sorted(profiles.iterdir()):
+            if home.is_symlink() or not home.is_dir():
+                continue
+            if home.name in ventures:
+                found.append((home.name, home, 'venture-' + home.name))
+            elif home.name in FIXED_BANKS:
+                found.append((home.name, home, FIXED_BANKS[home.name]))
+    banks = [bank for _, _, bank in found]
+    if len(set(banks)) != len(banks):
+        raise ValueError('Two Hermes profiles would share one memory bank')
+    return found
+
+
+def hindsight_profile_config(profile, bank):
+    return {
+        'mode': 'local_external', 'api_url': HINDSIGHT_URL, 'bank_id': bank,
+        'memory_mode': 'hybrid', 'auto_recall': True, 'auto_retain': True, 'retain_cron': False,
+        # Discord/customer channels must not show "👁️ Hindsight" status lines.
+        'recall_indicator': False, 'retain_indicator': False,
+        'retain_context': f'conversation with the Nix OS {profile} Hermes profile',
+        'additional_banks': [], 'recall_additional_banks': [], 'trusted_project_dirs': [],
+        'mirror_to_own_bank': False,
+    }
+
+
+def check_hindsight_config(config, bank):
+    """An existing profile config must still be ours: loopback server, own bank, nothing shared."""
+    if config.get('mode') != 'local_external' or config.get('api_url') != HINDSIGHT_URL \
+            or config.get('bank_id') != bank:
+        raise ValueError('A profile memory config points away from its own local Hindsight bank; reconcile it by hand')
+    if any(config.get(key) for key in HINDSIGHT_CROSS_BANK_KEYS):
+        raise ValueError('A profile memory config reaches other banks; reconcile it by hand')
+
+
+def _profile_secret_names(home):
+    env = home / '.env'
+    if not env.is_file():
+        return set()
+    return {line.split('=', 1)[0].strip() for line in env.read_text(errors='replace').splitlines()
+            if '=' in line and not line.lstrip().startswith('#')}
+
+
+def _config_value(run, cli, key):
+    try:
+        return json.loads(run(cli + ['config', 'get', '--json', key]))
+    except subprocess.CalledProcessError as exc:
+        diagnostic = (exc.stdout or '') + (exc.stderr or '')
+        if exc.returncode != 1 or diagnostic.strip() != f'Config key not set: {key}':
+            raise
+        return None
+
+
+def configure_memory(state, run):
+    """Give each profile the pinned plugin and its own bank. Returns the restart marker: the running
+    gateway imports the plugin's client only after a restart."""
+    hermes = state / 'hermes'
+    pending = state / '.hindsight-plugin-reload'
+    if (hermes / '.hindsight' / 'config.json').exists():
+        # The plugin's shared fallback would hand one config (and one bank) to every profile.
+        raise ValueError('A shared ~/.hindsight/config.json exists; remove it after review')
+    owner = hermes.stat()
+    for profile, home, bank in memory_banks(state):
+        if any(name.startswith('HINDSIGHT_') for name in _profile_secret_names(home)):
+            raise ValueError('A profile .env sets HINDSIGHT_* values, which override its bank or server')
+        cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes', '-p', profile]
+        provider = _config_value(run, cli, 'memory.provider')
+        catalog = home / 'plugins' / 'hindsight' / '.hermes-catalog.json'
+        set_up = catalog.exists() or catalog.is_symlink()
+        if provider not in (None, '', 'hindsight') or (set_up and provider != 'hindsight'):
+            continue  # another provider, or `hermes memory off` after setup: an operator decision
+        directory, path = home / 'hindsight', home / 'hindsight' / 'config.json'
+        if directory.is_symlink() or path.is_symlink():
+            raise ValueError('Profile memory config paths must not be symlinks')
+        if path.exists():
+            check_hindsight_config(json.loads(path.read_text()), bank)
+        else:
+            if not directory.exists():
+                directory.mkdir(mode=0o700)
+                os.chown(directory, owner.st_uid, owner.st_gid)
+            _root_write(directory, 'config.json', json.dumps(hindsight_profile_config(profile, bank), indent=2) + '\n', 0o600)
+            os.chown(path, owner.st_uid, owner.st_gid)
+        if not set_up:
+            _root_write(state, pending.name, '', 0o600)
+            # Config first: `--enable` makes it the active provider, which must never start on defaults.
+            run(cli + ['plugins', 'install', 'hindsight', '--yes-deps', '--enable'])
+        if catalog.is_symlink() or json.loads(catalog.read_text()).get('sha') != HINDSIGHT_PLUGIN_SHA:
+            raise ValueError('Installed Hindsight plugin is not the reviewed commit')
+        if _config_value(run, cli, 'memory.provider') != 'hindsight':
+            _root_write(state, pending.name, '', 0o600)
+            run(cli + ['config', 'set', 'memory.provider', 'hindsight'])
+            if _config_value(run, cli, 'memory.provider') != 'hindsight':
+                raise ValueError('Hermes did not activate the Hindsight memory provider')
+    return pending
+
+
 def confirm_t3_credential(state):
     _token_module().mark_loaded(state / 'hermes')
 
@@ -328,7 +458,7 @@ def install_health_script(source, state):
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
-          t3_loaded=confirm_t3_credential, units=sync_recovery_units):
+          t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -357,6 +487,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
+        ensure_hindsight_state(state)
         reviewer_changed = ensure_reviewer_state(source, state)
         candidate.chmod(0o600)
         crm = crm_enabled(state)
@@ -392,10 +523,13 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Status}}', 'nixos-reviewer']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' running':
             raise ValueError('Reviewer image or state readback differs from the declared deployment')
+        if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-hindsight']) \
+                != HINDSIGHT_IMAGE + ' healthy':
+            raise ValueError('Hindsight image or health readback differs from the declared deployment')
         if crm and run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', 'nixos-twenty-server']) != 'healthy':
             raise ValueError('Twenty CRM health readback failed')
         listeners = run(['ss', '-lntH']).splitlines()
-        for port in ('18642', '19119', '3773') + (('3020',) if crm else ()):
+        for port in ('18642', '19119', '3773', '18888') + (('3020',) if crm else ()):
             addresses = [line.split()[3] for line in listeners if len(line.split()) >= 5
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:
@@ -404,12 +538,15 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
         credential_changed = t3_credential(state)
         registration_pending = register_t3_for_leads(state, run)
-        if credential_changed or registration_pending.exists():
-            # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
+        memory_pending = memory(state, run)
+        if credential_changed or registration_pending.exists() or memory_pending.exists():
+            # Hermes reads MCP_T3_API_KEY from its private .env at start (renewals are ~monthly), and
+            # imports a newly installed memory plugin's client only in a new gateway process.
             run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
             run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
             registration_pending.unlink(missing_ok=True)
+            memory_pending.unlink(missing_ok=True)
         units(source, run)
         sync_os_skills(source, state)
         install_health_script(source, state)

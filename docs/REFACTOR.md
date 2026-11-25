@@ -40,6 +40,7 @@ Running record for the Docker-first Company OS refactor (PRD v1.1). It records w
 | D5 | 2026-11-23 | Hermes→T3 via T3's native bearer-scoped API/MCP (`t3 auth session issue`), no proxy service | Native headless auth exists; avoids a custom T3 proxy |
 | D7 | 2026-11-23 | Hermes→T3 credential minted by the root deploy via T3's own OAuth pairing approval, renewed when <7 days remain | T3 caps CLI-issued MCP sessions at `approval-required`; OAuth tokens last 30 days without refresh |
 | D8 | 2026-11-23 | Hindsight via the native Hermes plugin (local embedded mode), deferred until the founder picks the extraction LLM | Embedded mode keeps storage local, but extraction sends text to whichever LLM is configured |
+| D9 | 2026-11-25 | Hindsight runs as its own digest-pinned server container (`hindsight-api` 1.2.0) with the catalog plugin in `local_external` mode. Extraction uses `openai-codex` through a separate ChatGPT device login; embeddings are local (bge-small); the reranker is `rrf`; there is one bank per profile. Supersedes the embedded-mode part of D8 | The founder chose the ChatGPT subscription: Hermes already runs on OpenAI, so no new third party sees text. Embedded mode cannot be pinned without forking the Hermes image. With no `hindsight-api` beside the plugin, the plugin falls back to `uvx hindsight-api@<embed version>` = `hindsight-api-slim[all]` (torch). That resolves at runtime, its cache lands in the Hermes home, and it runs inside Hermes's 2 GB cgroup. The plugin's own README says the server cannot be installed in Hermes's venv (protobuf/otel conflicts). A separate container gets its own memory and CPU caps and a digest pin |
 | D6 | 2026-11-23 | PRs in this refactor are built with the founder's admin token and reviewed by an independent model; this is **not** a forge-proof gate | The forge-proof gate (separate builder identity, ruleset requiring Actions check runs) is itself a deliverable of Phase 3 |
 
 ## 4. Evidence ledger
@@ -52,6 +53,9 @@ Running record for the Docker-first Company OS refactor (PRD v1.1). It records w
 | 2026-11-23 | T3 container isolation | Pinned v0.1.11 image: as uid 10010 no Docker socket, no Hermes/Paperclip state, CapEff 0; Hermes 18642 / dashboard 19119 / Paperclip 13100 closed on loopback, bridge gateway and public IP |
 | 2026-11-23 | Hermes -> T3 full access | CLI-minted `mcp-client` tokens capped (`runtime_mode_escalation_denied`); OAuth+PKCE pairing-approved token launched a `full-access` thread |
 | 2026-11-23 | Venture scaffold on real Hermes | Throwaway home, pinned 0.23.0: dry run writes nothing; create/rerun idempotent (1 mission, 2 loops active after commit); pause/resume |
+| 2026-11-25 | Hindsight sizing on this VPS | Pinned `hindsight-api` 1.2.0 in throwaway containers with a 1-CPU cap and a mock LLM. Default `hs-rerank-1` reranker: killed while loading under a 1.5 GB limit. With bge-small and `rrf`: healthy in ~72 s; after a retain and a recall ~710 MiB anonymous memory, cgroup peak 1 GiB including page cache. Service capped at 1536 MiB / 1 CPU; the host had ~4.5 GB available |
+| 2026-11-25 | Hindsight server without a login | `openai-codex` with no `auth.json` still starts healthy and logs the LLM as unavailable until a restart. The founder's login script therefore restarts it |
+| 2026-11-25 | Plugin behaviour on the pinned Hermes | Throwaway Hermes 0.23.0 home. Plugins are per profile: a named profile needs its own `-p <profile> plugins install`. `install hindsight --yes-deps --enable` installs catalog commit `f14cc1eb` and its client dependencies, and sets `memory.provider`. `memory off` writes an empty provider. Plugin auto-update is off |
 | 2026-11-23 | `hermes profile create` is safe for dynamic leads | Throwaway container with empty home on the pinned image: only a lock file is touched outside the new profile |
 
 ## 5. Blocked on founder action
@@ -60,7 +64,7 @@ One consolidated Todoist request (project `Nix`, label `nix-approval`), raised 2
 1. `REVIEW_ANTHROPIC_API_KEY` Actions secret → enables the independent-review gate, ruleset and auto-merge.
 2. Builder GitHub identity for T3 (contents + PR write; no workflows/admin/bypass).
 3. Coding-harness logins inside T3.
-4. Hindsight memory-extraction provider (local GPU vs hosted API): privacy decision.
+4. ~~Hindsight memory-extraction provider~~: decided 2026-11-25 (ChatGPT subscription, D9). What remains is the one-time device sign-in in [deploy/hindsight](../deploy/hindsight/README.md).
 5. Drive vault folder and scoped access.
 
 ## Pack migration evidence — 2026-11-25
