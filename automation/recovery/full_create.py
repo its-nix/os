@@ -247,12 +247,45 @@ def postgres_check(image, restored):
         raise Refusal('Restored Paperclip database did not validate its company and agent rows')
 
 
-def verify_payload(payload, work, versions):
+def tree_fingerprint(top):
+    """Content hash of a restored tree: paths, types, link targets and file bytes (not mtimes)."""
+    total = hashlib.sha256()
+    for path in sorted(top.rglob('*')):
+        rel = path.relative_to(top).as_posix()
+        if path.is_symlink():
+            total.update(b'L\0' + rel.encode() + b'\0' + os.readlink(path).encode() + b'\0')
+        elif path.is_file():
+            total.update(b'F\0' + rel.encode() + b'\0' + state.digest(path).encode() + b'\0')
+        elif path.is_dir():
+            total.update(b'D\0' + rel.encode() + b'\0')
+    return total.hexdigest()
+
+
+def paperclip_check(image, restored, validated=None):
+    """Archived Paperclip state is frozen (retired 2026-11-23). Its database is opened with the
+    17 GB Paperclip image only when the restored bytes differ from the last validated copy, so
+    the image need not stay on disk; docker run pulls the pinned digest when a check is due."""
+    fingerprint = tree_fingerprint(restored / 'paperclip')
+    record = {'image': image, 'fingerprint': fingerprint}
+    if validated and validated.is_file():
+        try:
+            if json.loads(validated.read_text()) == record:
+                return False
+        except (OSError, ValueError):
+            pass
+    postgres_check(image, restored)
+    if validated:
+        receipt(validated, record)
+    return True
+
+
+def verify_payload(payload, work, versions, validated=None):
     manifest = json.loads((payload / 'manifest.json').read_text())
     restored = work / ('restored-' + uuid.uuid4().hex)
     state.restore_bundle(payload, restored)
     if (restored / 'state/paperclip/instances/default/db/PG_VERSION').is_file():
-        postgres_check(versions['paperclip']['image'], restored / 'state')  # archived Paperclip stays restorable
+        # archived Paperclip stays restorable
+        paperclip_check(versions['paperclip']['image'], restored / 'state', validated)
     if (restored / 'state/twenty/db/PG_VERSION').is_file():
         twenty_db_check(TWENTY_DB_IMAGE, restored / 'state')
     return manifest
@@ -278,7 +311,7 @@ def verify_image(image):
          '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777', image, 'verify'])
 
 
-def remote_readback(image, work, versions):
+def remote_readback(image, work, versions, validated=None):
     run(['docker', 'pull', '--quiet', image])
     digests = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .RepoDigests}}', image]))
     repository = image.rsplit(':', 1)[0].removeprefix('docker.io/')
@@ -291,7 +324,7 @@ def remote_readback(image, work, versions):
     try:
         run(['docker', 'create', '--name', holder, '--network', 'none', ref])
         run(['docker', 'cp', holder + ':/opt/nix-recovery', str(payload)])
-        verify_payload(payload, work, versions)
+        verify_payload(payload, work, versions, validated)
     finally:
         run(['docker', 'rm', '-v', holder])
     return ref
@@ -345,14 +378,15 @@ def build(args):
             (payload / 'manifest.json').write_text(json.dumps(manifest))
             for name in ['full_restore.py', 'recovery.py']:
                 shutil.copyfile(HERE / name, payload / name)
-            verify_payload(payload, work, versions)
+            validated = args.status / 'paperclip-validated.json'
+            verify_payload(payload, work, versions, validated)
             make_image(tag, payload, versions)
             verify_image(tag)
             if hub:
                 require_private(args.image, hub.request)
                 run(['docker', 'push', tag])
                 require_private(args.image, hub.request)
-                remote_digest = remote_readback(tag, work, versions)
+                remote_digest = remote_readback(tag, work, versions, validated)
                 require_private(args.image, hub.request)
                 result = dict(attempt, status='published', manifest_digest=remote_digest,
                               completed_at=datetime.now(timezone.utc).isoformat(), entries=len(files))
