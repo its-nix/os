@@ -1,22 +1,24 @@
 # Authority and change governance
 
-Root policy, owned by the founder. Changes to this file, `.github/` (CI, reviewer, CODEOWNERS), the repository verifier, the root-executed deploy implementation and its inputs (`scripts/deploy-os.{sh,py}`, `deploy/compose.yaml`, `deploy/t3/hermes_token.py`), recovery code, or the gate's own tests need founder review through CODEOWNERS. Agents may propose such changes but cannot merge them.
+Root policy, owned by the founder. [CODEOWNERS](../.github/CODEOWNERS) lists the protected paths, including workflows, tests, scripts, the reviewer, and root-executed deployment and recovery code.
 
 ## Durable changes (code, skills, workflows, deployment config)
 
 Path: branch → PR with the original acceptance criteria → required checks → auto-merge → deploy → monitor/revert.
 
-The `main` ruleset requires:
-1. A pull request. No direct pushes and no force-pushes.
-2. Required check runs:
-   - `verify` **from the GitHub Actions app**: unit tests, Compose contract, repository verifier, reviewer tests.
-   - `independent-review` **from the Nix reviewer GitHub App**. It is produced by `deploy/reviewer/reviewer.mjs` on the VPS, in its own container with its own subscription logins, separate from T3 where builders run. For each PR head SHA it picks one reviewer, pseudo-randomly from the eligible pool (Claude, Codex, OpenCode, Grok, Antigravity/Gemini) and seeded by the SHA so reruns are stable. It excludes the builder, named by the PR's `Builder:` line or co-author trailers. Unavailable providers fall through to the next; if none answers, the check fails. The PR head is never checked out or executed; the diff comes from the API and goes to a reviewer CLI with tools disabled.
-   Builder tokens can't create check runs as that App, so they can't forge the check.
-3. Code-owner review for the root-policy paths above (including `deploy/reviewer/`), with stale approvals dismissed and an empty bypass list. Checks must be up to date with `main`.
+The active `main-protection` ruleset requires a PR, blocks force-pushes and deletion, and has an empty bypass list. It requires `verify` from GitHub Actions and `independent-review` from the Nix reviewer GitHub App, with the PR branch up to date with `main`. Repository auto-merge is enabled. The ruleset requires zero approving reviews and does not require CODEOWNERS approval. Agents open PRs with the founder's GitHub identity, which cannot approve its own PRs. A GitHub approval, label, or comment provides no founder authorization to the App.
 
-The reviewer reviews exactly the PR's base...head range, re-checks that the head did not move before publishing, and fails on drafts, forks, non-`main` bases, and incomplete, binary or oversized diffs. File modes are not visible in the reviewed diff, so mode-only effects rely on CI. The description is advisory and the diff is authoritative. The model verdict judges code quality; enforcement comes from the ruleset and token permissions, not from the model.
+`verify` runs the PR's own suite on GitHub-hosted runners with read-only contents access, no persisted checkout credentials and no deployment secrets. Running the base suite as well would block legitimate behaviour changes that need corresponding test updates. The check starts Python in isolated mode and loads `unittest` before appending the repository to the import path for application imports. Changes under `tests/`, `scripts/`, `.github/` or `deploy/reviewer/`, and to the root files `conftest.py`, `pyproject.toml`, `unittest.py`, `sitecustomize.py` and `usercustomize.py`, require founder approval. This includes added files.
 
-Builders (T3 coding threads, venture leads) use a GitHub identity **without** admin, ruleset bypass or workflow-file permission. A red check blocks the merge. A builder may not edit the tests or metric that judge its own change; PRs that touch evaluation files fall under CODEOWNERS.
+`independent-review` runs from deployed main on the VPS. It uses the deployed CODEOWNERS list to inspect changed paths in the exact base...head comparison, including both names of a rename. If any path is protected, the App publishes a failure until it sees a root-owned approval file for that exact head SHA. Normal deployment creates the directory and mounts it read-only in the reviewer container. Neither T3 nor Hermes mounts it. The gate depends on the ruleset, App signing key and VPS root access remaining under trusted control.
+
+After reviewing the exact diff, the founder or a founder-authorized root operator runs this command on the VPS, substituting the full head SHA:
+
+```bash
+sha='<full head SHA>'; [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && install -o root -g root -m 0400 /dev/null "/srv/nix-clean/reviewer/approvals/$sha"
+```
+
+The reviewer retries on its next poll after approval. If approval is removed while the PR is open, the next poll replaces any passing protected verdict with a failure. A new commit needs its own approval. The file authorizes protected-path changes and the model review must still pass. The App excludes the declared builder, chooses a reviewer per head SHA and rechecks both the head and base before publishing the model verdict. It considers only the latest completed check for that head and reviews again if the policy version or base has changed. Legacy checks without a policy and base binding are reviewed again. A missing reviewer triggers a 30-minute retry for the same policy and base. The App leaves drafts, forks and non-main PRs without an approving check, fails incomplete, binary or oversized diffs, reads the diff through the GitHub API and runs the review CLI with tools disabled.
 
 Ordinary business events (CRM updates, analytics reads, approved procedure runs) are not PRs.
 
