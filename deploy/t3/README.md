@@ -1,6 +1,6 @@
 # T3 Code container
 
-Pinned T3 Code v0.1.11 (upstream linux-x64 tarball, SHA-256 checked) plus the native harness CLIs: Claude Code, Codex, OpenCode, Gemini CLI and Grok, and `gh`. Versions are ARGs in `Dockerfile`, mirrored in `deploy/versions.json` (a test keeps them equal). The deployment builds it locally (`docker build`, tag = Dockerfile hash) only when that tag is missing, so unrelated deploys never recreate T3 and no registry is involved.
+Pinned T3 Code v0.1.11 (upstream linux-x64 tarball, SHA-256 checked) plus the native harness CLIs: Claude Code, Codex, OpenCode, Antigravity CLI (`agy`, Google AI subscriptions) and Grok, and `gh`. Versions are ARGs in `Dockerfile`, mirrored in `deploy/versions.json` (a test keeps them equal). The deployment builds it locally (`docker build`, tag = Dockerfile hash) only when that tag is missing, so unrelated deploys never recreate T3 and no registry is involved.
 
 ## Boundary
 
@@ -25,6 +25,14 @@ One-time registration in the LNX profile (after the first deployment):
 ```bash
 docker exec -u 10000 nixos-hermes hermes mcp add t3 --url http://127.0.0.1:3773/mcp --auth header
 ```
+
+Deployment registers T3 for registry-owned venture leads. To test a connection, substitute your profile name for `demo`:
+
+```bash
+docker exec -u 10000 nixos-hermes hermes -p demo mcp test t3
+```
+
+A successful test verifies MCP connectivity and tool discovery.
 
 ## Operator cockpit and provider logins
 

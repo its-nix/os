@@ -6,19 +6,20 @@ license: MIT
 
 # Delegate coding to T3
 
-T3 Code runs the coding harnesses (Claude Code, Codex, OpenCode, Grok, Gemini) in its own isolated container. You reach it through the `t3` MCP server (tools named `t3_*` and `pull_request_*`). You never run code changes in the Hermes runtime yourself.
+T3 Code runs the coding harnesses (Claude Code, Codex, OpenCode, Grok, Antigravity) in its own isolated container. You reach it through the `t3` MCP server (tools named `t3_*` and `pull_request_*`). You never run code changes in the Hermes runtime yourself.
 
 ## Launch (idempotent)
-1. **Duplicate check first.** Call `t3_thread_search` with the Kanban card id (e.g. `t_1b64c5d9`). If a thread for this card exists, resume it with `t3_thread_send` or `t3_thread_read` instead of launching another. A lost reply is not proof that no thread exists.
-2. **Project.** Use `t3_project_list`. If the repository isn't there, `t3_project_clone` it (GitHub URL).
-3. **Launch** with `t3_thread_launch`:
+1. **Preflight.** Run `hermes -p <your-profile> mcp test t3`. It must report `Connected`. If the command fails or does not report `Connected`, block the card with the error and do not launch.
+2. **Duplicate check.** Call `t3_thread_search` with the Kanban card id (e.g. `t_1b64c5d9`). If a thread for this card exists, resume it with `t3_thread_send` or `t3_thread_read` instead of launching another. A lost reply is not proof that no thread exists.
+3. **Project.** Use `t3_project_list`. If the repository isn't there, `t3_project_clone` it (GitHub URL).
+4. **Launch** with `t3_thread_launch`:
    - `projectId`
-   - `title`: `"<card id>: <short goal>"` (this makes step 1 work)
+   - `title`: `"<card id>: <short goal>"` (this makes step 2 work)
    - `runtimeMode: "full-access"`; the container is the boundary
    - `workspaceStrategy`: `{type: "worktree", branch: "<venture>/<card id>", baseRef: "origin/main", startFromOrigin: true}`, so every task gets its own worktree
    - `modelSelection`: from `orchestrator_capabilities`. Codex or Claude for ordinary work, a second, different provider for review.
-   - `message`: the original requirement verbatim, the acceptance checks, the selected skills, and *"open a PR with these acceptance checks in its description; do not merge"*.
-4. Record the returned `threadId` and link on the Kanban card in the same step.
+   - `message`: the original requirement verbatim, the acceptance checks, the selected skills, and *"open a PR with these acceptance checks in its description; do not merge"*. Require a line `Builder: <provider instance id>` (e.g. `Builder: codex`) in the PR description so the independent reviewer can exclude the authoring provider.
+5. Record the returned `threadId` and link on the Kanban card in the same step.
 
 ## Follow and verify
 - `t3_thread_wait` (bounded) or a later `t3_thread_read`. If T3 restarted, read the thread before resending anything.

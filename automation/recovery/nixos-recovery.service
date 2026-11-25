@@ -15,8 +15,11 @@ User=root
 UMask=0077
 EnvironmentFile=/etc/nixos/recovery.env
 ExecStart=/usr/bin/python3 /opt/nix-clean-source/automation/recovery/full_create.py --apply --publish --image ${NIXOS_RECOVERY_IMAGE}
-# Also recover services if Python is killed or the job times out before its finally block.
-ExecStopPost=/usr/bin/flock -w 240 /run/lock/nix-os-deploy.lock /bin/sh -c 'rc=0; for c in nixos-twenty-redis nixos-twenty-db nixos-twenty-server nixos-twenty-worker; do if [ -e /srv/nix-clean/twenty/ENABLED ] && docker container inspect $$c >/dev/null 2>&1; then docker start $$c || rc=1; fi; done; for c in nixos-hermes nixos-paperclip nixos-t3; do docker start $$c || rc=1; done; exit $$rc'
+# Also recover services if Python is killed or the job times out before its finally block. A
+# container deleted while stopped (core, or CRM when enabled) is recreated from the deployed compose
+# file plus the generated NixKit mounts override (required: without it the hook fails rather than
+# recreate Hermes/T3 without their skill mounts), with the CRM profile when enabled (state is bind-mounted).
+ExecStopPost=/usr/bin/flock -w 240 /run/lock/nix-os-deploy.lock /bin/sh -c 'rc=0; crm=; if [ -e /srv/nix-clean/twenty/ENABLED ]; then crm="--profile crm"; for c in nixos-twenty-redis nixos-twenty-db nixos-twenty-server nixos-twenty-worker; do docker start $$c || rc=1; done; fi; for c in nixos-hermes nixos-t3 nixos-reviewer; do docker start $$c || rc=1; done; if [ $$rc -ne 0 ] && [ -f /srv/nix-clean/packs.compose.json ]; then docker compose -p nixos --env-file /srv/nix-clean/deployment.env -f /opt/nix-clean-source/deploy/compose.yaml -f /srv/nix-clean/packs.compose.json $$crm up --detach --no-recreate && rc=0; fi; exit $$rc'
 Restart=on-failure
 RestartSec=15min
 TimeoutStartSec=1h

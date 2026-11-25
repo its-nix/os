@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Apply a verified main revision to existing native state; never prepare new homes."""
 
+from contextlib import ExitStack
+import ctypes
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -9,8 +11,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 
 
 def run(argv):
@@ -94,6 +98,41 @@ def ensure_t3_state(state):
             os.chown(path, T3_UID, T3_GID)
 
 
+ROOT_UID = ROOT_GID = 0
+REVIEWER_ENV_TEMPLATE = '''# Rotating independent reviewer (non-secret settings). Secrets: reviewer/secrets/app.pem.
+# REVIEW_APP_ID=<GitHub App id>
+REVIEW_POOL=claude,codex,opencode,grok,antigravity
+# OPENCODE_REVIEW_MODEL=opencode/<Go model id>  (default opencode/kimi-k3.1-pro, via the Go endpoint)
+'''
+
+
+def ensure_reviewer_state(source, state):
+    """Reviewer state dirs (new ones only), non-secret settings template, and the deployment-owned
+    reviewer script. The App private key is founder-provided in reviewer/secrets/app.pem."""
+    root = state / 'reviewer'
+    for path, owner, mode in ((root, (ROOT_UID, ROOT_GID), 0o755), (root / 'home', (T3_UID, T3_GID), 0o700),
+                              (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, ROOT_GID), 0o700),
+                              (root / 'approvals', (ROOT_UID, ROOT_GID), 0o700)):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('Reviewer state path is not a plain directory')
+        if not path.exists():
+            path.mkdir(mode=mode)
+            os.chown(path, *owner)
+    if not (root / 'reviewer.env').exists():
+        _root_write(root, 'reviewer.env', REVIEWER_ENV_TEMPLATE, 0o644)
+    if not (root / 'secrets' / 'seed').exists():
+        import secrets as _secrets  # selection seed: a builder must not be able to predict its reviewer
+        _root_write(root / 'secrets', 'seed', _secrets.token_hex(32) + '\n', 0o400)
+    changed = False
+    for relative in ('deploy/reviewer/reviewer.mjs', '.github/CODEOWNERS'):
+        payload = (source / relative).read_text()
+        current = root / 'app' / Path(relative).name
+        if not current.is_file() or current.is_symlink() or current.read_text() != payload:
+            _root_write(root / 'app', current.name, payload, 0o644)
+            changed = True
+    return changed  # a bind-mounted file change does not recreate the container by itself
+
+
 def _token_module():
     spec = importlib.util.spec_from_file_location('hermes_token', Path(__file__).resolve().parents[1] / 'deploy/t3/hermes_token.py')
     module = importlib.util.module_from_spec(spec)
@@ -102,7 +141,46 @@ def _token_module():
 
 
 def renew_t3_credential(state):
-    return _token_module().ensure(state / 'hermes')
+    module = _token_module()
+    renewed = module.ensure(state / 'hermes')
+    return module.share_with_leads(state / 'hermes') or renewed
+
+
+def register_t3_for_leads(state, run):
+    """Install T3 after sharing the credential, and verify Hermes enabled it."""
+    endpoint = 'http://127.0.0.1:3773/mcp'
+    pending = state / '.t3-registration-reload'
+    for profile in _token_module().venture_profiles(state / 'hermes'):
+        cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes', '-p', profile.name]
+        key = 'mcp_servers.t3'
+        try:
+            server = json.loads(run(cli + ['config', 'get', '--json', key]))
+        except subprocess.CalledProcessError as exc:
+            diagnostic = (exc.stdout or '') + (exc.stderr or '')
+            if exc.returncode != 1 or diagnostic.strip() != f'Config key not set: {key}':
+                raise
+            server = None
+        if server is not None:
+            if server.get('url') != endpoint:
+                raise ValueError('Venture T3 registration uses an unexpected endpoint')
+            if server.get('enabled', True):
+                continue
+            # The old deployment saved exactly these fields after failed discovery.
+            # Leave disabled entries with operator-supplied options or filters alone.
+            if set(server) != {'url', 'headers', 'enabled'} or set(server['headers']) != {'Authorization'}:
+                continue
+            if '✓ Tools discovered:' not in run(cli + ['mcp', 'test', 't3']):
+                raise ValueError('Hermes could not discover venture T3 tools')
+        _root_write(state, pending.name, '', 0o600)
+        if server is None:
+            run(['docker', 'exec', '-i', '-u', '10000', 'nixos-hermes', 'sh', '-c',
+                 'printf "Y\\nY\\n" | hermes -p "$1" mcp add t3 --url "$2" --auth header',
+                 'register-t3', profile.name, endpoint])
+        else:
+            run(cli + ['config', 'set', '--force', key + '.enabled', 'true'])
+        if run(cli + ['config', 'get', '--json', key + '.enabled']) != 'true':
+            raise ValueError('Hermes did not enable the venture T3 registration')
+    return pending
 
 
 def confirm_t3_credential(state):
@@ -203,6 +281,227 @@ def sync_os_skills(source, state):
             shutil.rmtree(old)
 
 
+PERSONAL_MANIFEST = 'deploy/profiles/personal.json'
+PERSONAL_STAGING_SUFFIX = 'setup'
+PERSONAL_RECORD = 'personal.json'
+HERMES_HOME = '/opt/data'  # where the Hermes container sees its data
+HERMES_UID = HERMES_GID = 10000
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _personal_contract(source):
+    """Validate the whole personal-profile contract up front; every schema fault is a ValueError."""
+    def need(ok, what):
+        if not ok:
+            raise ValueError('Personal profile contract: ' + what)
+
+    def text(value):
+        return isinstance(value, str) and bool(value.strip())
+
+    def contained(relative, what):
+        need(text(relative), what + ' must be a path')
+        path = (source / relative).resolve()
+        need(path.is_relative_to(source.resolve()) and path.is_file(), what + ' must be a file inside the release')
+        return path
+
+    try:
+        manifest = json.loads((source / PERSONAL_MANIFEST).read_text())
+        need(isinstance(manifest, dict), 'the manifest must be an object')
+        name = manifest.get('profile')
+        need(isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9]{1,23}', name) and name != 'default',
+             'profile name is invalid')
+        need(text(manifest.get('description')), 'description is required')
+        role = contained(manifest.get('role_file'), 'role_file').read_text()
+        need(text(role), 'the role file is empty')
+        model = manifest.get('model')
+        need(isinstance(model, dict), 'model must be an object')
+        pilot = json.loads(contained(model.get('source'), 'model.source').read_text())
+        need(isinstance(pilot, dict) and isinstance(pilot.get('model'), dict), 'the pilot model is missing')
+        provider, default = pilot['model'].get('provider'), pilot['model'].get('default')
+        need(text(provider) and text(default), 'the pilot model needs provider and default')
+        config = manifest.get('config')
+        first = ('platforms.discord.enabled', 'approvals.mode', 'approvals.cron_mode')
+        need(isinstance(config, dict), 'config must be an object')
+        need(config.keys() <= {*first, 'terminal.cwd'}, 'config includes an unsupported key')
+        need(config.get('platforms.discord.enabled') is False, 'Discord must be declared disabled')
+        need(config.get('approvals.mode') == 'manual', 'approvals.mode must be manual')
+        need(config.get('approvals.cron_mode') == 'deny', 'approvals.cron_mode must be deny')
+        need(config.get('terminal.cwd') == f'{HERMES_HOME}/workspaces/{name}', 'terminal.cwd must be the profile workspace')
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError('Personal profile contract: unexpected structure (' + type(exc).__name__ + ')') from exc
+    # Apply the restrictive settings first.
+    settings = {key: config[key] for key in first}
+    settings.update({'model.provider': provider, 'model.default': default, 'terminal.cwd': config['terminal.cwd']})
+    return {'name': name, 'description': manifest['description'], 'role': role, 'settings': settings}
+
+
+def _directory_identity(path, *, dir_fd=None):
+    """[device, inode] of a real directory, None when absent; a symlink or file there is an error."""
+    try:
+        info = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f'{Path(path).name} must be a real directory')
+    return [info.st_dev, info.st_ino]
+
+
+def _personal_record(state, name):
+    path = state / 'provisioning' / PERSONAL_RECORD
+    if path.parent.exists() or path.parent.is_symlink():
+        info = path.parent.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != ROOT_UID or info.st_mode & 0o077:
+            raise ValueError('The personal provisioning directory must be root-private')
+    if path.is_symlink():
+        raise ValueError('The personal provisioning record must not be a symlink')
+    if not path.exists():
+        return {'state': 'none'}
+    record = json.loads(path.read_text())
+    ok = (isinstance(record, dict) and record.get('profile') == name
+          and record.get('state') in ('creating', 'staged', 'prepared', 'complete'))
+    if ok and record['state'] in ('staged', 'prepared'):
+        fields = ('identity', 'workspace') if record['state'] == 'prepared' else ('identity',)
+        ok = all(isinstance(record.get(key), list) and len(record[key]) == 2
+                 and all(type(n) is int for n in record[key]) for key in fields)
+    if not ok:
+        raise ValueError('The personal provisioning record is unreadable')
+    return record
+
+
+def _save_personal_record(state, name, phase, **fields):
+    directory = state / 'provisioning'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    payload = {'profile': name, 'state': phase, 'updated': datetime.now(timezone.utc).isoformat(), **fields}
+    _root_write(directory, PERSONAL_RECORD, json.dumps(payload) + '\n', 0o600)
+
+
+def _rename_directory_noreplace(src_fd, src, dst_fd, dst):
+    # Linux deploy hosts use renameat2. macOS has the equivalent for local tests.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename, flag = (libc.renameatx_np, 4) if sys.platform == 'darwin' else (libc.renameat2, 1)
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), flag):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _build_personal_profile(source, home, contract, staging, run):
+    # Only the disposable CLI container sees this home. It never mounts the live Hermes tree.
+    image = json.loads((source / 'deploy/versions.json').read_text())['hermes']['image']
+    container = ['docker', 'run', '--rm', '--init', '--pull', 'never', '--network', 'none', '--read-only',
+                 '--tmpfs', '/tmp', '--user', f'{HERMES_UID}:{HERMES_GID}',
+                 '--env', f'HERMES_HOME={HERMES_HOME}', '--env', f'HOME={HERMES_HOME}',
+                 '--mount', f'type=bind,source={home},target={HERMES_HOME}']
+
+    def execute(program, *args):
+        return run(container + ['--entrypoint', program, image, *args])
+
+    def cli(*args):
+        return execute('/opt/hermes/.venv/bin/hermes', *args)
+
+    name = contract['name']
+    cli('profile', 'create', staging, '--no-alias')
+    settings = contract['settings']
+    for key, value in settings.items():
+        cli('-p', staging, 'config', 'set', key, json.dumps(value) if isinstance(value, bool) else value)
+    for key, value in settings.items():
+        if json.loads(cli('-p', staging, 'config', 'get', '--json', key)) != value:
+            raise ValueError('Hermes did not apply the personal profile setting ' + key)
+    soul = f'{HERMES_HOME}/profiles/{staging}/SOUL.md'
+    execute('sh', '-c', 'umask 022; printf %s "$1" > "$2.next" && mv -f "$2.next" "$2"',
+            'write-soul', contract['role'], soul)
+    if execute('cat', soul).strip() != contract['role'].strip():
+        raise ValueError('The personal role instructions did not read back')
+    identity = _directory_identity(home / 'profiles' / staging)
+    if identity is None:
+        raise ValueError('Hermes did not create the personal staging profile')
+    cli('profile', 'rename', staging, name)
+    if _directory_identity(home / 'profiles' / name) != identity:
+        raise ValueError('Hermes did not rename the verified personal staging profile')
+    cli('profile', 'describe', name, '--text', contract['description'])
+    return identity
+
+
+def ensure_personal_profile(source, state, run):
+    """Build in a private home, then publish only the verified directory without replacing a name."""
+    contract = _personal_contract(source)
+    name = contract['name']
+    staging = name + PERSONAL_STAGING_SUFFIX
+    hermes = state / 'hermes'
+    record = _personal_record(state, name)
+    if record['state'] == 'complete':
+        return 'present'
+
+    with ExitStack() as stack:
+        def open_directory(path, parent=None):
+            try:
+                fd = os.open(path, DIRECTORY_FLAGS, dir_fd=parent)
+            except OSError as exc:
+                raise ValueError('The personal provisioning path must be real directories') from exc
+            stack.callback(os.close, fd)
+            return fd
+
+        home_fd = open_directory(hermes)
+        profiles_fd = open_directory('profiles', home_fd)
+        target_id = _directory_identity(name, dir_fd=profiles_fd)
+        prepared = record['state'] == 'prepared'
+        if target_id is not None and (not prepared or target_id != record['identity']):
+            return 'present'
+        if _directory_identity(staging, dir_fd=profiles_fd) is not None and target_id is None:
+            raise ValueError('A personal staging profile already exists in the live Hermes home')
+        try:
+            os.mkdir('workspaces', 0o755, dir_fd=home_fd)
+        except FileExistsError:
+            pass
+        workspaces_fd = open_directory('workspaces', home_fd)
+        workspace_id = _directory_identity(name, dir_fd=workspaces_fd)
+        if workspace_id is not None and (not prepared or workspace_id != record['workspace']):
+            raise ValueError('The personal workspace exists without a matching deployment record')
+
+        def verify_live_layout():
+            for fd, path, parent in ((home_fd, hermes, None), (profiles_fd, 'profiles', home_fd),
+                                     (workspaces_fd, 'workspaces', home_fd)):
+                info = os.fstat(fd)
+                if _directory_identity(path, dir_fd=parent) != [info.st_dev, info.st_ino]:
+                    raise ValueError('The live Hermes directory layout changed during provisioning')
+
+        if target_id is None:
+            directory = state / 'provisioning'
+            directory.mkdir(mode=0o700, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=directory, prefix='.personal-build-') as temporary:
+                build = Path(temporary)
+                home = build / 'home'
+                home.mkdir(mode=0o700)
+                os.chown(home, HERMES_UID, HERMES_GID)
+                target_id = _build_personal_profile(source, home, contract, staging, run)
+                build_fd = open_directory(build)
+                built_profiles_fd = open_directory(home / 'profiles')
+                if _directory_identity(name, dir_fd=built_profiles_fd) != target_id:
+                    raise ValueError('The built personal profile changed before publication')
+                new_workspace = workspace_id is None
+                if new_workspace:
+                    workspace = build / 'workspace'
+                    workspace.mkdir(mode=0o700)
+                    os.chown(workspace, HERMES_UID, HERMES_GID)
+                    workspace_id = _directory_identity(workspace)
+
+                verify_live_layout()
+                _save_personal_record(state, name, 'prepared', identity=target_id, workspace=workspace_id)
+                if new_workspace:
+                    _rename_directory_noreplace(build_fd, 'workspace', workspaces_fd, name)
+                if _directory_identity(name, dir_fd=workspaces_fd) != workspace_id:
+                    raise ValueError('The personal workspace changed before publication')
+                _rename_directory_noreplace(built_profiles_fd, name, profiles_fd, name)
+
+        verify_live_layout()
+        if (workspace_id is None or _directory_identity(name, dir_fd=workspaces_fd) != workspace_id
+                or _directory_identity(name, dir_fd=profiles_fd) != target_id):
+            raise ValueError('The published personal profile or workspace changed during provisioning')
+        _save_personal_record(state, name, 'complete', identity=target_id, workspace=workspace_id)
+        return 'resumed' if prepared else 'created'
+
+
 def _root_write(directory, name, text, mode):
     """Root-safe write: refuse symlinked directories, random O_EXCL staging file, atomic rename."""
     import tempfile
@@ -257,7 +556,7 @@ def install_health_script(source, state):
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
-          t3_loaded=confirm_t3_credential, units=sync_recovery_units):
+          t3_loaded=confirm_t3_credential, units=sync_recovery_units, personal=ensure_personal_profile):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -267,7 +566,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
     write_json(state / 'deployment-attempt.json', attempt)
     try:
         if not all((state / name).is_dir() and not (state / name).is_symlink()
-                   for name in ('hermes', 'paperclip', 'knowledge/company')):
+                   for name in ('hermes', 'knowledge/company')):
             raise ValueError('Existing native state and KB are required')
         if current.exists() and not current.is_symlink():
             raise ValueError('Operator must adopt the existing source directory as a symlink first')
@@ -278,14 +577,15 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         installed = json.loads((state / 'hermes/nix/versions.json').read_text())
         if {k: v for k, v in installed.items() if k not in RUNTIMES} != desired['dependencies']:
             raise ValueError('Installed native dependency pins do not match the reviewed source')
-        for name, repository in [('hermes', 'nousresearch/hermes-agent'), ('paperclip', 'ghcr.io/paperclipai/paperclip')]:
+        for name, repository in [('hermes', 'nousresearch/hermes-agent')]:
             if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
                 raise ValueError('Only digest-pinned official images may deploy')
         candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
             'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
-            'PAPERCLIP_IMAGE': versions['paperclip']['image'], 'T3_BUILD_TAG': t3_build_tag(source),
+            'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
+        reviewer_changed = ensure_reviewer_state(source, state)
         candidate.chmod(0o600)
         crm = crm_enabled(state)
         if crm:
@@ -296,13 +596,20 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             for name in ('nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis'):
                 if name in running:  # apps drain before their datastores stop
                     run(['docker', 'stop', '--time', '90', name])
+        ensure_t3_image(source, run)
+        run(['python3', str(source / 'scripts/deploy-os.py'), '--prepare-packs', revision, str(source)])
         compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
-                   '--file', str(source / 'deploy/compose.yaml')] + (['--profile', 'crm'] if crm else [])
+                   '--file', str(source / 'deploy/compose.yaml'), '--file', str(state / 'packs.compose.json')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
-        ensure_t3_image(source, run)
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
-        for name in ('hermes', 'paperclip'):
+        if reviewer_changed:  # the evaluator's new code must actually be the code that runs
+            run(compose + ['up', '--detach', '--no-deps', '--force-recreate', 'reviewer'])
+        # Paperclip is retired (no work since 2026-11-23): stop, never remove; its state stays under
+        # NIX_CLEAN_ROOT/paperclip and in every recovery image for rollback.
+        if run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-paperclip$']).strip():
+            run(['docker', 'stop', '--time', '90', 'nixos-paperclip'])
+        for name in ('hermes',):
             observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',
                             'nixos-' + name])
             if observed != versions[name]['image'] + ' healthy':
@@ -310,21 +617,35 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-t3']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' healthy':
             raise ValueError('T3 image or health readback differs from the declared deployment')
+        if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Status}}', 'nixos-reviewer']) \
+                != 'nixos-t3:' + t3_build_tag(source) + ' running':
+            raise ValueError('Reviewer image or state readback differs from the declared deployment')
         if crm and run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', 'nixos-twenty-server']) != 'healthy':
             raise ValueError('Twenty CRM health readback failed')
         listeners = run(['ss', '-lntH']).splitlines()
-        for port in ('18642', '19119', '13100', '3773') + (('3020',) if crm else ()):
+        for port in ('18642', '19119', '3773') + (('3020',) if crm else ()):
             addresses = [line.split()[3] for line in listeners if len(line.split()) >= 5
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:
                 raise ValueError('A pilot listener is missing or is not exclusively loopback')
         run(['docker', 'exec', '-u', '10000', '-w', '/knowledge/company', 'nixos-hermes',
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
-        if t3_credential(state):
+        credential_changed = t3_credential(state)
+        registration_pending = register_t3_for_leads(state, run)
+        if credential_changed or registration_pending.exists():
             # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
             run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
             run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
             t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
+            registration_pending.unlink(missing_ok=True)
+        try:
+            personal(source, state, run)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
+            # Additive and retried by every deployment: never block the company runtime on it. Only our
+            # own validation messages are printed; native command output and argv can hold role text.
+            detail = f': {exc}' if type(exc) is ValueError else ''
+            print('Personal profile provisioning failed; deployment continues and retries next run' + detail,
+                  file=sys.stderr)
         units(source, run)
         sync_os_skills(source, state)
         install_health_script(source, state)
@@ -338,7 +659,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         write_json(state / 'versions.json', versions)
         (state / 'source-revision').write_text(revision + '\n')
         receipt = dict(attempt, status='healthy', completed_at=datetime.now(timezone.utc).isoformat(),
-                       images={name: versions[name]['image'] for name in ('hermes', 'paperclip')})
+                       images={'hermes': versions['hermes']['image'], 't3': 'nixos-t3:' + t3_build_tag(source)})
         write_json(state / 'deployment.json', receipt)
         write_json(state / 'deployment-attempt.json', receipt)
         publish_health(state, receipt)
@@ -351,12 +672,73 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         candidate.unlink(missing_ok=True)
 
 
+def prepare_packs(release, state, image):
+    pack_dir = release / 'deploy/packs'
+    kit = json.loads((release / 'deploy/versions.json').read_text())['kit']['revision']
+    key = hashlib.sha256(kit.encode() + (pack_dir / 'packs.json').read_bytes() +
+                         (pack_dir / 'build.py').read_bytes() + (pack_dir / 'worktree.py').read_bytes()).hexdigest()
+    store = state / 'pack-releases'
+    store.mkdir(mode=0o755, exist_ok=True)
+    if store.is_symlink() or store.stat().st_uid != 0 or store.stat().st_mode & 0o022:
+        raise ValueError('Unsafe pack release store')
+    core = store / key
+    runner = ['docker', 'run', '--rm', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+              '-v', f'{release}/deploy:/release/deploy:ro', '--entrypoint', 'python3']
+    if not core.exists():
+        with tempfile.TemporaryDirectory(dir=store) as tmp:
+            archive = Path(tmp) / 'kit.tar'
+            subprocess.run(['git', '-C', str(state / 'inputs/kit'), 'archive', '--format=tar',
+                            '--output', archive, kit], check=True)
+            archive.chmod(0o644)
+            output = Path(tmp) / 'out'
+            output.mkdir()
+            os.chown(output, 65534, 65534)
+            subprocess.run([*runner, '--user', '65534:65534', '-v', f'{archive}:/kit.tar:ro',
+                            '-v', f'{output}:/out', image, '/release/deploy/packs/build.py',
+                            '/kit.tar', '/out/core', '--role', 'engineering', '--runtime'], check=True)
+            built = output / 'core'
+            for entry in [built, *built.rglob('*')]:
+                if entry.is_symlink() or not (entry.is_file() or entry.is_dir()):
+                    raise ValueError('Invalid pack release entry')
+                os.chown(entry, 0, 0)
+                # Skillshare preserves directory modes when copying into a task worktree.
+                # The store is root-owned and every harness mount is read-only.
+                entry.chmod(0o755 if entry.is_dir() or entry.stat().st_mode & 0o111 else 0o644)
+            built.rename(core)
+    volumes = {}
+    for service, uid, home in [('hermes', '10000', state / 'hermes'), ('t3', '10010', state / 't3/home')]:
+        raw = subprocess.check_output([*runner, '--read-only', '--network=none', '--user', uid,
+                                      '-v', f'{home}:/native:ro', '-v', f'{core}:/core:ro',
+                                      image, '/release/deploy/packs/mounts.py', service])
+        names = json.loads(raw)
+        allowed = set(json.loads((pack_dir / 'packs.json').read_text())['packs']['core'])
+        if not isinstance(names, list) or any(not isinstance(n, str) or not re.fullmatch(r'[a-z0-9-]+', n)
+                                              or n not in allowed for n in names):
+            raise ValueError('Invalid core mount selection')
+        target = '/opt/data/skills/nixkit' if service == 'hermes' else '/var/lib/t3/.agents/skills'
+        volumes[service] = {'volumes': [
+            {'type': 'bind', 'source': str(core / name), 'target': target + '/' + name, 'read_only': True,
+             'bind': {'create_host_path': False}} for name in names]}
+    volumes['t3']['volumes'].append({'type': 'bind', 'source': str(core), 'target': '/opt/nixkit',
+                                     'read_only': True, 'bind': {'create_host_path': False}})
+    override = state / 'packs.compose.json'
+    with tempfile.NamedTemporaryFile(dir=store, mode='w', delete=False) as tmp:
+        json.dump({'services': volumes}, tmp)
+    os.replace(tmp.name, override)
+
+
 def main():
+    pack_build = sys.argv[1:2] == ['--prepare-packs']
+    if pack_build:
+        del sys.argv[1]
     if len(sys.argv) != 3 or not re.fullmatch(r'[0-9a-f]{40}', sys.argv[1]):
         raise ValueError('Deployment requires an exact verified revision and its root-owned release')
     revision, source = sys.argv[1], Path(sys.argv[2]).resolve()
     if source != Path('/opt/nix-os/releases') / revision or source != Path(__file__).resolve().parents[1]:
         raise ValueError('Deployment source must be the verified release')
+    if pack_build:
+        prepare_packs(source, Path('/srv/nix-clean'), 'nixos-t3:' + t3_build_tag(source))
+        return
     apply(revision, source, Path('/srv/nix-clean'), Path('/opt/nix-clean-source'))
 
 

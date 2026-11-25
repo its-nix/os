@@ -59,7 +59,8 @@ def safe_link(name, target):
 # Rebuildable content kept out of recovery images: T3 repositories/worktrees come back from
 # GitHub, and caches are regenerated. The directories themselves are preserved (empty).
 REBUILDABLE = ('t3/work/', 't3/home/.t3/worktrees/', 't3/home/.t3/caches/', 't3/home/.cache/', 't3/home/.npm/',
-               't3/home/.codex/tmp/', 't3/home/.codex/.tmp/')
+               't3/home/.codex/tmp/', 't3/home/.codex/.tmp/',
+               'reviewer/home/.cache/', 'reviewer/home/.npm/', 'reviewer/home/.codex/tmp/', 'reviewer/home/.codex/.tmp/')
 
 
 def durable_paths(root):
@@ -113,12 +114,21 @@ def snapshot(root, archive):
 
 
 def require_state(inventory):
-    required = ['hermes/config.yaml', 'paperclip/instances/default/db/PG_VERSION']
-    if any(inventory.get(name, {}).get('type') != 'file' for name in required):
+    if inventory.get('hermes/config.yaml', {}).get('type') != 'file':
         raise Refusal('Snapshot lacks required native state')
-    if not any(name.startswith('paperclip/instances/default/secrets/') and row.get('size', 0) > 0
-               for name, row in inventory.items()):
+    # Archived Paperclip state (retired 2026-11-23) must stay complete wherever it exists.
+    if inventory.get('paperclip/instances/default/db/PG_VERSION', {}).get('type') == 'file' and not any(
+            name.startswith('paperclip/instances/default/secrets/') and row.get('size', 0) > 0
+            for name, row in inventory.items()):
         raise Refusal('Snapshot lacks Paperclip encryption keys')
+    # Optional CRM (Twenty): the enable flag, database and its credentials travel together. Any
+    # partial set would restore a CRM that boots empty, stays disabled although it has data, or
+    # cannot read its own secrets. To retire the CRM, move twenty/ out of the root with its flag.
+    twenty = [inventory.get(name, {}) for name in
+              ('twenty/ENABLED', 'twenty/db/PG_VERSION', 'twenty/db.env', 'twenty/server.env')]
+    if any(twenty) and (any(row.get('type') != 'file' for row in twenty)
+                        or any(row.get('size', 0) <= 0 for row in twenty[2:])):
+        raise Refusal('Snapshot lacks Twenty enable flag, database or credentials')
     for name in inventory:
         for parent in PurePosixPath(name).parents:
             if str(parent) != '.' and inventory.get(str(parent), {}).get('type') != 'directory':
@@ -175,6 +185,10 @@ def restore(archive, manifest, destination, *, preserve_owner=True):
                 # Preserve it exactly; this exception never applies to application databases.
                 if row['size'] == 0 and re.fullmatch(
                         r'paperclip/instances/default/locks/directory-merge/[0-9a-f]{64}\.lock\.sqlite', name):
+                    continue
+                # T3's ownership lock: an exclusive transaction on a file that "never holds data"
+                # (pingdotgg/t3code v0.1.11 apps/server/src/serverOwnership.ts). Preserved exactly.
+                if row['size'] == 0 and name == 't3/home/.t3/userdata/server-owner.sqlite':
                     continue
                 db.check_database((destination / name).resolve())
     return len(inventory)

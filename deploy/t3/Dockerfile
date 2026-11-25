@@ -10,8 +10,12 @@ ARG GH_SHA256=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
 ARG CLAUDE_CODE_VERSION=2.1.330
 ARG CODEX_VERSION=0.171.0
 ARG OPENCODE_VERSION=1.19.6
-ARG GEMINI_CLI_VERSION=0.70.0
 ARG GROK_VERSION=1.0.92
+# Antigravity CLI (Google AI subscriptions): the official installer's manifest for linux_amd64
+# names this tarball with this SHA-512; pinned here by SHA-256 of the same file.
+ARG AGY_VERSION=1.5.16
+ARG AGY_BUILD=5250855658717184
+ARG AGY_SHA256=9bdab234d06bad1a61be2321072652eb06be78baff1acbfae47331da5a090abc
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 ripgrep jq tini \
@@ -21,16 +25,18 @@ ADD --checksum=sha256:${T3_SHA256} \
     https://github.com/pingdotgg/t3code/releases/download/v${T3_VERSION}/t3-${T3_VERSION}-linux-x64.tar.gz /tmp/t3.tgz
 ADD --checksum=sha256:${GH_SHA256} \
     https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz /tmp/gh.tgz
+ADD --checksum=sha256:${AGY_SHA256} \
+    https://storage.googleapis.com/antigravity-public/antigravity-cli/${AGY_VERSION}-${AGY_BUILD}/linux-x64/cli_linux_x64.tar.gz /tmp/agy.tgz
 RUN mkdir -p /opt/t3 && tar xzf /tmp/t3.tgz -C /opt/t3 --strip-components=1 \
  && ln -s /opt/t3/t3 /usr/local/bin/t3 \
  && tar xzf /tmp/gh.tgz -C /tmp && install -m 755 /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/gh \
- && rm -rf /tmp/t3.tgz /tmp/gh.tgz /tmp/gh_*
+ && tar xzf /tmp/agy.tgz -C /tmp antigravity && install -m 755 /tmp/antigravity /usr/local/bin/agy \
+ && rm -rf /tmp/t3.tgz /tmp/gh.tgz /tmp/gh_* /tmp/agy.tgz /tmp/antigravity
 
 RUN npm install -g --no-fund --no-audit \
       @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
       @openai/codex@${CODEX_VERSION} \
       opencode-ai@${OPENCODE_VERSION} \
-      @google/gemini-cli@${GEMINI_CLI_VERSION} \
       @xai-official/grok@${GROK_VERSION} \
  && npm cache clean --force
 

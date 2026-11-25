@@ -27,11 +27,12 @@ spec = importlib.util.spec_from_file_location('full_restore', HERE / 'full_resto
 state = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(state)
 Refusal = state.Refusal
-CONTAINERS = ['nixos-hermes', 'nixos-paperclip', 'nixos-t3']
+CONTAINERS = ['nixos-hermes', 'nixos-t3', 'nixos-reviewer']  # Paperclip retired: archived state only
 # Optional CRM: stopped app-first, started database-first.
 CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
 # Probe image for a restored Twenty database, independent of whether the profile is active now
 # (a test keeps it equal to deploy/compose.yaml).
+CRM_SERVICES = ['twenty-db', 'twenty-redis', 'twenty-server', 'twenty-worker']
 TWENTY_DB_IMAGE = 'postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175'
 
 
@@ -44,6 +45,12 @@ def containers(root=Path('/srv/nix-clean')):
     return CONTAINERS + (CRM_CONTAINERS if crm_enabled(root) else [])
 
 
+# The restored CRM database must open AND carry Twenty's migrated `core` schema: an empty or
+# freshly initialised cluster would also open, and would silently pass a bare SELECT.
+TWENTY_DB_SQL = ("SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'core') "
+                 "THEN 'NIXOS_TWENTY_DB_OK' ELSE 'NIXOS_TWENTY_DB_EMPTY' END;\n")
+
+
 def twenty_db_check(image, restored):
     """Open the restored Twenty PostgreSQL in single-user mode, no network."""
     output = run(['docker', 'run', '--rm', '--interactive', '--network', 'none', '--user', '999:999',
@@ -51,15 +58,18 @@ def twenty_db_check(image, restored):
                   '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777', '--tmpfs', '/var/run/postgresql:rw,mode=1777',
                   '--mount', f'type=bind,source={restored / "twenty/db"},target=/var/lib/postgresql/data',
                   '--entrypoint', 'postgres', image, '--single', '-D', '/var/lib/postgresql/data', 'default'],
-                 input="SELECT 'NIXOS_TWENTY_DB_OK';\n")
+                 input=TWENTY_DB_SQL)
     if 'NIXOS_TWENTY_DB_OK' not in output:
-        raise Refusal('Restored Twenty database did not open')
+        raise Refusal('Restored Twenty database did not open with its migrated schema')
 
 
 def run(argv, **kwargs):
     result = subprocess.run(argv, capture_output=True, text=True, timeout=1800, **kwargs)
     if result.returncode:
-        raise Refusal('A native recovery command failed; private diagnostics suppressed')
+        # Name only the program and its subcommand (e.g. "docker push"): never arguments or output.
+        name = ' '.join(a for a in argv[:2] if re.fullmatch(r'[a-z][a-z-]*', a))
+        raise Refusal(f'A native recovery command failed ({name or "unknown"}, exit {result.returncode}); '
+                      'private diagnostics suppressed')
     return result.stdout.strip()
 
 
@@ -147,7 +157,9 @@ def create_private(image, hub):
 
 
 HEALTH = '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
-CLEAN_EXIT = {'exited 0', 'exited 143'}  # 143: graceful SIGTERM exit (e.g. the Twenty queue worker)
+# Graceful exits after `docker stop`: 0; 130 (T3 under tini, observed 2026-11-23); 143 (SIGTERM,
+# e.g. the Twenty queue worker). 137 (SIGKILL after the timeout) is never clean.
+CLEAN_EXIT = {'exited 0', 'exited 130', 'exited 143'}
 
 
 def ready(name):
@@ -155,7 +167,41 @@ def ready(name):
     return run(['docker', 'inspect', '--format', HEALTH, name]) in ('healthy', 'running')
 
 
-def start_all(names):
+# A host auto-fixer outside the OS (server-monitor.service) runs `docker system prune -f` every
+# 15s while / is above 90%, deleting stopped containers. A cold capture stops every OS service and
+# itself writes several GB, so it refuses to start without headroom (incident 2026-11-25).
+DISK_LIMIT_PERCENT = 85
+
+
+def disk_used_percent(path='/'):
+    """Use% exactly as df (and the host monitor) reports it: used / (used + available to
+    non-root), rounded up. Root-reserved blocks are excluded, so this is never lower than df."""
+    st = os.statvfs(path)
+    used = (st.f_blocks - st.f_bfree) * st.f_frsize
+    visible = used + st.f_bavail * st.f_frsize
+    return -(-100 * used // visible) if visible else 100
+
+
+def compose_files(root, source):
+    """The files the deployment itself layers (scripts/deploy-os.py): the release's compose.yaml plus the
+    pinned NixKit mounts it generated into the state root. Every deployment since #100 requires the
+    override; without it Hermes/T3 would be described or recreated without their skill mounts, so a
+    missing override is a refusal, never a silent fallback to compose.yaml alone."""
+    packs = Path(root) / 'packs.compose.json'
+    if not packs.is_file() or packs.is_symlink():
+        raise Refusal('The deployment Compose override (NixKit mounts) is missing; redeploy before relying on recovery')
+    return ['-f', str(source / 'deploy/compose.yaml'), '-f', str(packs)]
+
+
+def recreate_missing(root=Path('/srv/nix-clean')):
+    """Recreate deleted OS containers from the deployed release; existing ones are left alone."""
+    source = Path('/opt/nix-clean-source').resolve()
+    run(['docker', 'compose', '-p', 'nixos', '--env-file', str(root / 'deployment.env'),
+         *compose_files(root, source), *(['--profile', 'crm'] if crm_enabled(root) else []),
+         'up', '--detach', '--no-recreate'])
+
+
+def start_all(names, root=Path('/srv/nix-clean')):
     """Attempt every start (databases first), then report; one failure never strands the rest."""
     failed = []
     for name in names:
@@ -164,13 +210,36 @@ def start_all(names):
         except Refusal:
             failed.append(name)
     if failed:
+        # A container may have been deleted while stopped; state is all bind-mounted, so
+        # recreating it from the deployed compose file restores the service as it was.
+        try:
+            recreate_missing(root)
+        except Refusal:
+            pass
+        retry, failed = failed, []
+        for name in retry:
+            try:
+                run(['docker', 'start', name])
+            except Refusal:
+                failed.append(name)
+    if failed:
         raise Refusal('Some services did not start after capture: ' + ', '.join(failed))
 
 
+# Core services were observed healthy well inside 5 minutes. twenty-server's own healthcheck budget
+# is 330s (180s start_period + 10 x 15s; its first start, with migrations, took ~4 minutes), so
+# with the CRM the wait must outlast it: a timeout here fails a capture that already succeeded
+# and makes the unit retry (cold-stopping everything again).
+READY_WAIT_SECONDS = 300
+CRM_READY_WAIT_SECONDS = 600
+
+
 def wait_services(names=None):
-    deadline = time.monotonic() + 300
+    names = names or containers()
+    limit = CRM_READY_WAIT_SECONDS if set(names) & set(CRM_CONTAINERS) else READY_WAIT_SECONDS
+    deadline = time.monotonic() + limit
     while time.monotonic() < deadline:
-        if all(ready(name) for name in (names or containers())):
+        if all(ready(name) for name in names):
             return
         time.sleep(2)
     raise Refusal('Native service health did not recover after capture')
@@ -187,6 +256,11 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         names = containers(root)
+        compose_files(root, Path('/opt/nix-clean-source').resolve())  # required override present, before stopping
+        used = disk_used_percent()
+        if used >= DISK_LIMIT_PERCENT:
+            raise Refusal(f'Disk is {used:.0f}% full; a cold capture needs it below {DISK_LIMIT_PERCENT}% '
+                          '(the host auto-pruner deletes stopped containers above 90%)')
         if not crm_enabled(root) and crm_writers_running():
             raise Refusal('CRM containers run while CRM is disabled; reconcile with a deployment first')
         statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in names]
@@ -201,25 +275,25 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
             yield
         finally:
             # Even a failed/partial stop must not leave the company OS down. Databases start first.
-            start_all(list(reversed(names)))
+            start_all(list(reversed(names)), root)
             wait_services(names)
 
 
 def deployment_model(root, versions, deployed_source):
     env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes']['image'],
-               PAPERCLIP_IMAGE=versions['paperclip']['image'],
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
-    model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
+    model = json.loads(run(['docker', 'compose', *compose_files(root, deployed_source),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
-    for name in ('hermes', 'paperclip', 't3'):
-        actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
-        expected = versions[name].get('image') or model['services'][name]['image']  # t3: pinned local build
+    # Every running OS service is cross-checked against the compose model: image pin, and exactly
+    # the declared binds under the captured root (no anonymous volumes, nothing outside it).
+    checked = ['hermes', 't3', 'reviewer'] + (CRM_SERVICES if crm_enabled(root) else [])
+    for name in checked:
+        actual = json.loads(run(['docker', 'inspect', model['services'][name]['container_name']]))[0]
+        expected = versions.get(name, {}).get('image') or model['services'][name]['image']  # t3/reviewer: local build
         if actual['Config']['Image'] != expected:
             raise Refusal('Running runtime differs from the immutable OS image pins')
         environment = dict(row.split('=', 1) for row in actual['Config']['Env'] if '=' in row)
-        if name == 'paperclip' and environment.get('DATABASE_URL'):
-            raise Refusal('External Paperclip databases need a separate native dump workflow')
         model['services'][name]['environment'] = environment
         expected_mounts = {(str(Path(v['source']).resolve()), v['target'], not v.get('read_only', False))
                            for v in model['services'][name].get('volumes', [])}
@@ -245,11 +319,45 @@ def postgres_check(image, restored):
         raise Refusal('Restored Paperclip database did not validate its company and agent rows')
 
 
-def verify_payload(payload, work, versions):
+def tree_fingerprint(top):
+    """Content hash of a restored tree: paths, types, link targets and file bytes (not mtimes)."""
+    total = hashlib.sha256()
+    for path in sorted(top.rglob('*')):
+        rel = path.relative_to(top).as_posix()
+        if path.is_symlink():
+            total.update(b'L\0' + rel.encode() + b'\0' + os.readlink(path).encode() + b'\0')
+        elif path.is_file():
+            total.update(b'F\0' + rel.encode() + b'\0' + state.digest(path).encode() + b'\0')
+        elif path.is_dir():
+            total.update(b'D\0' + rel.encode() + b'\0')
+    return total.hexdigest()
+
+
+def paperclip_check(image, restored, validated=None):
+    """Archived Paperclip state is frozen (retired 2026-11-23). Its database is opened with the
+    17 GB Paperclip image only when the restored bytes differ from the last validated copy, so
+    the image need not stay on disk; docker run pulls the pinned digest when a check is due."""
+    fingerprint = tree_fingerprint(restored / 'paperclip')
+    record = {'image': image, 'fingerprint': fingerprint}
+    if validated and validated.is_file():
+        try:
+            if json.loads(validated.read_text()) == record:
+                return False
+        except (OSError, ValueError):
+            pass
+    postgres_check(image, restored)
+    if validated:
+        receipt(validated, record)
+    return True
+
+
+def verify_payload(payload, work, versions, validated=None):
     manifest = json.loads((payload / 'manifest.json').read_text())
     restored = work / ('restored-' + uuid.uuid4().hex)
     state.restore_bundle(payload, restored)
-    postgres_check(versions['paperclip']['image'], restored / 'state')
+    if (restored / 'state/paperclip/instances/default/db/PG_VERSION').is_file():
+        # archived Paperclip stays restorable
+        paperclip_check(versions['paperclip']['image'], restored / 'state', validated)
     if (restored / 'state/twenty/db/PG_VERSION').is_file():
         twenty_db_check(TWENTY_DB_IMAGE, restored / 'state')
     return manifest
@@ -275,7 +383,7 @@ def verify_image(image):
          '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777', image, 'verify'])
 
 
-def remote_readback(image, work, versions):
+def remote_readback(image, work, versions, validated=None):
     run(['docker', 'pull', '--quiet', image])
     digests = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .RepoDigests}}', image]))
     repository = image.rsplit(':', 1)[0].removeprefix('docker.io/')
@@ -288,7 +396,7 @@ def remote_readback(image, work, versions):
     try:
         run(['docker', 'create', '--name', holder, '--network', 'none', ref])
         run(['docker', 'cp', holder + ':/opt/nix-recovery', str(payload)])
-        verify_payload(payload, work, versions)
+        verify_payload(payload, work, versions, validated)
     finally:
         run(['docker', 'rm', '-v', holder])
     return ref
@@ -342,14 +450,15 @@ def build(args):
             (payload / 'manifest.json').write_text(json.dumps(manifest))
             for name in ['full_restore.py', 'recovery.py']:
                 shutil.copyfile(HERE / name, payload / name)
-            verify_payload(payload, work, versions)
+            validated = args.status / 'paperclip-validated.json'
+            verify_payload(payload, work, versions, validated)
             make_image(tag, payload, versions)
             verify_image(tag)
             if hub:
                 require_private(args.image, hub.request)
                 run(['docker', 'push', tag])
                 require_private(args.image, hub.request)
-                remote_digest = remote_readback(tag, work, versions)
+                remote_digest = remote_readback(tag, work, versions, validated)
                 require_private(args.image, hub.request)
                 result = dict(attempt, status='published', manifest_digest=remote_digest,
                               completed_at=datetime.now(timezone.utc).isoformat(), entries=len(files))

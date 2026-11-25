@@ -2,7 +2,9 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: '17 5 * * *'
@@ -11,24 +13,26 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  evaluate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
       - name: Unit tests
-        run: python3 -m unittest discover -s tests -v
+        # Load the standard-library runner before adding the repo for application imports.
+        run: python3 -I -c 'import sys, unittest; sys.path.append("."); unittest.main(module=None)' discover -s tests -v
       - name: Synthetic Docker recovery canary
         env:
           HERMES_RECOVERY_TEST_IMAGE: python:3.11-slim
-        run: python3 -m unittest discover -s tests -p test_recovery_container.py -v
+        run: python3 -I -c 'import sys, unittest; sys.path.append("."); unittest.main(module=None)' discover -s tests -p test_recovery_container.py -v
       - name: Clean Compose contract
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import json, os, subprocess
           from pathlib import Path
           versions = json.loads(Path('deploy/versions.json').read_text())
@@ -41,26 +45,39 @@ jobs:
               (crm / name).write_text('')
           subprocess.run(['docker', 'compose', '-f', 'deploy/compose.yaml', '--profile', 'crm', 'config', '--quiet'], env=env, check=True)
           PYTHON
+      - name: Reviewer service tests
+        run: node --test deploy/reviewer/reviewer.test.mjs
       - name: Repository verifier
-        run: python3 scripts/verify.py
+        run: python3 -I scripts/verify.py
       - name: Bootstrap syntax
         run: |
           bash -n scripts/bootstrap.sh
           sh -n scripts/deploy-os.sh
       - name: Python syntax
-        run: python3 -m compileall -q scripts tests automation
+        run: python3 -I -m compileall -q scripts tests automation
       - name: Bootstrap preview
         run: HERMES_BIN=/not-installed/hermes bash scripts/bootstrap.sh
       - name: Skill installer interface
-        run: python3 scripts/install-skills.py --help
+        run: python3 -I scripts/install-skills.py --help
       - name: Scout setup preview
-        run: HERMES_BIN=/not-installed/hermes python3 scripts/setup-skill-scouts.py
+        run: HERMES_BIN=/not-installed/hermes python3 -I scripts/setup-skill-scouts.py
       - name: Diff whitespace
         run: git diff --check
 
+  verify:
+    runs-on: ubuntu-latest
+    needs: evaluate
+    if: always()
+    permissions: {}
+    steps:
+      - name: Require every evaluation to pass
+        env:
+          RESULT: ${{ needs.evaluate.result }}
+        run: test "$RESULT" = success
+
   deploy:
     needs: verify
-    if: github.repository == 'its-nix/os' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.repository == 'its-nix/os' && github.ref == 'refs/heads/main' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name)
     runs-on: ubuntu-latest
     environment: vps
     permissions:

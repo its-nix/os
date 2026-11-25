@@ -1,6 +1,6 @@
 # Tracked VPS delivery
 
-The `ci` workflow checks every push and PR. Passing `main` pushes deploy automatically; manual main runs and a daily 05:17 UTC run reconcile the same stack and verify health. GitHub's `vps` environment records the commit and deployment result. Native receipts record the last healthy revision and latest attempt on the VPS.
+The `ci` workflow verifies pushes and PRs to `main`. Passing `main` pushes deploy automatically. Manual main runs and a daily 05:17 UTC run reconcile the same stack and verify health. GitHub's `vps` environment records the commit and deployment result. Native receipts record the last healthy revision and latest attempt on the VPS.
 
 The dedicated SSH operator is `nixos`. It has the human operator's existing public key and Docker administration access. Docker membership grants host-level administrative power; this account separates routine access from root login, rather than providing a sandbox. Hermes and Paperclip retain their native container users and state ownership. Existing root access and unrelated services are unchanged.
 
