@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -320,14 +321,59 @@ def check_hindsight_catalog(run):
         raise ValueError('The Hermes catalog does not pin the reviewed Hindsight plugin; memory stays off')
 
 
+def _write_in_hermes(hermes, parts, name, text, mode):
+    """Write hermes/<parts...>/<name> as root without trusting any path the Hermes user controls.
+
+    Every component is opened relative to its parent descriptor with O_NOFOLLOW (a swapped-in
+    symlink fails instead of redirecting root), directories this call creates and the staged file
+    get the Hermes owner through their descriptors, and the final rename stays within the opened
+    directory."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = []
+    try:
+        descriptors.append(os.open(hermes, flags))
+        owner = os.fstat(descriptors[0])
+        for part in parts:
+            created = False
+            try:
+                os.mkdir(part, 0o700, dir_fd=descriptors[-1])
+                created = True
+            except FileExistsError:
+                pass
+            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
+            if created:
+                os.fchown(descriptors[-1], owner.st_uid, owner.st_gid)
+        directory = descriptors[-1]
+        staged = '.' + name + '.' + secrets.token_hex(8)
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=directory)
+        try:
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(text)
+                os.fchmod(handle.fileno(), mode)
+                os.fchown(handle.fileno(), owner.st_uid, owner.st_gid)
+            os.rename(staged, name, src_dir_fd=directory, dst_dir_fd=directory)
+        except BaseException:
+            try:
+                os.unlink(staged, dir_fd=directory)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        raise ValueError('Profile memory config paths must be real directories') from exc
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
 def configure_memory(state, run):
     """Give each profile the pinned plugin and its own bank. Returns the restart marker: the running
     gateway imports the plugin's client only after a restart.
 
     Order per new profile: catalog pin checked, config written, plugin installed DISABLED at the
     exact commit (--ref, --no-enable), installed commit checked, and only then memory.provider set.
-    A per-profile marker (hindsight/.deploy-enable-pending) tells an interrupted run that the
-    disabled plugin is ours to finish, not an operator's `hermes memory off`."""
+    A per-profile marker in a root-only directory outside the Hermes home (state/hindsight-enable/)
+    tells an interrupted run that the disabled plugin is ours to finish, not an operator's
+    `hermes memory off`; the Hermes user cannot forge it."""
     hermes = state / 'hermes'
     pending = state / '.hindsight-plugin-reload'
     if (hermes / '.hindsight' / 'config.json').exists():
@@ -343,8 +389,8 @@ def configure_memory(state, run):
         provider = _config_value(run, cli, 'memory.provider')
         catalog = home / 'plugins' / 'hindsight' / '.hermes-catalog.json'
         directory, path = home / 'hindsight', home / 'hindsight' / 'config.json'
-        enabling = directory / '.deploy-enable-pending'
-        if directory.is_symlink() or path.is_symlink() or enabling.is_symlink():
+        enabling = state / 'hindsight-enable' / profile
+        if directory.is_symlink() or path.is_symlink():
             raise ValueError('Profile memory config paths must not be symlinks')
         set_up = catalog.exists() or catalog.is_symlink()
         if provider not in (None, '', 'hindsight') or (set_up and provider != 'hindsight' and not enabling.exists()):
@@ -355,14 +401,14 @@ def configure_memory(state, run):
         if path.exists():
             check_hindsight_config(json.loads(path.read_text()), bank, api_key)
         else:
-            if not directory.exists():
-                directory.mkdir(mode=0o700)
-                os.chown(directory, owner.st_uid, owner.st_gid)
-            _root_write(directory, 'config.json',
-                        json.dumps(hindsight_profile_config(profile, bank, api_key), indent=2) + '\n', 0o600)
-            os.chown(path, owner.st_uid, owner.st_gid)
+            _write_in_hermes(hermes, [*home.relative_to(hermes).parts, 'hindsight'], 'config.json',
+                             json.dumps(hindsight_profile_config(profile, bank, api_key), indent=2) + '\n', 0o600)
         if not set_up:
-            _root_write(directory, enabling.name, '', 0o600)
+            markers = enabling.parent
+            if markers.is_symlink() or (markers.exists() and not markers.is_dir()):
+                raise ValueError('The Hindsight enable marker directory must be a real directory')
+            markers.mkdir(mode=0o700, exist_ok=True)
+            _root_write(markers, enabling.name, '', 0o600)
             _root_write(state, pending.name, '', 0o600)
             run(cli + ['plugins', 'install', 'hindsight', '--ref', HINDSIGHT_PLUGIN_SHA, '--yes-deps', '--no-enable'])
         if catalog.is_symlink() or not catalog.is_file() \

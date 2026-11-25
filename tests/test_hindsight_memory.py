@@ -113,7 +113,7 @@ class HindsightMemoryTests(unittest.TestCase):
             self.assertLess(reads[0], hermes.calls.index(installs[0]))
             self.assertTrue(all(c[:5] == ['docker', 'exec', '-u', '10000', 'nixos-hermes'] for c in hermes.calls))
             self.assertFalse((state / 'hermes/.hindsight').exists())  # never the shared fallback
-            self.assertFalse(list(state.glob('hermes/**/.deploy-enable-pending')))
+            self.assertFalse(list(state.glob('hindsight-enable/*')))
 
             pending.unlink()
             again = FakeHermes(state, providers=hermes.providers)
@@ -154,12 +154,12 @@ class HindsightMemoryTests(unittest.TestCase):
             hermes = FakeHermes(state, fail_set=True)
             with self.assertRaises(subprocess.CalledProcessError):
                 deployment.configure_memory(state, hermes)
-            self.assertTrue((state / 'hermes/hindsight/.deploy-enable-pending').exists())
+            self.assertTrue((state / 'hindsight-enable/default').exists())
             again = FakeHermes(state, providers=hermes.providers)
             deployment.configure_memory(state, again)
             self.assertEqual('hindsight', again.providers['default'])
             self.assertEqual('hindsight', again.providers['engineer'])
-            self.assertFalse((state / 'hermes/hindsight/.deploy-enable-pending').exists())
+            self.assertFalse((state / 'hindsight-enable/default').exists())
 
     def test_existing_memory_is_validated_never_rewritten(self):
         cases = {
@@ -373,3 +373,22 @@ def _redact_messages_for_egress(messages):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HermesPathSafetyTests(unittest.TestCase):
+    def test_root_never_follows_a_swapped_in_symlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes, outside = Path(td) / 'hermes', Path(td) / 'outside'
+            (hermes / 'profiles').mkdir(parents=True)
+            outside.mkdir()
+            (hermes / 'profiles' / 'engineer').symlink_to(outside)
+            with self.assertRaises(ValueError):
+                deployment._write_in_hermes(hermes, ['profiles', 'engineer', 'hindsight'], 'config.json', '{}', 0o600)
+            self.assertEqual([], list(outside.iterdir()))
+            (hermes / 'profiles' / 'real' / 'hindsight').mkdir(parents=True)
+            (hermes / 'profiles' / 'real' / 'hindsight' / 'config.json').symlink_to(outside / 'victim')
+            deployment._write_in_hermes(hermes, ['profiles', 'real', 'hindsight'], 'config.json', '{"a": 1}', 0o600)
+            target = hermes / 'profiles' / 'real' / 'hindsight' / 'config.json'
+            self.assertFalse(target.is_symlink())  # the link itself is replaced, never written through
+            self.assertEqual('{"a": 1}', target.read_text())
+            self.assertFalse((outside / 'victim').exists())
