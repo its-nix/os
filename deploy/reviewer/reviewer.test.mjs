@@ -11,7 +11,7 @@ test('builder is excluded from review via Builder line or co-author trailer', ()
   assert.deepEqual(authorsOf('Summary\n\nBuilder: codex', []), ['codex']);
   assert.deepEqual(authorsOf('', ['fix\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>']), ['claude']);
   assert.deepEqual(authorsOf('mentions claude in prose only', []), []);
-  assert.deepEqual(authorsOf('Builder: codex, grok, claude', []), []);  // cannot exclude competitors
+  assert.deepEqual(authorsOf('Builder: codex\nBuilder: claude', []).sort(), ['claude', 'codex']);
   assert.deepEqual(authorsOf('Builder: gptfoo-tool', []), []);           // no substring false positives
   for (const sha of ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]) {
     assert.ok(!reviewerOrder(sha, POOL, ['codex']).includes('codex'));
@@ -314,4 +314,16 @@ test('only the latest completed run across all pages determines whether to revie
   await reviewOne({ ...CFG, policy }, 't', PR, { gh, collect: async () => ({ diff: '+x', commits: [] }),
     run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
   assert.equal(state.calls.find(([m]) => m === 'PATCH')[2].conclusion, 'success');
+});
+
+test('joint builders are all excluded while two reviewers remain; otherwise nobody is', () => {
+  const pool = ['claude', 'codex', 'opencode', 'antigravity'];
+  for (let i = 0; i < 32; i++) {
+    const order = reviewerOrder(i.toString(16).padStart(40, '0'), pool, ['codex', 'claude']);
+    assert.deepEqual([...order].sort(), ['antigravity', 'opencode']);
+  }
+  // Naming three of four would let a builder choose its reviewer: exclusion is dropped.
+  assert.equal(reviewerOrder('a'.repeat(40), pool, ['codex', 'claude', 'opencode']).length, 4);
+  // A single declared builder is always excluded, even from a one-provider pool.
+  assert.deepEqual(reviewerOrder('a'.repeat(40), ['codex'], ['codex']), []);
 });

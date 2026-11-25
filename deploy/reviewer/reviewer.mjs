@@ -94,19 +94,23 @@ const AUTHOR_ALIASES = {
 };
 
 export function authorsOf(prBody, commitMessages) {
-  // Self-declared builder (documented limit): exact provider words only, and a declaration naming
-  // more than one provider excludes nobody, so a builder cannot use it to remove competitors.
+  // Self-declared builders (documented limit): exact provider words only. Every named provider is
+  // returned; reviewerOrder decides how many can actually be excluded.
   const text = [prBody || '', ...commitMessages].join('\n').toLowerCase();
   const lines = text.split('\n').filter((l) => /^\s*(builder:|co-authored-by:)/.test(l));
   const named = Object.keys(AUTHOR_ALIASES).filter((p) => lines.some((l) =>
     AUTHOR_ALIASES[p].some((a) => new RegExp(`(^|[^a-z0-9])${a}([^a-z0-9]|$)`).test(l))));
-  return named.length === 1 ? named : [];
+  return named;
 }
 
 // Deterministic per head SHA: the same revision always gets the same order (reruns are stable),
 // different revisions spread across providers.
 export function reviewerOrder(headSha, pool, excluded, seed = '') {
-  const candidates = pool.filter((p) => !excluded.includes(p));
+  let candidates = pool.filter((p) => !excluded.includes(p));
+  // Several declared builders are all excluded while at least two reviewers remain, so a jointly
+  // built PR is never reviewed by one of its builders. Naming more would let a builder pick its
+  // reviewer, so then nobody is excluded. A single builder is always excluded.
+  if (excluded.length > 1 && candidates.length < 2) candidates = [...pool];
   if (!candidates.length) return [];
   // Keyed by a secret seed, so a builder cannot grind commit SHAs offline to pick its reviewer.
   const digest = createHmac('sha256', seed).update(`${CHECK}:${headSha}`).digest('hex');
