@@ -42,6 +42,7 @@ Running record for the Docker-first Company OS refactor (PRD v1.1). It records w
 | D8 | 2026-11-23 | Hindsight via the native Hermes plugin (local embedded mode), deferred until the founder picks the extraction LLM | Embedded mode keeps storage local, but extraction sends text to whichever LLM is configured |
 | D6 | 2026-11-23 | PRs in this refactor are built with the founder's admin token and reviewed by an independent model; this is **not** a forge-proof gate | The forge-proof gate (separate builder identity, ruleset requiring Actions check runs) is itself a deliverable of Phase 3 |
 | D9 | 2026-11-25 | Daily recovery captures the whole `/srv/nix-clean` root cold (reviewer logins and App key, Twenty database, T3, Hermes, archived Paperclip); reviewer and Twenty credentials are included in the private image | Same class of native credential as the Hermes ones already held; excluding them would make a restore unusable and not lower the risk. Stated in `docs/DOCKERHUB-RECOVERY.md` |
+| D10 | 2026-11-25 | Personal profile is built by the deploy under a staging name through native Hermes commands and renamed to `personal` only when complete, and only when absent (ownership proven by a root-only record, not by files in the profile); contract in `deploy/profiles/personal.json`, outside `native_inputs` | Same container means logical separation only; never overwrite an existing profile, never clone credentials ([contract](PERSONAL-PROFILE.md)) |
 
 ## 4. Evidence ledger
 
@@ -70,6 +71,7 @@ One consolidated Todoist request (project `Nix`, label `nix-approval`), raised 2
 3. Coding-harness logins inside T3.
 4. Hindsight memory-extraction provider (local GPU vs hosted API): privacy decision.
 5. Drive vault folder and scoped access.
+6. Personal profile connectors (email, calendar, private documents): founder-authorized Google session and a scoped Drive location.
 
 ## Pack migration evidence — 2026-11-25
 
