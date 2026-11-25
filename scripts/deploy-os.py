@@ -349,11 +349,16 @@ def plugin_file_hashes(plugin):
     return hashes
 
 
+def shared_hindsight_config(hermes):
+    directory = hermes / '.hindsight'
+    return directory.is_symlink() or os.path.lexists(directory / 'config.json')
+
+
 def preflight_memory(source, state, image, run):
     hermes = state / 'hermes'
     profiles = hermes / 'profiles'
     banks = {home: bank for _, home, bank in memory_banks(state)}
-    if profiles.is_symlink() or os.path.lexists(hermes / '.hindsight/config.json'):
+    if profiles.is_symlink() or shared_hindsight_config(hermes):
         raise ValueError('Shared Hindsight config or linked profile directory')
     homes = [hermes] + (sorted(profiles.iterdir()) if profiles.exists() else [])
     probe = (source / 'deploy/hindsight/active_provider.py').read_text()
@@ -367,7 +372,7 @@ def preflight_memory(source, state, image, run):
         result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '10000', '--cap-drop', 'ALL',
                       '--security-opt', 'no-new-privileges', '--env', f'HERMES_HOME={container_home}',
                       '--mount', f'type=bind,source={hermes},target=/opt/data,readonly',
-                      '--entrypoint', '/opt/hermes/.venv/bin/python', image, '-I', '-c', probe])
+                      '--entrypoint', '/opt/hermes/.venv/bin/python', image, '-P', '-s', '-c', probe])
         provider, overrides = json.loads(result)
         if overrides and (home in banks or provider == 'hindsight'):
             raise ValueError('A profile .env sets HINDSIGHT_* values')
@@ -435,7 +440,7 @@ def configure_memory(state, run):
     `hermes memory off`; the Hermes user cannot forge it."""
     hermes = state / 'hermes'
     pending = state / '.hindsight-plugin-reload'
-    if (hermes / '.hindsight' / 'config.json').exists():
+    if shared_hindsight_config(hermes):
         # The plugin's shared fallback would hand one config (and one bank) to every profile.
         raise ValueError('A shared ~/.hindsight/config.json exists; remove it after review')
     api_key = hindsight_api_key(state)
@@ -469,7 +474,7 @@ def configure_memory(state, run):
             markers.mkdir(mode=0o700, exist_ok=True)
             _root_write(markers, enabling.name, '', 0o600)
             _root_write(state, pending.name, '', 0o600)
-            run(cli + ['plugins', 'install', 'hindsight', '--ref', HINDSIGHT_PLUGIN_SHA, '--yes-deps', '--no-enable'])
+            run(cli + ['plugins', 'install', 'hindsight', '--ref', HINDSIGHT_PLUGIN_SHA, '--no-deps', '--no-enable'])
         check_installed_plugin(home)
         if _config_value(run, cli, 'memory.provider') != 'hindsight':
             _root_write(state, pending.name, '', 0o600)
@@ -890,8 +895,15 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         for name, repository in [('hermes', 'nousresearch/hermes-agent')]:
             if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
                 raise ValueError('Only digest-pinned official images may deploy')
+        hermes_image = versions['hermes']['runtime_image']
+        recipe = (source / 'deploy/hermes/Dockerfile').read_bytes()
+        if hermes_image != 'nixos-hermes:' + hashlib.sha256(recipe).hexdigest()[:16] or \
+                recipe.decode().splitlines()[0] != 'FROM ' + versions['hermes']['image']:
+            raise ValueError('Hermes runtime recipe differs from its declared image pins')
+        if not run(['docker', 'image', 'ls', '--quiet', hermes_image]).strip():
+            run(['docker', 'build', '--tag', hermes_image, str(source / 'deploy/hermes')])
         candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
-            'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
+            'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': hermes_image,
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
@@ -913,8 +925,8 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                    '--file', str(source / 'deploy/compose.yaml'), '--file', str(state / 'packs.compose.json')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
-        memory_preflight(source, state, versions['hermes']['image'], run)
-        redaction(source, versions['hermes']['image'], run)  # before up: a failure changes nothing running
+        memory_preflight(source, state, hermes_image, run)
+        redaction(source, hermes_image, run)  # before up: a failure changes nothing running
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         if reviewer_changed:  # the evaluator's new code must actually be the code that runs
             run(compose + ['up', '--detach', '--no-deps', '--force-recreate', 'reviewer'])
@@ -922,11 +934,9 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         # NIX_CLEAN_ROOT/paperclip and in every recovery image for rollback.
         if run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-paperclip$']).strip():
             run(['docker', 'stop', '--time', '90', 'nixos-paperclip'])
-        for name in ('hermes',):
-            observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',
-                            'nixos-' + name])
-            if observed != versions[name]['image'] + ' healthy':
-                raise ValueError('Native image or health readback differs from the declared deployment')
+        observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-hermes'])
+        if observed != hermes_image + ' healthy':
+            raise ValueError('Native image or health readback differs from the declared deployment')
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-t3']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' healthy':
             raise ValueError('T3 image or health readback differs from the declared deployment')
@@ -979,7 +989,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         write_json(state / 'versions.json', versions)
         (state / 'source-revision').write_text(revision + '\n')
         receipt = dict(attempt, status='healthy', completed_at=datetime.now(timezone.utc).isoformat(),
-                       images={'hermes': versions['hermes']['image'], 't3': 'nixos-t3:' + t3_build_tag(source)})
+                       images={'hermes': hermes_image, 't3': 'nixos-t3:' + t3_build_tag(source)})
         write_json(state / 'deployment.json', receipt)
         write_json(state / 'deployment-attempt.json', receipt)
         publish_health(state, receipt)

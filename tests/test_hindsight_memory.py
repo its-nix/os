@@ -114,7 +114,7 @@ class HindsightMemoryTests(unittest.TestCase):
             installs = [c for c in hermes.calls if c[8:10] == ['plugins', 'install']]
             self.assertEqual(4, len(installs))
             self.assertTrue(all(c[8:] == ['plugins', 'install', 'hindsight', '--ref', deployment.HINDSIGHT_PLUGIN_SHA,
-                                          '--yes-deps', '--no-enable'] for c in installs))
+                                          '--no-deps', '--no-enable'] for c in installs))
             # The catalog pin is read once, before the first install.
             reads = [i for i, c in enumerate(hermes.calls) if c[5:6] == ['cat']]
             self.assertEqual(1, len(reads))
@@ -382,11 +382,18 @@ class RedactionProbeTests(unittest.TestCase):
             self.assertEqual([image, '-c', (ROOT / 'deploy/hindsight/redaction_probe.py').read_text()], argv[-3:])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class HermesPathSafetyTests(unittest.TestCase):
+    def test_linked_shared_directory_refused_even_if_target_exists_only_in_container(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            (state / 'hermes').mkdir()
+            (state / 'hermes/.hindsight').symlink_to('/opt/data/container-only')
+            run = Mock(side_effect=AssertionError('unexpected container command'))
+            with self.assertRaisesRegex(ValueError, 'Shared'):
+                deployment.preflight_memory(ROOT, state, 'candidate', run)
+            with self.assertRaisesRegex(ValueError, 'shared'):
+                deployment.configure_memory(state, run)
+
     def test_root_never_follows_a_swapped_in_symlink(self):
         with tempfile.TemporaryDirectory() as td:
             hermes, outside = Path(td) / 'hermes', Path(td) / 'outside'
@@ -403,3 +410,7 @@ class HermesPathSafetyTests(unittest.TestCase):
             self.assertFalse(target.is_symlink())  # the link itself is replaced, never written through
             self.assertEqual('{"a": 1}', target.read_text())
             self.assertFalse((outside / 'victim').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

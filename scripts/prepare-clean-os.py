@@ -94,7 +94,7 @@ No current result means no approved evidence found. Curation reports issues and 
     (root / 'paperclip').mkdir(mode=0o700)
     (root / 'knowledge').mkdir(mode=0o700)
     environment = {
-        'NIX_CLEAN_ROOT': str(root), 'HERMES_IMAGE': versions['hermes']['image'],
+        'NIX_CLEAN_ROOT': str(root), 'HERMES_IMAGE': versions['hermes']['runtime_image'],
         'PAPERCLIP_IMAGE': versions['paperclip']['image'],
     }
     # JSON quoting is compatible with Compose's double-quoted env-file values.

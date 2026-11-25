@@ -4,6 +4,12 @@ import os
 from pathlib import Path
 import sys
 
+# The candidate runtime must be ready even on the first rollout, before activation.
+if not sys.dont_write_bytecode:
+    raise RuntimeError('Hermes would write bytecode into reviewed profile plugins')
+from hindsight_client import Hindsight
+from hindsight_embed import get_embed_manager
+
 sys.path.insert(0, '/opt/hermes')
 from dotenv import dotenv_values
 from hermes_cli import config

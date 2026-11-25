@@ -281,7 +281,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
 
 
 def deployment_model(root, versions, deployed_source):
-    env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes']['image'],
+    env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes'].get('runtime_image', versions['hermes']['image']),
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
     model = json.loads(run(['docker', 'compose', *compose_files(root, deployed_source),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
@@ -291,7 +291,8 @@ def deployment_model(root, versions, deployed_source):
     checked = ['hermes', 't3', 'reviewer'] + (CRM_SERVICES if crm_enabled(root) else [])
     for name in checked:
         actual = json.loads(run(['docker', 'inspect', model['services'][name]['container_name']]))[0]
-        expected = versions.get(name, {}).get('image') or model['services'][name]['image']  # t3/reviewer: local build
+        pins = versions.get(name, {})
+        expected = pins.get('runtime_image') or pins.get('image') or model['services'][name]['image']
         if actual['Config']['Image'] != expected:
             raise Refusal('Running runtime differs from the immutable OS image pins')
         environment = dict(row.split('=', 1) for row in actual['Config']['Env'] if '=' in row)

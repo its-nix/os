@@ -502,12 +502,13 @@ class CrmCoverageTests(unittest.TestCase):
             inspected = []
             def command(argv, **kwargs):
                 if argv[:2] == ['docker', 'compose']:
+                    self.assertEqual('img-hermes', kwargs['env']['HERMES_IMAGE'])
                     return json.dumps({'services': services})
                 name = argv[2].removeprefix('nixos-')
                 inspected.append(name)
                 return json.dumps([{'Config': {'Image': f'img-{name}', 'Env': ['A=1']},
                                     'Mounts': [{'Type': 'bind', 'Source': str(root / name), 'Destination': '/data', 'RW': True}]}])
-            versions = {'hermes': {'image': 'img-hermes'}}
+            versions = {'hermes': {'image': 'official-base', 'runtime_image': 'img-hermes'}}
             (Path(td) / 'src/deploy/t3').mkdir(parents=True)
             (Path(td) / 'src/deploy/t3/Dockerfile').write_text('FROM x\n')
             with patch.object(module, 'run', side_effect=command):

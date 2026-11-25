@@ -126,6 +126,12 @@ rev=$(python3 -c 'import json;print(json.load(open("/srv/nixos-restored/manifest
 git clone https://github.com/its-nix/os /tmp/nix-os && git -C /tmp/nix-os checkout "$rev"
 tag=$(python3 -c 'import json;print(json.load(open("/srv/nixos-restored/compose.json"))["services"]["t3"]["image"])')
 docker build -t "$tag" /tmp/nix-os/deploy/t3
+# Bundles with Hindsight name a locally built Hermes runtime. Rebuild before starting any profiles.
+hermes=$(python3 -c 'import json;print(json.load(open("/srv/nixos-restored/compose.json"))["services"]["hermes"]["image"])')
+if [[ $hermes == nixos-hermes:* ]]; then
+  test "$hermes" = "nixos-hermes:$(sha256sum /tmp/nix-os/deploy/hermes/Dockerfile | cut -c1-16)" || exit 1
+  docker build -t "$hermes" /tmp/nix-os/deploy/hermes || exit 1
+fi
 docker compose -f /srv/nixos-restored/compose.json pull --ignore-buildable
 docker compose -f /srv/nixos-restored/compose.json up -d --wait
 # Only if the source host ran the CRM (state/twenty/ENABLED exists):

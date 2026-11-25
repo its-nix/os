@@ -99,8 +99,18 @@ Updating the plugin or the server is a reviewed PR that changes the pins. Plugin
 
 1. It checks that the Hermes image's catalog entry names the reviewed repository, commit and directory. On a mismatch it stops before writing, downloading or installing anything.
 2. It writes the profile's config.
-3. It installs the plugin **disabled** at that exact commit (`--ref <sha> --yes-deps --no-enable`).
+3. It installs the plugin **disabled** at that exact commit (`--ref <sha> --no-deps --no-enable`).
 4. It checks the catalog sidecar and compares every installed file against the SHA-256 manifest for the pinned upstream directory. On a mismatch it stops with the plugin disabled and the provider unset.
 5. Only then does it set `memory.provider`.
 
 A marker in the root-owned `hindsight-enable/` directory outside the Hermes home lets an interrupted run finish the activation rather than mistake it for `memory off`.
+
+## Runtime and recreation checks
+
+Deployment, clean preparation and full recovery select the Hermes runtime tag in `versions.json`. Its tag covers the Dockerfile, including the official base digest and the wheel hashes from the reviewed plugin's `uv.lock`. The build resolves the three local wheels offline against the base environment. Every profile uses this venv, including immediately after recreation. Before gateway startup the deployment checks that the candidate Python suppresses bytecode and imports the client and embed entry points. Compose also explicitly disables bytecode writes. The manifest still rejects unexpected files, including existing bytecode.
+
+The pinned upstream image already reported `sys.dont_write_bytecode == True`. Loading the configured provider as uid 10000 wrote zero bytecode files and reported unavailable because its venv lacked `hindsight_client`. Unsetting the bytecode environment variable produced six unexpected `.pyc` files.
+
+The Linux/amd64 lifecycle test started with an empty profile, ran the real catalog installation and activation, and loaded the configured provider through Hermes as uid 10000. It then removed that container, mounted the same profile in a fresh container without network access, and repeated the deployment preflight, configuration and enabled provider load. Both availability checks passed and the plugin still matched the full manifest after both imports. This exercised the restored profile startup condition. The test did not start a gateway, log in, or run an extraction.
+
+To repeat, build the runtime as described in the deployment README and run `HINDSIGHT_RUNTIME_TEST=1 python3 -m unittest discover -s tests -p test_hindsight_runtime.py` with local Docker access, initial catalog network access and permission to manage the fixture's uid 10000 files.
