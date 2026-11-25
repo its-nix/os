@@ -465,7 +465,9 @@ def prepare_packs(release, state, image):
                 if entry.is_symlink() or not (entry.is_file() or entry.is_dir()):
                     raise ValueError('Invalid pack release entry')
                 os.chown(entry, 0, 0)
-                entry.chmod(0o555 if entry.is_dir() or entry.stat().st_mode & 0o111 else 0o444)
+                # Skillshare preserves directory modes when copying into a task worktree.
+                # The store is root-owned and every harness mount is read-only.
+                entry.chmod(0o755 if entry.is_dir() or entry.stat().st_mode & 0o111 else 0o644)
             built.rename(core)
     volumes = {}
     for service, uid, home in [('hermes', '10000', state / 'hermes'), ('t3', '10010', state / 't3/home')]:

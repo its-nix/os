@@ -27,3 +27,32 @@ class PackTests(unittest.TestCase):
             (Path(tmp) / 'SKILL.md').symlink_to('/missing')
             with self.assertRaises(ValueError):
                 pack.tree(Path(tmp))
+
+    def test_mount_inventory_preserves_matches_and_refuses_conflicts(self):
+        import sys
+        from unittest.mock import patch
+        scanner_spec = importlib.util.spec_from_file_location('pack_mounts', pack.HERE / 'mounts.py')
+        scanner = importlib.util.module_from_spec(scanner_spec)
+        with patch.dict(sys.modules, build=pack):
+            scanner_spec.loader.exec_module(scanner)
+        with tempfile.TemporaryDirectory() as tmp:
+            home, core = Path(tmp) / 'home', Path(tmp) / 'core'
+            manifest = core / '.nixkit/packs.json'
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({'packs': {'core': ['handoff', 'grilling']}}))
+            skill = core / 'grilling/SKILL.md'
+            skill.parent.mkdir()
+            skill.write_text('---\nname: grilling\n---\n')
+            native = home / 'skills/grilling/SKILL.md'
+            native.parent.mkdir(parents=True)
+            native.write_bytes(skill.read_bytes())
+            self.assertEqual(scanner.missing(home, core, 'hermes'), ['handoff'])
+            native.write_text(skill.read_text() + 'changed')
+            with self.assertRaisesRegex(ValueError, 'conflicts'):
+                scanner.missing(home, core, 'hermes')
+            native.write_bytes(skill.read_bytes())
+            second = home / 'skills/category/other/SKILL.md'
+            second.parent.mkdir(parents=True)
+            second.write_bytes(skill.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'conflicts'):
+                scanner.missing(home, core, 'hermes')
