@@ -231,7 +231,9 @@ services:
     image: twentycrm/twenty@sha256:251d83ffa37c8916aaa7cd129ddb6829a941b2e2858747479579980d4e8f56a4  # v2.62.0
     networks: [crm]
     restart: unless-stopped
-    mem_limit: 768m
+    # Node sizes its heap from this limit: 768m gave a ~400 MB heap and the worker died at boot with
+    # 'heap out of memory' (128 restarts in an hour, 2026-11-25). Same limit as the server (~856 MB heap).
+    mem_limit: 1536m
     command: [yarn, worker:prod]
     env_file:
       - ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/server.env
