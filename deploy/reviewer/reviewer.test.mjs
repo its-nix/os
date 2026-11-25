@@ -136,10 +136,21 @@ test('pool maps the legacy gemini name to antigravity and drops unknowns', async
 });
 
 test('opencode reviews are pinned to the Go endpoint with tools off', async () => {
-  const { PROVIDERS } = await import('./reviewer.mjs');
-  const [cmd, args, env] = PROVIDERS.opencode('p');
-  assert.equal(cmd, 'opencode');
-  assert.deepEqual(args, ['run', '-m', 'opencode/kimi-k3.1-pro', 'p']);
+  const { PROVIDERS, opencodeModel } = await import('./reviewer.mjs');
+  const saved = process.env.OPENCODE_REVIEW_MODEL;
+  delete process.env.OPENCODE_REVIEW_MODEL;
+  try {
+    const [cmd, args] = PROVIDERS.opencode('p');
+    assert.equal(cmd, 'opencode');
+    assert.deepEqual(args, ['run', '-m', 'opencode/kimi-k3.1-pro', 'p']);
+    process.env.OPENCODE_REVIEW_MODEL = 'opencode/glm-5.3';
+    assert.deepEqual(PROVIDERS.opencode('p')[1], ['run', '-m', 'opencode/glm-5.3', 'p']);
+  } finally {
+    if (saved === undefined) delete process.env.OPENCODE_REVIEW_MODEL; else process.env.OPENCODE_REVIEW_MODEL = saved;
+  }
+  for (const bad of ['anthropic/claude-opus-5-5', 'openai/gpt-6', 'opencode-go/kimi-k3', 'opencode/x y', 'opencode/'])
+    assert.equal(opencodeModel(bad), 'opencode/kimi-k3.1-pro');
+  const [, , env] = PROVIDERS.opencode('p');
   const cfg = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
   assert.equal(cfg.provider.opencode.options.baseURL, 'https://opencode.ai/zen/go/v1');
   assert.ok(Object.values(cfg.tools).every((v) => v === false));
