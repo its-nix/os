@@ -1,0 +1,20 @@
+{
+  "README.md": "962702a0cf394324b60fc7c8656c1e345c93a5b121386c98f37b1fbb26d014a3",
+  "__init__.py": "02fa1e11c336d256897f1c9931b77bc30cf5a874eb34e98e9c810892880b6398",
+  "config_schema.py": "4d53c720aa7c129b5640d7c08ce67482ff21ce81c90d7bde1bc052ad90eeed1d",
+  "docs/banner.png": "2d2ca77085b8dd793b21ee2f45d2daaff1803723cfb7c9e4db1f24de85735f51",
+  "embedded.py": "3a62d0ab7e67d0536a394d10982a217aec93d70158e49d946d579371bf3933ff",
+  "plugin.yaml": "e113271b50b63e0e163d129ac6efd939e0333044f2433d6a8c594d1277437455",
+  "pyproject.toml": "f854e805c685fae9e94f573858114e1a4b84c2743c38bef5504e0a948a58af0e",
+  "settings.py": "cc922b593c99e9740bc49a1ec4e54824976307a1ce684f030f1f0d185a7dbded",
+  "setup.py": "a592e2e5e31b598e30facb96311356075eb7469880b525f6444b720eb1441501",
+  "templates.py": "eac05ef641b5c8fa9610b9b959f32db8f340e1423d5363ebc88b601cb84b600e",
+  "tests/conftest.py": "80387f0ba25b87b600845bae8d4372595ea3a7a8dcdafc9ba1925a24b1e75857",
+  "tests/test_env_settings.py": "78c9527006e7edc8354cfd09e83058f4a94a9b93b34f6b670d257e483ddc4b93",
+  "tests/test_local_runtime.py": "4dd0c2a10bb66af7009d9d70b5a59ee1fce51271adb762f7e761a2e51b057719",
+  "tests/test_multibank.py": "c93d5ce596a75d8c8792afa789907b2d4cecd04dff9d7cb628204f28867978ea",
+  "tests/test_provider.py": "239ea869e5b4b0b9a7f916165e16f45b3ead7e9add5bcd2b8a28fd551809e3c4",
+  "tests/test_retain_durability.py": "bbf4a90867b74e3ffde5a651d91833eaec74c636aa0170721befd0a883c3ba47",
+  "tests/test_settings.py": "576381d48af1e2c64b275ba827c695182aa4164c5fe2b777326182e64bd399d0",
+  "uv.lock": "8f79aed0b9cf7428b8d9a0e8ceee00cb6a31a2b663f5ecca39a2de78ebe5987c"
+}
