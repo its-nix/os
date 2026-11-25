@@ -160,7 +160,26 @@ def ready(name):
     return run(['docker', 'inspect', '--format', HEALTH, name]) in ('healthy', 'running')
 
 
-def start_all(names):
+# A host auto-fixer outside the OS (server-monitor.service) runs `docker system prune -f` every
+# 15s while / is above 90%, deleting stopped containers. A cold capture stops every OS service and
+# itself writes several GB, so it refuses to start without headroom (incident 2026-11-25).
+DISK_LIMIT_PERCENT = 85
+
+
+def disk_used_percent(path='/'):
+    usage = shutil.disk_usage(path)
+    return 100 * usage.used / usage.total
+
+
+def recreate_missing(root=Path('/srv/nix-clean')):
+    """Recreate deleted OS containers from the deployed release; existing ones are left alone."""
+    source = Path('/opt/nix-clean-source').resolve()
+    run(['docker', 'compose', '-p', 'nixos', '--env-file', str(root / 'deployment.env'),
+         '-f', str(source / 'deploy/compose.yaml'), *(['--profile', 'crm'] if crm_enabled(root) else []),
+         'up', '--detach', '--no-recreate'])
+
+
+def start_all(names, root=Path('/srv/nix-clean')):
     """Attempt every start (databases first), then report; one failure never strands the rest."""
     failed = []
     for name in names:
@@ -168,6 +187,19 @@ def start_all(names):
             run(['docker', 'start', name])
         except Refusal:
             failed.append(name)
+    if failed:
+        # A container may have been deleted while stopped; state is all bind-mounted, so
+        # recreating it from the deployed compose file restores the service as it was.
+        try:
+            recreate_missing(root)
+        except Refusal:
+            pass
+        retry, failed = failed, []
+        for name in retry:
+            try:
+                run(['docker', 'start', name])
+            except Refusal:
+                failed.append(name)
     if failed:
         raise Refusal('Some services did not start after capture: ' + ', '.join(failed))
 
@@ -192,6 +224,10 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         names = containers(root)
+        used = disk_used_percent()
+        if used >= DISK_LIMIT_PERCENT:
+            raise Refusal(f'Disk is {used:.0f}% full; a cold capture needs it below {DISK_LIMIT_PERCENT}% '
+                          '(the host auto-pruner deletes stopped containers above 90%)')
         if not crm_enabled(root) and crm_writers_running():
             raise Refusal('CRM containers run while CRM is disabled; reconcile with a deployment first')
         statuses = [run(['docker', 'inspect', '--format', '{{.State.Status}}', name]) for name in names]
@@ -206,7 +242,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
             yield
         finally:
             # Even a failed/partial stop must not leave the company OS down. Databases start first.
-            start_all(list(reversed(names)))
+            start_all(list(reversed(names)), root)
             wait_services(names)
 
 
