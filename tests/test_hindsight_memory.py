@@ -316,7 +316,11 @@ class HindsightMemoryTests(unittest.TestCase):
         self.assertIn('os.environ["HINDSIGHT_API_TENANT_API_KEY"]', script)
         self.assertEqual(0, subprocess.run(['sh', '-n', str(ROOT / 'deploy/hindsight/codex-login.sh')]).returncode)
         with tempfile.TemporaryDirectory() as td:
-            deployment.install_hindsight_login(ROOT, Path(td))
+            calls = []
+            deployment.install_hindsight_login(ROOT, Path(td), Path(td), calls.append)
+            rule = Path(td) / 'nix-os-deploy-lock.conf'
+            self.assertEqual('f /run/lock/nix-os-deploy.lock 0640 root docker -', rule.read_text().strip())
+            self.assertEqual([['systemd-tmpfiles', '--create', str(rule)]], calls)
             installed = Path(td) / 'nix-hindsight-login'
             self.assertEqual(script, installed.read_text())
             self.assertEqual(0o755, installed.stat().st_mode & 0o777)

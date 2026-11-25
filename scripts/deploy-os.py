@@ -480,9 +480,14 @@ def configure_memory(state, run):
     return pending
 
 
-def install_hindsight_login(source, bin_dir=Path('/usr/local/bin')):
+def install_hindsight_login(source, bin_dir=Path('/usr/local/bin'), tmpfiles_dir=Path('/etc/tmpfiles.d'), run=run):
     """Root-owned copy of the founder's one-time Hindsight sign-in, runnable by the `nixos` operator
     (who cannot read the release directory)."""
+    # Recovery runs with UMask=0077 and can be first after boot. Give the Docker
+    # operator read access to the same inode even then. tmpfiles 'f' never truncates it.
+    rule = 'nix-os-deploy-lock.conf'
+    _root_write(tmpfiles_dir, rule, 'f /run/lock/nix-os-deploy.lock 0640 root docker -\n', 0o644)
+    run(['systemd-tmpfiles', '--create', str(tmpfiles_dir / rule)])
     _root_write(bin_dir, 'nix-hindsight-login', (source / 'deploy/hindsight/codex-login.sh').read_text(), 0o755)
 
 
