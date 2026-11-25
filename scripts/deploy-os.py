@@ -281,26 +281,38 @@ PERSONAL_MARKER = 'nix-profile.json'
 def ensure_personal_profile(source, state, run):
     """Create the declared personal Hermes profile once, through Hermes' own commands.
 
-    An existing profile directory (ours, the operator's or a half-made one) is never modified:
-    no config, SOUL, memory or credential is rewritten. The profile gets no venture marker, so
-    it never receives the T3 credential, the nix-os company skills or a Discord platform.
-    Returns 'created' or 'present'."""
+    A profile directory that this deployment did not claim (the operator's, or any pre-existing
+    one) is never modified: no config, SOUL, memory or credential is rewritten. A claim file,
+    written before `profile create` and removed after the marker, lets an interrupted creation
+    resume instead of staying half-made. The profile gets no venture marker, so it never receives
+    the T3 credential, the nix-os company skills or a Discord platform.
+    Returns 'created', 'resumed' or 'present'."""
     manifest = json.loads((source / PERSONAL_MANIFEST).read_text())
     name = manifest['profile']
     if not re.fullmatch(r'[a-z][a-z0-9]{1,23}', name) or name == 'default':
         raise ValueError('The personal profile name is invalid')
     hermes = state / 'hermes'
     profiles, target = hermes / 'profiles', hermes / 'profiles' / name
-    if profiles.is_symlink() or target.is_symlink():
-        raise ValueError('The personal profile path must not be a symlink')
+    claim = state / ('.personal-profile-' + name + '.claim')
+    if profiles.is_symlink() or target.is_symlink() or claim.is_symlink():
+        raise ValueError('The personal profile paths must not be symlinks')
+    marker = target / PERSONAL_MARKER
+    outcome = 'created'
     if target.exists():
-        return 'present'
+        if marker.is_file() or not claim.is_file():
+            return 'present'
+        # Our own interrupted creation: only a directory made after the claim, never an older one.
+        if not target.is_dir() or target.stat().st_mtime < claim.stat().st_mtime - 1:
+            return 'present'
+        outcome = 'resumed'
     owner = hermes.stat()
     pilot = json.loads((source / manifest['model']['source']).read_text())
     settings = {'model.provider': pilot['model']['provider'], 'model.default': pilot['model']['default'],
                 **manifest['config']}
     cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes']
-    run(cli + ['profile', 'create', name, '--no-alias', '--description', manifest['description']])
+    if outcome == 'created':
+        _root_write(state, claim.name, datetime.now(timezone.utc).isoformat() + '\n', 0o600)
+        run(cli + ['profile', 'create', name, '--no-alias', '--description', manifest['description']])
     for key, value in settings.items():
         run(cli + ['-p', name, 'config', 'set', key, json.dumps(value) if isinstance(value, bool) else str(value)])
     for key, value in settings.items():
@@ -314,13 +326,14 @@ def ensure_personal_profile(source, state, run):
             raise ValueError('The personal workspace path must not be a symlink')
     workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chown(workspace, owner.st_uid, owner.st_gid)
-    for directory, filename, text in (
-            (target, 'SOUL.md', (source / manifest['role_file']).read_text()),
-            (target, PERSONAL_MARKER, json.dumps({'profile': name, 'kind': 'personal',
-                                                 'created_by': 'deployment'}) + '\n')):
-        _root_write(directory, filename, text, 0o644)
-        os.chown(directory / filename, owner.st_uid, owner.st_gid)
-    return 'created'
+    # The marker is last: it means every setting read back and the role instructions are in place.
+    for filename, text in (
+            ('SOUL.md', (source / manifest['role_file']).read_text()),
+            (PERSONAL_MARKER, json.dumps({'profile': name, 'kind': 'personal', 'created_by': 'deployment'}) + '\n')):
+        _root_write(target, filename, text, 0o644)
+        os.chown(target / filename, owner.st_uid, owner.st_gid)
+    claim.unlink(missing_ok=True)
+    return outcome
 
 
 def _root_write(directory, name, text, mode):

@@ -330,6 +330,36 @@ class DeploymentTests(unittest.TestCase):
                     ROOT, state, self.fake_hermes(state, [], drop=('platforms.discord.enabled',)))
             self.assertFalse((state / 'hermes/profiles/personal/nix-profile.json').exists())
 
+    def test_interrupted_personal_creation_resumes_but_foreign_profiles_never_do(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            calls = []
+            with self.assertRaises(ValueError):  # create ran, the Discord readback failed
+                deployment.ensure_personal_profile(
+                    ROOT, state, self.fake_hermes(state, calls, drop=('platforms.discord.enabled',)))
+            profile = state / 'hermes/profiles/personal'
+            self.assertTrue(profile.is_dir())
+            self.assertEqual('hermes default soul', (profile / 'SOUL.md').read_text())
+            self.assertFalse((profile / 'nix-profile.json').exists())
+            calls.clear()
+            self.assertEqual('resumed', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
+            self.assertFalse(any(c[c.index('hermes') + 1:][:2] == ['profile', 'create'] for c in calls))
+            self.assertEqual((ROOT / 'deploy/roles/personal.md').read_text(), (profile / 'SOUL.md').read_text())
+            self.assertTrue((profile / 'nix-profile.json').is_file())
+            self.assertEqual([], [p.name for p in state.glob('.personal-profile-*')])
+            calls.clear()
+            self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
+            self.assertEqual([], calls)
+        with tempfile.TemporaryDirectory() as td:  # a stale claim never adopts a profile made before it
+            state = self.prepare_state(td)
+            profile = state / 'hermes/profiles/personal'
+            profile.mkdir(parents=True)
+            (profile / 'SOUL.md').write_text('operator')
+            os.utime(profile, (1, 1))
+            (state / '.personal-profile-personal.claim').write_text('x\n')
+            self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [])))
+            self.assertEqual('operator', (profile / 'SOUL.md').read_text())
+
     def test_personal_profile_failure_never_fails_the_deployment_and_is_not_a_company_target(self):
         with tempfile.TemporaryDirectory() as td:
             state = self.prepare_state(td)
