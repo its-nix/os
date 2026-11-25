@@ -24,6 +24,16 @@ const MAX_FILES = 250;
 const STALE_MS = 45 * 60 * 1000;
 const SHA = /^[0-9a-f]{40}$/;
 const APPROVALS = '/run/reviewer-approvals';
+// New files here cannot weaken an existing check; modifying, renaming or deleting one needs approval.
+const ADDITIONS_ALLOWED = ['tests/'];
+
+export function isProtectedChange(policy, f) {
+  const hit = (path) => policy.paths.some((entry) => entry.endsWith('/') ? path.startsWith(entry) : path === entry);
+  if (f.status === 'added' && !f.previous_filename && ADDITIONS_ALLOWED.some((dir) => f.filename.startsWith(dir))) {
+    return false;
+  }
+  return [f.filename, f.previous_filename].filter(Boolean).some(hit);
+}
 
 export function parseProtectedPaths(text) {
   const paths = text.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
@@ -248,10 +258,8 @@ async function collect(repo, token, pr, policy, api) {
     if (!f.filename || (f.status === 'renamed' && !f.previous_filename)) {
       return { refuse: 'Diff has incomplete file metadata.' };
     }
-    for (const path of [f.filename, f.previous_filename].filter(Boolean)) {
-      if (policy.paths.some((entry) => entry.endsWith('/') ? path.startsWith(entry) : path === entry)) {
-        protectedPaths.add(path);
-      }
+    if (isProtectedChange(policy, f)) {
+      for (const path of [f.filename, f.previous_filename].filter(Boolean)) protectedPaths.add(path);
     }
     if (!f.patch) return { refuse: `${f.filename} has no reviewable text diff (binary, rename-only or too large).` };
     size += f.patch.length;

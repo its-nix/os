@@ -224,3 +224,15 @@ test('opencode reviews are pinned to the Go endpoint with tools off', async () =
   assert.equal(cfg.provider.opencode.options.baseURL, 'https://opencode.ai/zen/go/v1');
   assert.ok(Object.values(cfg.tools).every((v) => v === false));
 });
+
+test('new test files are free; modifying, renaming or deleting existing tests is protected', async () => {
+  const { isProtectedChange, parseProtectedPaths } = await import('./reviewer.mjs');
+  const policy = parseProtectedPaths('/.github/ @o\n/tests/ @o\n/deploy/reviewer/ @o\n');
+  assert.equal(isProtectedChange(policy, { filename: 'tests/test_new.py', status: 'added' }), false);
+  assert.equal(isProtectedChange(policy, { filename: 'tests/test_old.py', status: 'modified' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'tests/test_old.py', status: 'removed' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'tests/x.py', previous_filename: 'tests/test_old.py', status: 'renamed' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'other/x.py', previous_filename: 'tests/test_old.py', status: 'renamed' }), true);
+  assert.equal(isProtectedChange(policy, { filename: '.github/workflows/new.yml', status: 'added' }), true);
+  assert.equal(isProtectedChange(policy, { filename: 'deploy/reviewer/new.mjs', status: 'added' }), true);
+});
