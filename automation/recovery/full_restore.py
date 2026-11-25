@@ -121,6 +121,14 @@ def require_state(inventory):
             name.startswith('paperclip/instances/default/secrets/') and row.get('size', 0) > 0
             for name, row in inventory.items()):
         raise Refusal('Snapshot lacks Paperclip encryption keys')
+    # Optional CRM (Twenty): the enable flag, database and its credentials travel together. Any
+    # partial set would restore a CRM that boots empty, stays disabled although it has data, or
+    # cannot read its own secrets. To retire the CRM, move twenty/ out of the root with its flag.
+    twenty = [inventory.get(name, {}) for name in
+              ('twenty/ENABLED', 'twenty/db/PG_VERSION', 'twenty/db.env', 'twenty/server.env')]
+    if any(twenty) and (any(row.get('type') != 'file' for row in twenty)
+                        or any(row.get('size', 0) <= 0 for row in twenty[2:])):
+        raise Refusal('Snapshot lacks Twenty enable flag, database or credentials')
     for name in inventory:
         for parent in PurePosixPath(name).parents:
             if str(parent) != '.' and inventory.get(str(parent), {}).get('type') != 'directory':

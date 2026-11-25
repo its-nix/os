@@ -346,17 +346,29 @@ class DeploymentTests(unittest.TestCase):
             self.assertFalse(any(c[c.index('hermes') + 1:][:2] == ['profile', 'create'] for c in calls))
             self.assertEqual((ROOT / 'deploy/roles/personal.md').read_text(), (profile / 'SOUL.md').read_text())
             self.assertTrue((profile / 'nix-profile.json').is_file())
-            self.assertEqual([], [p.name for p in state.glob('.personal-profile-*')])
+            self.assertFalse((profile / '.nix-profile-creating').exists())
             calls.clear()
             self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
             self.assertEqual([], calls)
-        with tempfile.TemporaryDirectory() as td:  # a stale claim never adopts a profile made before it
+        with tempfile.TemporaryDirectory() as td:  # an operator profile is never adopted, however new
             state = self.prepare_state(td)
             profile = state / 'hermes/profiles/personal'
             profile.mkdir(parents=True)
             (profile / 'SOUL.md').write_text('operator')
-            os.utime(profile, (1, 1))
-            (state / '.personal-profile-personal.claim').write_text('x\n')
+            calls = []
+            self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
+            self.assertEqual([], calls)
+            self.assertEqual('operator', (profile / 'SOUL.md').read_text())
+        with tempfile.TemporaryDirectory() as td:  # a failed create leaves no evidence; a later operator profile stays theirs
+            state = self.prepare_state(td)
+
+            def failing(argv):
+                raise subprocess.CalledProcessError(1, argv)
+            with self.assertRaises(subprocess.CalledProcessError):
+                deployment.ensure_personal_profile(ROOT, state, failing)
+            profile = state / 'hermes/profiles/personal'
+            profile.mkdir(parents=True)
+            (profile / 'SOUL.md').write_text('operator')
             self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [])))
             self.assertEqual('operator', (profile / 'SOUL.md').read_text())
 

@@ -25,9 +25,9 @@ The recovery image includes `/srv/nix-clean/hermes`, so personal memory is backe
 
 `scripts/deploy-os.py` calls `ensure_personal_profile` after Hermes is healthy:
 
-- If `profiles/personal` exists and this deployment did not claim it (the operator's, or any pre-existing one), it does nothing: no config, SOUL, memory or credential is rewritten.
-- Otherwise it writes a claim file, runs the native `hermes profile create personal --no-alias`, sets the model, Discord, approvals and workspace keys with `hermes -p personal config set`, reads every key back, then writes `SOUL.md` and, last, a `nix-profile.json` marker owned by the Hermes user, and removes the claim.
-- If a step fails after creation, the claim stays and the next deployment resumes (never re-creates) while the directory is newer than the claim and the marker is absent. A stale claim never adopts an older directory.
+- If `profiles/personal` exists without this deployment's evidence inside it (the operator's, or any pre-existing one), it does nothing: no config, SOUL, memory or credential is rewritten.
+- Otherwise it runs the native `hermes profile create personal --no-alias`, immediately writes `.nix-profile-creating` inside the new directory, sets the model, Discord, approvals and workspace keys with `hermes -p personal config set`, reads every key back, then writes `SOUL.md` and, last, a `nix-profile.json` marker owned by the Hermes user, and removes `.nix-profile-creating`.
+- If a step fails after that file is written, the next deployment resumes (never re-creates). Only the in-directory file counts as evidence, so an operator-made profile is never adopted. A crash between `profile create` and writing that file leaves the profile unmanaged; finish or remove it by hand.
 - It never clones another profile (cloning copies `.env` and credentials) and writes no `nix-venture.json`, so the venture T3-credential and skill syncs skip it.
 - A failure of this additive step is reported on stderr and does not fail the deployment; every later deployment retries.
 

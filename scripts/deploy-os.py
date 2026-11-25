@@ -276,15 +276,17 @@ def sync_os_skills(source, state):
 
 PERSONAL_MANIFEST = 'deploy/profiles/personal.json'
 PERSONAL_MARKER = 'nix-profile.json'
+PERSONAL_CREATING = '.nix-profile-creating'
 
 
 def ensure_personal_profile(source, state, run):
     """Create the declared personal Hermes profile once, through Hermes' own commands.
 
-    A profile directory that this deployment did not claim (the operator's, or any pre-existing
-    one) is never modified: no config, SOUL, memory or credential is rewritten. A claim file,
-    written before `profile create` and removed after the marker, lets an interrupted creation
-    resume instead of staying half-made. The profile gets no venture marker, so it never receives
+    A profile directory without deployment evidence inside it (the operator's, or any pre-existing
+    one) is never modified: no config, SOUL, memory or credential is rewritten. Right after
+    `profile create` succeeds, an in-progress file is written INTO the new directory; only that
+    file lets an interrupted creation resume. A crash between create and that write leaves the
+    profile unmanaged (fail safe: never adopted). The profile gets no venture marker, so it never receives
     the T3 credential, the nix-os company skills or a Discord platform.
     Returns 'created', 'resumed' or 'present'."""
     manifest = json.loads((source / PERSONAL_MANIFEST).read_text())
@@ -293,26 +295,24 @@ def ensure_personal_profile(source, state, run):
         raise ValueError('The personal profile name is invalid')
     hermes = state / 'hermes'
     profiles, target = hermes / 'profiles', hermes / 'profiles' / name
-    claim = state / ('.personal-profile-' + name + '.claim')
-    if profiles.is_symlink() or target.is_symlink() or claim.is_symlink():
+    if profiles.is_symlink() or target.is_symlink():
         raise ValueError('The personal profile paths must not be symlinks')
-    marker = target / PERSONAL_MARKER
+    marker, creating = target / PERSONAL_MARKER, target / PERSONAL_CREATING
     outcome = 'created'
     if target.exists():
-        if marker.is_file() or not claim.is_file():
+        if not target.is_dir() or marker.exists() or creating.is_symlink() or not creating.is_file():
             return 'present'
-        # Our own interrupted creation: only a directory made after the claim, never an older one.
-        if not target.is_dir() or target.stat().st_mtime < claim.stat().st_mtime - 1:
-            return 'present'
-        outcome = 'resumed'
+        outcome = 'resumed'  # positive evidence: this deployment created the directory
     owner = hermes.stat()
     pilot = json.loads((source / manifest['model']['source']).read_text())
     settings = {'model.provider': pilot['model']['provider'], 'model.default': pilot['model']['default'],
                 **manifest['config']}
     cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes']
     if outcome == 'created':
-        _root_write(state, claim.name, datetime.now(timezone.utc).isoformat() + '\n', 0o600)
         run(cli + ['profile', 'create', name, '--no-alias', '--description', manifest['description']])
+        if not target.is_dir() or target.is_symlink():
+            raise ValueError('Hermes did not create the personal profile directory')
+        _root_write(target, PERSONAL_CREATING, datetime.now(timezone.utc).isoformat() + '\n', 0o600)
     for key, value in settings.items():
         run(cli + ['-p', name, 'config', 'set', key, json.dumps(value) if isinstance(value, bool) else str(value)])
     for key, value in settings.items():
@@ -332,7 +332,7 @@ def ensure_personal_profile(source, state, run):
             (PERSONAL_MARKER, json.dumps({'profile': name, 'kind': 'personal', 'created_by': 'deployment'}) + '\n')):
         _root_write(target, filename, text, 0o644)
         os.chown(target / filename, owner.st_uid, owner.st_gid)
-    claim.unlink(missing_ok=True)
+    creating.unlink(missing_ok=True)
     return outcome
 
 
