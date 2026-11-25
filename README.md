@@ -18,6 +18,7 @@ An always-on company operating system: one multi-profile Hermes runtime runs ven
 | Lead → CRM → approval-gated action procedure | Staged (#77) | Mock-tested; live proof needs a Twenty key and a Todoist queue token |
 | Hindsight memory | Blocked: decision | Extraction LLM choice (local GPU vs hosted) is a privacy decision |
 | Drive + Obsidian knowledge | Not started | Needs the vault folder and scoped access; the KB snapshot stays authoritative meanwhile |
+| Personal agent profile (`personal`) | Contract + idempotent deploy step ([contract](docs/PERSONAL-PROFILE.md)) | Logical separation only; email/calendar blocked on the founder |
 | Paperclip | Running, idle | 0 issues/projects, 3 paused agents; retire after cutover with state kept in recovery |
 | LNX Discord bot | **Running** | Default profile; unchanged |
 

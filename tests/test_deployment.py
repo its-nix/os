@@ -17,10 +17,15 @@ deployment.ROOT_UID, deployment.ROOT_GID = os.getuid(), os.getgid()  # tests run
 _real_apply = deployment.apply
 
 
+def _real_venture_profiles(state):
+    return deployment._token_module().venture_profiles(state / 'hermes')
+
+
 def apply(*args, **kwargs):
     kwargs.setdefault('t3_credential', lambda state: False)
     kwargs.setdefault('t3_loaded', lambda state: None)
     kwargs.setdefault('units', lambda source, run: False)
+    kwargs.setdefault('personal', lambda source, state, run: 'present')
     return _real_apply(*args, **kwargs)
 
 
@@ -250,6 +255,99 @@ class DeploymentTests(unittest.TestCase):
                 self.assertEqual([], [p.name for p in skills.iterdir() if p.name.startswith('.nix-os')])
             self.assertFalse((hermes / 'profiles/engineer/skills/nix-os').exists())
             self.assertEqual('kit-owned', (hermes / 'skills/brainstorming/SKILL.md').read_text())
+
+    def fake_hermes(self, state, calls, drop=()):
+        """Stand-in for `docker exec ... hermes`: create makes the profile directory, config set/get round-trips."""
+        store = {}
+
+        def run(argv):
+            calls.append(argv)
+            args = argv[argv.index('hermes') + 1:]
+            if args[:2] == ['profile', 'create']:
+                (state / 'hermes/profiles' / args[2]).mkdir(parents=True)
+                (state / 'hermes/profiles' / args[2] / 'SOUL.md').write_text('hermes default soul')
+            elif args[2:4] == ['config', 'set']:
+                store[args[4]] = 'true' if args[4] in drop else args[5]  # a setting Hermes silently ignores
+            elif args[2:4] == ['config', 'get']:
+                if args[5] not in store:
+                    raise subprocess.CalledProcessError(1, argv)
+                return json.dumps(False if store[args[5]] == 'false' else store[args[5]])
+            return ''
+        return run
+
+    def test_personal_profile_is_created_once_with_declared_isolation(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            calls = []
+            self.assertEqual('created', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
+            manifest = json.loads((ROOT / 'deploy/profiles/personal.json').read_text())
+            pilot = json.loads((ROOT / 'deploy/pilot.json').read_text())
+            profile = state / 'hermes/profiles/personal'
+            self.assertEqual((ROOT / manifest['role_file']).read_text(), (profile / 'SOUL.md').read_text())
+            self.assertTrue((state / 'hermes/workspaces/personal').is_dir())
+            self.assertEqual('personal', json.loads((profile / 'nix-profile.json').read_text())['profile'])
+            commands = [c[c.index('hermes') + 1:] for c in calls]
+            self.assertEqual(['profile', 'create', 'personal', '--no-alias'], commands[0][:4])
+            sets = {c[4]: c[5] for c in commands if c[2:4] == ['config', 'set']}
+            self.assertEqual(pilot['model']['provider'], sets['model.provider'])
+            self.assertEqual(pilot['model']['default'], sets['model.default'])
+            self.assertEqual('false', sets['platforms.discord.enabled'])
+            self.assertEqual('manual', sets['approvals.mode'])
+            # Shared login only: no clone (would copy .env/credentials), no venture marker, no secrets in the manifest.
+            flat = json.dumps(calls)
+            for forbidden in ('--clone', '--api-key', 'auth.json'):
+                self.assertNotIn(forbidden, flat)
+            self.assertFalse((profile / 'nix-venture.json').exists())
+            text = (ROOT / 'deploy/profiles/personal.json').read_text().lower()
+            for word in ('token":', 'password', 'secret":', '@'):
+                self.assertNotIn(word, text)
+
+    def test_existing_personal_profile_is_never_touched(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            profile = state / 'hermes/profiles/personal'
+            (profile / 'memories').mkdir(parents=True)
+            (profile / 'SOUL.md').write_text('operator edited')
+            (profile / 'memories/MEMORY.md').write_text('private')
+            calls = []
+            self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
+            self.assertEqual([], calls)
+            self.assertEqual('operator edited', (profile / 'SOUL.md').read_text())
+            self.assertEqual('private', (profile / 'memories/MEMORY.md').read_text())
+            self.assertFalse((profile / 'nix-profile.json').exists())
+
+    def test_personal_profile_refuses_symlinks_and_unapplied_settings(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            (state / 'hermes/profiles').mkdir()
+            (state / 'hermes/profiles/personal').symlink_to(Path(td))
+            with self.assertRaises(ValueError):
+                deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            with self.assertRaises(ValueError):  # Discord must read back disabled, or no marker/SOUL is written
+                deployment.ensure_personal_profile(
+                    ROOT, state, self.fake_hermes(state, [], drop=('platforms.discord.enabled',)))
+            self.assertFalse((state / 'hermes/profiles/personal/nix-profile.json').exists())
+
+    def test_personal_profile_failure_never_fails_the_deployment_and_is_not_a_company_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            seen = []
+
+            def broken(source, st, run):
+                seen.append(True)
+                raise subprocess.CalledProcessError(1, ['hermes'])
+
+            apply('c' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]), personal=broken)
+            self.assertEqual([True], seen)
+            self.assertEqual('healthy', json.loads((state / 'deployment.json').read_text())['status'])
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
+            (state / 'hermes/profiles/personal/skills').mkdir()
+            self.assertNotIn(state / 'hermes/profiles/personal/skills', deployment.os_skill_targets(state))
+            self.assertNotIn(state / 'hermes/profiles/personal', _real_venture_profiles(state))
 
     def test_os_skill_sync_never_follows_symlinked_profiles_and_recovers_interrupted_swap(self):
         with tempfile.TemporaryDirectory() as td:

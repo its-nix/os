@@ -41,6 +41,7 @@ Running record for the Docker-first Company OS refactor (PRD v1.1). It records w
 | D7 | 2026-11-23 | Hermes→T3 credential minted by the root deploy via T3's own OAuth pairing approval, renewed when <7 days remain | T3 caps CLI-issued MCP sessions at `approval-required`; OAuth tokens last 30 days without refresh |
 | D8 | 2026-11-23 | Hindsight via the native Hermes plugin (local embedded mode), deferred until the founder picks the extraction LLM | Embedded mode keeps storage local, but extraction sends text to whichever LLM is configured |
 | D6 | 2026-11-23 | PRs in this refactor are built with the founder's admin token and reviewed by an independent model; this is **not** a forge-proof gate | The forge-proof gate (separate builder identity, ruleset requiring Actions check runs) is itself a deliverable of Phase 3 |
+| D9 | 2026-11-25 | Personal profile is created by the deploy through native `hermes profile create` only when absent; contract in `deploy/profiles/personal.json`, outside `native_inputs` | Same container means logical separation only; never overwrite an existing profile, never clone credentials ([contract](PERSONAL-PROFILE.md)) |
 
 ## 4. Evidence ledger
 
@@ -62,6 +63,7 @@ One consolidated Todoist request (project `Nix`, label `nix-approval`), raised 2
 3. Coding-harness logins inside T3.
 4. Hindsight memory-extraction provider (local GPU vs hosted API): privacy decision.
 5. Drive vault folder and scoped access.
+6. Personal profile connectors (email, calendar, private documents): founder-authorized Google session and a scoped Drive location.
 
 ## Pack migration evidence — 2026-11-25
 
