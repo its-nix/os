@@ -62,3 +62,17 @@ One consolidated Todoist request (project `Nix`, label `nix-approval`), raised 2
 3. Coding-harness logins inside T3.
 4. Hindsight memory-extraction provider (local GPU vs hosted API): privacy decision.
 5. Drive vault folder and scoped access.
+
+## Pack migration evidence — 2026-11-25
+
+Read-only inspection found the deployed Kit checkout at its declared revision.
+Five default-profile Hermes core trees matched their installed Kit cache
+copies. Grilling and handoff were absent. T3 contained Claude Code, Codex,
+OpenCode and agy. The pinned OpenCode CLI exposes `debug skill` for native
+discovery readback.
+
+A local build from that Kit revision through Skillshare v0.31.0 verified nine
+copied skill trees against the private Kit staging prefix. A fresh detached
+engineering worktree received exactly the two engineering additions. These
+are build and worktree results. Production discovery requires a healthy
+main deployment and a separate native readback.

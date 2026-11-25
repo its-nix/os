@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 def run(argv):
@@ -367,11 +368,12 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             for name in ('nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis'):
                 if name in running:  # apps drain before their datastores stop
                     run(['docker', 'stop', '--time', '90', name])
+        ensure_t3_image(source, run)
+        run(['python3', str(source / 'scripts/deploy-os.py'), '--prepare-packs', revision, str(source)])
         compose = ['docker', 'compose', '--project-name', 'nixos', '--env-file', str(candidate),
-                   '--file', str(source / 'deploy/compose.yaml')] + (['--profile', 'crm'] if crm else [])
+                   '--file', str(source / 'deploy/compose.yaml'), '--file', str(state / 'packs.compose.json')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
-        ensure_t3_image(source, run)
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         if reviewer_changed:  # the evaluator's new code must actually be the code that runs
             run(compose + ['up', '--detach', '--no-deps', '--force-recreate', 'reviewer'])
@@ -434,12 +436,71 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         candidate.unlink(missing_ok=True)
 
 
+def prepare_packs(release, state, image):
+    pack_dir = release / 'deploy/packs'
+    kit = json.loads((release / 'deploy/versions.json').read_text())['kit']['revision']
+    key = hashlib.sha256(kit.encode() + (pack_dir / 'packs.json').read_bytes() +
+                         (pack_dir / 'build.py').read_bytes() + (pack_dir / 'worktree.py').read_bytes()).hexdigest()
+    store = state / 'pack-releases'
+    store.mkdir(mode=0o755, exist_ok=True)
+    if store.is_symlink() or store.stat().st_uid != 0 or store.stat().st_mode & 0o022:
+        raise ValueError('Unsafe pack release store')
+    core = store / key
+    runner = ['docker', 'run', '--rm', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+              '-v', f'{release}/deploy:/release/deploy:ro', '--entrypoint', 'python3']
+    if not core.exists():
+        with tempfile.TemporaryDirectory(dir=store) as tmp:
+            archive = Path(tmp) / 'kit.tar'
+            subprocess.run(['git', '-C', str(state / 'inputs/kit'), 'archive', '--format=tar',
+                            '--output', archive, kit], check=True)
+            archive.chmod(0o644)
+            output = Path(tmp) / 'out'
+            output.mkdir()
+            os.chown(output, 65534, 65534)
+            subprocess.run([*runner, '--user', '65534:65534', '-v', f'{archive}:/kit.tar:ro',
+                            '-v', f'{output}:/out', image, '/release/deploy/packs/build.py',
+                            '/kit.tar', '/out/core', '--role', 'engineering', '--runtime'], check=True)
+            built = output / 'core'
+            for entry in [built, *built.rglob('*')]:
+                if entry.is_symlink() or not (entry.is_file() or entry.is_dir()):
+                    raise ValueError('Invalid pack release entry')
+                os.chown(entry, 0, 0)
+                entry.chmod(0o555 if entry.is_dir() or entry.stat().st_mode & 0o111 else 0o444)
+            built.rename(core)
+    volumes = {}
+    for service, uid, home in [('hermes', '10000', state / 'hermes'), ('t3', '10010', state / 't3/home')]:
+        raw = subprocess.check_output([*runner, '--read-only', '--network=none', '--user', uid,
+                                      '-v', f'{home}:/native:ro', '-v', f'{core}:/core:ro',
+                                      image, '/release/deploy/packs/mounts.py', service])
+        names = json.loads(raw)
+        allowed = set(json.loads((pack_dir / 'packs.json').read_text())['packs']['core'])
+        if not isinstance(names, list) or any(not isinstance(n, str) or not re.fullmatch(r'[a-z0-9-]+', n)
+                                              or n not in allowed for n in names):
+            raise ValueError('Invalid core mount selection')
+        target = '/opt/data/skills/nixkit' if service == 'hermes' else '/var/lib/t3/.agents/skills'
+        volumes[service] = {'volumes': [
+            {'type': 'bind', 'source': str(core / name), 'target': target + '/' + name, 'read_only': True,
+             'bind': {'create_host_path': False}} for name in names]}
+    volumes['t3']['volumes'].append({'type': 'bind', 'source': str(core), 'target': '/opt/nixkit',
+                                     'read_only': True, 'bind': {'create_host_path': False}})
+    override = state / 'packs.compose.json'
+    with tempfile.NamedTemporaryFile(dir=store, mode='w', delete=False) as tmp:
+        json.dump({'services': volumes}, tmp)
+    os.replace(tmp.name, override)
+
+
 def main():
+    pack_build = sys.argv[1:2] == ['--prepare-packs']
+    if pack_build:
+        del sys.argv[1]
     if len(sys.argv) != 3 or not re.fullmatch(r'[0-9a-f]{40}', sys.argv[1]):
         raise ValueError('Deployment requires an exact verified revision and its root-owned release')
     revision, source = sys.argv[1], Path(sys.argv[2]).resolve()
     if source != Path('/opt/nix-os/releases') / revision or source != Path(__file__).resolve().parents[1]:
         raise ValueError('Deployment source must be the verified release')
+    if pack_build:
+        prepare_packs(source, Path('/srv/nix-clean'), 'nixos-t3:' + t3_build_tag(source))
+        return
     apply(revision, source, Path('/srv/nix-clean'), Path('/opt/nix-clean-source'))
 
 
