@@ -675,12 +675,16 @@ class DeploymentTests(unittest.TestCase):
             apply('8' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
             root = state / 'reviewer'
             self.assertEqual((ROOT / 'deploy/reviewer/reviewer.mjs').read_text(), (root / 'app/reviewer.mjs').read_text())
+            self.assertEqual((ROOT / '.github/CODEOWNERS').read_text(), (root / 'app/CODEOWNERS').read_text())
+            self.assertEqual(0o700, (root / 'approvals').stat().st_mode & 0o777)
+            self.assertEqual(os.getuid(), (root / 'approvals').stat().st_uid)
             self.assertIn('REVIEW_POOL=', (root / 'reviewer.env').read_text())
             (root / 'reviewer.env').write_text('REVIEW_APP_ID=42\n')
             apply('9' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
             self.assertEqual('REVIEW_APP_ID=42\n', (root / 'reviewer.env').read_text())  # settings never overwritten
         reviewer = (ROOT / 'deploy/compose.yaml').read_text().split('  reviewer:', 1)[1].split('\n  # Optional CRM', 1)[0]
-        for required in ('networks: [review]', 'cap_drop: [ALL]', 'read_only: true'):
+        for required in ('networks: [review]', 'cap_drop: [ALL]',
+                         'target: /run/reviewer-approvals\n        read_only: true'):
             self.assertIn(required, reviewer)
         for forbidden in ('ports:', 'docker.sock', '/t3/home', 'network_mode'):
             self.assertNotIn(forbidden, reviewer)

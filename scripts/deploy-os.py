@@ -109,7 +109,8 @@ def ensure_reviewer_state(source, state):
     reviewer script. The App private key is founder-provided in reviewer/secrets/app.pem."""
     root = state / 'reviewer'
     for path, owner, mode in ((root, (ROOT_UID, ROOT_GID), 0o755), (root / 'home', (T3_UID, T3_GID), 0o700),
-                              (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, ROOT_GID), 0o700)):
+                              (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, ROOT_GID), 0o700),
+                              (root / 'approvals', (ROOT_UID, ROOT_GID), 0o700)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ValueError('Reviewer state path is not a plain directory')
         if not path.exists():
@@ -120,11 +121,14 @@ def ensure_reviewer_state(source, state):
     if not (root / 'secrets' / 'seed').exists():
         import secrets as _secrets  # selection seed: a builder must not be able to predict its reviewer
         _root_write(root / 'secrets', 'seed', _secrets.token_hex(32) + '\n', 0o400)
-    script = (source / 'deploy/reviewer/reviewer.mjs').read_text()
-    current = root / 'app' / 'reviewer.mjs'
-    changed = not current.is_file() or current.read_text() != script
-    _root_write(root / 'app', 'reviewer.mjs', script, 0o644)
-    return changed  # a bind-mounted script change does not recreate the container by itself
+    changed = False
+    for relative in ('deploy/reviewer/reviewer.mjs', '.github/CODEOWNERS'):
+        payload = (source / relative).read_text()
+        current = root / 'app' / Path(relative).name
+        if not current.is_file() or current.is_symlink() or current.read_text() != payload:
+            _root_write(root / 'app', current.name, payload, 0o644)
+            changed = True
+    return changed  # a bind-mounted file change does not recreate the container by itself
 
 
 def _token_module():
