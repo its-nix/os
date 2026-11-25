@@ -130,6 +130,9 @@ class FullRecoveryTests(unittest.TestCase):
         flag_only = {k: v for k, v in full.items() if k != 'twenty/db/PG_VERSION'}
         with self.assertRaises(recovery.Refusal):
             recovery.require_state(flag_only)
+        for missing in ('twenty/ENABLED',):  # database and keys without the flag would restore a disabled CRM
+            with self.assertRaises(recovery.Refusal, msg=missing):
+                recovery.require_state({k: v for k, v in full.items() if k != missing})
 
     def test_reviewer_logins_and_app_key_are_captured_but_its_caches_are_not(self):
         recovery = self.module()
