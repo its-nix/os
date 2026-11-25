@@ -177,7 +177,8 @@ services:
     image: twentycrm/twenty@sha256:251d83ffa37c8916aaa7cd129ddb6829a941b2e2858747479579980d4e8f56a4  # v2.62.0
     networks: [crm]
     restart: unless-stopped
-    mem_limit: 768m
+    # 768m capped V8's heap near 370 MB and the worker OOM-crashed in a loop on v2.62.0.
+    mem_limit: 1280m
     command: [yarn, worker:prod]
     env_file:
       - ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/server.env
@@ -187,6 +188,7 @@ services:
       STORAGE_TYPE: local
       DISABLE_DB_MIGRATIONS: 'true'
       DISABLE_CRON_JOBS_REGISTRATION: 'true'
+      NODE_OPTIONS: --max-old-space-size=1024
     volumes:
       - type: bind
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/twenty/storage
