@@ -115,7 +115,9 @@ docker run --rm --network none --read-only --cap-drop ALL \
 
 The destination contains `state/`, mode-600 `compose.json` with the actual captured native environment and portable bind paths, and `manifest.json` with immutable image/input revisions. Empty-target checks refuse replacement of existing state; a failed extraction leaves partial scratch data that must be discarded before retrying.
 
-Pull the pinned Paperclip runtime, inspect Compose locally without logging its private environment, and start only after disabling the previous host's bots to avoid duplicate sessions:
+**Prerequisite before any start command below:** disable the previous host's bots **and its reviewer**, and stop its Twenty CRM. The restored reviewer (GitHub App key and logins) would otherwise answer the same pull requests as the old one, the restored bots would hold duplicate sessions, and two Twenty instances would double external synchronization. Providers may also require a fresh login after a restore.
+
+Then inspect Compose locally without logging its private environment and start the services (retired Paperclip is not started; its state under `state/paperclip/` stays archived):
 
 ```bash
 # T3 is a locally built image: rebuild it from the OS repository at the manifest's os_revision.
@@ -129,8 +131,6 @@ docker compose -f /srv/nixos-restored/compose.json up -d --wait
 [ -e /srv/nixos-restored/state/twenty/ENABLED ] && docker compose -f /srv/nixos-restored/compose.json --profile crm up -d --wait
 ```
 
-Disable the previous host's bots **and its reviewer** before starting anything: the restored reviewer (GitHub App key and logins) would otherwise answer the same pull requests as the old one, and the old Twenty must not keep syncing. Providers may require a fresh login after a restore.
-
 Verify both native health checks, profile authentication, Bot Group/controller identity, a representative model conversation and connector access before resuming work. The restored source inputs and receipts are under `state/`; re-establish reviewed GitHub CI/SSH bootstrap against the restored root deliberately before automatic deployments. The timer assumes the original `/srv/nix-clean` root until that host configuration is restored.
 
 The older [Hermes-only GHCR workflow](HERMES-RECOVERY.md) remains historical and disabled. It is not the daily full-system path described here.
@@ -140,17 +140,30 @@ The older [Hermes-only GHCR workflow](HERMES-RECOVERY.md) remains historical and
 Run this on the host (or any Docker host) to restore the **latest published** image into a throwaway directory and check what is present. It extracts only, starts nothing, never writes under `/srv/nix-clean`, and refuses below 15 GB free disk:
 
 ```bash
+set -eu
 . /etc/nixos/recovery.env; export DOCKER_CONFIG
-[ "$(df --output=avail -k / | tail -1)" -gt $((15*1024*1024)) ] || exit 1
+[ "$(df --output=avail -k / | tail -1)" -gt $((15*1024*1024)) ] || { echo "refuse: <15 GB free"; exit 1; }
 image=docker.io/$(python3 -c 'import json;print(json.load(open("/var/lib/nixos-recovery/last-success.json"))["manifest_digest"])')
+R=$(mktemp -d /var/tmp/nixos-restore-proof.XXXXXX); chmod 700 "$R"
+trap 'rm -rf "$R"; docker image rm "$image" >/dev/null 2>&1 || true' EXIT   # runs on success and on any failure
 docker pull --quiet "$image"
 SEC="--network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,mode=1777"
 docker run --rm $SEC "$image" verify
-R=$(mktemp -d /var/tmp/nixos-restore-proof.XXXXXX); chmod 700 "$R"
 docker run --rm $SEC --mount type=bind,source="$R",target=/restore "$image" restore --destination /restore
-# Presence and mode/size only; never print file contents:
-ls -ld "$R"/state/{hermes/config.yaml,t3/home/.t3/userdata,reviewer/home,reviewer/secrets/app.pem,twenty/db/PG_VERSION,twenty/ENABLED}
-rm -rf "$R"; docker image rm "$image"
+# Presence and size/mode only; never print file contents. Any missing path aborts (set -e).
+for path in hermes/config.yaml t3/home/.t3/userdata reviewer/home reviewer/secrets/app.pem \
+            twenty/db/PG_VERSION twenty/ENABLED; do
+  [ -e "$R/state/$path" ] || { echo "MISSING: $path"; exit 1; }
+  stat -c '%a %s %n' "$R/state/$path"
+done
+python3 - "$R" <<'PY'
+import json, sys
+services = set(json.load(open(sys.argv[1] + '/compose.json'))['services'])
+need = {'hermes', 't3', 'reviewer', 'twenty-db', 'twenty-redis', 'twenty-server', 'twenty-worker'}
+assert need <= services, sorted(need - services)
+print('compose services complete')
+PY
+echo "restore proof PASSED"
 ```
 
 Expected for a capture taken with the reviewer and CRM running: every listed path exists, and `compose.json` lists the `reviewer` and `twenty-*` services. The Twenty and Paperclip databases themselves are opened in single-user mode by every capture (and its remote readback), not by this extraction.
