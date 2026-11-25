@@ -182,11 +182,19 @@ def disk_used_percent(path='/'):
     return -(-100 * used // visible) if visible else 100
 
 
+def compose_files(root, source):
+    """The files the deployment itself layers (scripts/deploy-os.py): the release's compose.yaml plus the
+    pinned NixKit mounts it generated into the state root. Omitting the override would recreate or
+    describe Hermes/T3 without their skill mounts."""
+    packs = Path(root) / 'packs.compose.json'
+    return ['-f', str(source / 'deploy/compose.yaml')] + (['-f', str(packs)] if packs.is_file() else [])
+
+
 def recreate_missing(root=Path('/srv/nix-clean')):
     """Recreate deleted OS containers from the deployed release; existing ones are left alone."""
     source = Path('/opt/nix-clean-source').resolve()
     run(['docker', 'compose', '-p', 'nixos', '--env-file', str(root / 'deployment.env'),
-         '-f', str(source / 'deploy/compose.yaml'), *(['--profile', 'crm'] if crm_enabled(root) else []),
+         *compose_files(root, source), *(['--profile', 'crm'] if crm_enabled(root) else []),
          'up', '--detach', '--no-recreate'])
 
 
@@ -270,7 +278,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
 def deployment_model(root, versions, deployed_source):
     env = dict(os.environ, NIX_CLEAN_ROOT=str(root), HERMES_IMAGE=versions['hermes']['image'],
                T3_BUILD_TAG=hashlib.sha256((deployed_source / 'deploy/t3/Dockerfile').read_bytes()).hexdigest()[:16])
-    model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
+    model = json.loads(run(['docker', 'compose', *compose_files(root, deployed_source),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
     # Every running OS service is cross-checked against the compose model: image pin, and exactly

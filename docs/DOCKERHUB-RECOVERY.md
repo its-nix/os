@@ -11,6 +11,7 @@ The deployed container-native backup uses [liornis/nixos-recovery](https://hub.d
 | `reviewer/secrets/`, `reviewer/reviewer.env`, `reviewer/app/` | GitHub App private key (`app.pem`, root 0400), review-selection seed, App id, reviewer code | yes |
 | `twenty/` (when `ENABLED` exists) | Twenty CRM: PostgreSQL `db/`, Redis AOF `redis/`, file `storage/`, `db.env`, `server.env`, the flag | yes, cold (see below) |
 | `paperclip/` | Retired Paperclip (archived, not running): PostgreSQL, files, encryption keys | yes; stays restorable |
+| `packs.compose.json`, `pack-releases/` | Generated Compose override and release store for the pinned NixKit skill mounts of Hermes and T3 (root-owned, tens of MB) | yes; the capture's deployment model layers the override exactly as the deploy does, so a restored `compose.json` keeps the skill mounts |
 | `knowledge/`, `inputs/`, `versions.json`, `deployment.*`, `source-revision` | Company KB/Kit snapshots and deployment metadata | yes |
 
 Nothing is imported from the retired VPS setup.
