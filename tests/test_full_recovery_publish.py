@@ -45,7 +45,7 @@ class PublicationTests(unittest.TestCase):
             if 'inspect' in argv:
                 return 'exited 0' if 'ExitCode' in argv[3] else 'running'
             return ''
-        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'wait_services') as health:
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'wait_services') as health:
             with self.assertRaisesRegex(RuntimeError, 'capture failed'):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     raise RuntimeError('capture failed')
@@ -63,7 +63,7 @@ class PublicationTests(unittest.TestCase):
             if 'stop' in argv:
                 raise module.Refusal('partial stop')
             return ''
-        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'wait_services'):
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'wait_services'):
             with self.assertRaises(module.Refusal):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     self.fail('Capture cannot run after failed stop')
@@ -201,7 +201,7 @@ class ServiceControlTests(unittest.TestCase):
                 return 'abc123'
             return 'running'
         with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), \
-                patch.object(module, 'disk_used_percent', return_value=50), \
+                patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), \
                 patch.object(module, 'crm_enabled', return_value=False):
             with self.assertRaisesRegex(module.Refusal, 'CRM containers run'):
                 with module.stopped_services(Path(td) / 'lock'):
@@ -249,7 +249,8 @@ class DeletedContainerTests(unittest.TestCase):
             if argv[:2] == ['docker', 'compose']:
                 gone.clear()
             return ''
-        with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+        with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False), \
+                patch.object(module, 'compose_files', return_value=['-f', 'c.yaml', '-f', 'packs.json']):
             module.start_all(list(reversed(module.CONTAINERS)))
         compose = [c for c in calls if c[:2] == ['docker', 'compose']]
         self.assertEqual(1, len(compose))
@@ -263,7 +264,7 @@ class DeletedContainerTests(unittest.TestCase):
         module = self.module()
         calls = []
         with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=lambda a: calls.append(a) or 'running'), \
-                patch.object(module, 'disk_used_percent', return_value=91), patch.object(module, 'crm_enabled', return_value=False):
+                patch.object(module, 'disk_used_percent', return_value=91), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'crm_enabled', return_value=False):
             with self.assertRaisesRegex(module.Refusal, 'Disk is 91% full'):
                 with module.stopped_services(Path(td) / 'lock'):
                     self.fail('must not capture')
@@ -283,7 +284,7 @@ class DeletedContainerTests(unittest.TestCase):
             real = subprocess.run(['df', '-P', '/'], capture_output=True, text=True).stdout.split('\n')[1].split()[4]
             self.assertLessEqual(abs(module.disk_used_percent('/') - int(real.rstrip('%'))), 1)
 
-    def hook_run(self, td, missing, crm):
+    def hook_run(self, td, missing, crm, packs=True):
         unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
         line = next(l for l in unit.splitlines() if l.startswith('ExecStopPost='))
         script = line.split("/bin/sh -c '", 1)[1].rsplit("'", 1)[0].replace('$$', '$')
@@ -291,6 +292,12 @@ class DeletedContainerTests(unittest.TestCase):
         if crm:
             flag.write_text('')
         script = script.replace('/srv/nix-clean/twenty/ENABLED', str(flag))
+        override = Path(td) / 'packs.compose.json'
+        if packs:
+            override.write_text('{}')
+        else:
+            override.unlink(missing_ok=True)
+        script = script.replace('/srv/nix-clean/packs.compose.json', str(override))
         bindir, log = Path(td) / 'bin', Path(td) / 'calls'
         bindir.mkdir(exist_ok=True)
         docker = bindir / 'docker'
@@ -318,6 +325,92 @@ class DeletedContainerTests(unittest.TestCase):
         compose = [c for c in calls if c.startswith('compose')]
         self.assertEqual(1, len(compose))
         self.assertNotIn('--profile', compose[0])
+
+
+    def test_stop_hook_recreates_with_the_generated_nixkit_override_and_refuses_without_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            rc, calls = self.hook_run(td, ['nixos-t3'], crm=False, packs=True)
+            compose = [c for c in calls if c.startswith('compose')]
+            self.assertEqual(0, rc)
+            self.assertIn(f'-f /opt/nix-clean-source/deploy/compose.yaml -f {td}/packs.compose.json up', compose[0])
+        with tempfile.TemporaryDirectory() as td:
+            rc, calls = self.hook_run(td, ['nixos-t3'], crm=False, packs=False)
+        # never recreate Hermes/T3 without their skill mounts: fail loudly instead
+        self.assertNotEqual(0, rc)
+        self.assertFalse([c for c in calls if c.startswith('compose')])
+
+
+class NixKitOverrideTests(unittest.TestCase):
+    def module(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_deployment_override_is_layered_exactly_like_the_deploy_does(self):
+        module = self.module()
+        deploy = (ROOT / 'scripts/deploy-os.py').read_text()
+        self.assertIn("'--file', str(source / 'deploy/compose.yaml'), '--file', str(state / 'packs.compose.json')", deploy)
+        with tempfile.TemporaryDirectory() as td:
+            root, source = Path(td) / 'root', Path('/release')
+            root.mkdir()
+            with self.assertRaisesRegex(module.Refusal, 'override'):
+                module.compose_files(root, source)
+            (root / 'packs.compose.json').write_text('{}')
+            self.assertEqual(['-f', '/release/deploy/compose.yaml', '-f', str(root / 'packs.compose.json')],
+                             module.compose_files(root, source))
+
+    def test_model_and_recreate_use_the_override_so_skill_mounts_are_not_lost_or_refused(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'root'
+            root.mkdir()
+            (root / 'packs.compose.json').write_text('{}')
+            source = Path(td) / 'src'
+            (source / 'deploy/t3').mkdir(parents=True)
+            (source / 'deploy/t3/Dockerfile').write_text('FROM x\n')
+            calls = []
+            def command(argv, **kwargs):
+                calls.append(argv)
+                if argv[:3] == ['docker', 'compose', '-f'] and 'config' in argv:
+                    services = {}
+                    for name in ['hermes', 't3', 'reviewer']:
+                        extra = [{'type': 'bind', 'source': str(root / 'pack-releases/k/skill'), 'target': '/skills/skill', 'read_only': True}] if name == 'hermes' else []
+                        services[name] = {'container_name': 'nixos-' + name, 'image': 'img',
+                                          'volumes': [{'type': 'bind', 'source': str(root / name), 'target': '/data'}] + extra}
+                    return json.dumps({'services': services})
+                name = argv[2].removeprefix('nixos-')
+                mounts = [{'Type': 'bind', 'Source': str(root / name), 'Destination': '/data', 'RW': True}]
+                if name == 'hermes':
+                    mounts.append({'Type': 'bind', 'Source': str(root / 'pack-releases/k/skill'), 'Destination': '/skills/skill', 'RW': False})
+                return json.dumps([{'Config': {'Image': 'img', 'Env': []}, 'Mounts': mounts}])
+            with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+                module.deployment_model(root, {'hermes': {'image': 'img'}}, source)
+            compose = next(c for c in calls if c[:2] == ['docker', 'compose'])
+            self.assertIn(str(root / 'packs.compose.json'), compose)
+            calls.clear()
+            with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+                module.recreate_missing(root)
+            self.assertIn(str(root / 'packs.compose.json'), calls[0])
+            (root / 'packs.compose.json').unlink()
+            calls.clear()
+            with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+                with self.assertRaisesRegex(module.Refusal, 'override'):
+                    module.recreate_missing(root)
+                with self.assertRaisesRegex(module.Refusal, 'override'):
+                    module.deployment_model(root, {'hermes': {'image': 'img'}}, source)
+            self.assertFalse([c for c in calls if c[:2] == ['docker', 'compose']])
+
+    def test_capture_refuses_before_stopping_anything_without_the_override(self):
+        module = self.module()
+        calls = []
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=lambda a: calls.append(a) or 'running'), \
+                patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'crm_enabled', return_value=False), \
+                patch.object(module, 'compose_files', side_effect=module.Refusal('The deployment Compose override is missing')):
+            with self.assertRaisesRegex(module.Refusal, 'override'):
+                with module.stopped_services(Path(td) / 'lock'):
+                    self.fail('must not capture')
+        self.assertFalse(calls)
 
 
 class RecoveryUnitTests(unittest.TestCase):
@@ -378,6 +471,13 @@ class CrmCoverageTests(unittest.TestCase):
         self.assertAlmostEqual(module.CRM_READY_WAIT_SECONDS, waited(['nixos-hermes', 'nixos-twenty-server']), delta=3)
         self.assertGreater(module.CRM_READY_WAIT_SECONDS, module.READY_WAIT_SECONDS)
 
+    def test_twenty_worker_has_enough_memory_to_stay_running(self):
+        # A worker restarting every ~30s (Node heap OOM at 768m) makes "all services running" a coin
+        # flip, so the nightly capture would refuse at random.
+        compose = (ROOT / 'deploy/compose.yaml').read_text()
+        limit = lambda name: int(re.search(r'mem_limit: (\d+)m', compose.split(f'  {name}:', 1)[1]).group(1))
+        self.assertGreaterEqual(limit('twenty-worker'), 1024)
+
     def test_twenty_probe_requires_the_migrated_core_schema(self):
         module = self.module()
         with patch.object(module, 'run', return_value='1: case = "NIXOS_TWENTY_DB_EMPTY"') as run:
@@ -394,6 +494,7 @@ class CrmCoverageTests(unittest.TestCase):
             root = Path(td) / 'root'
             (root / 'twenty').mkdir(parents=True)
             (root / 'twenty/ENABLED').write_text('')
+            (root / 'packs.compose.json').write_text('{}')
             services = {}
             for name in ['hermes', 't3', 'reviewer'] + module.CRM_SERVICES:
                 services[name] = {'container_name': 'nixos-' + name, 'image': f'img-{name}',
