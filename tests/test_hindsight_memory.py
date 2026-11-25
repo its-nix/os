@@ -38,6 +38,8 @@ class FakeHermes:
         self.calls.append(argv)
         if argv[5:] == ['cat', '/opt/hermes/plugin-catalog/hindsight.yaml']:
             return self.catalog
+        if argv[-1] == '/opt/data/profiles/demo/.env' and 'dotenv_values' in argv[-2]:
+            return 'true'
         profile, command = argv[7], argv[8:]
         if command == ['config', 'get', '--json', 'memory.provider']:
             if profile not in self.providers:
@@ -79,6 +81,14 @@ class HindsightMemoryTests(unittest.TestCase):
 
     def key(self, state):
         return deployment.hindsight_api_key(state)
+
+    def test_preflight_sets_bytecode_policy_for_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.state(td, ())
+            run = Mock(return_value='[null, false]')
+            deployment.preflight_memory(ROOT, state, 'candidate', run)
+            argv = run.call_args.args[0]
+            self.assertIn('-B', argv[argv.index('candidate') + 1:argv.index('-c')])
 
     def test_each_profile_gets_its_own_bank_and_unknown_profiles_none(self):
         with tempfile.TemporaryDirectory() as td:
@@ -205,7 +215,7 @@ class HindsightMemoryTests(unittest.TestCase):
     def test_profile_overrides_shared_fallback_and_other_providers(self):
         with tempfile.TemporaryDirectory() as td:
             state = self.state(td)
-            (state / 'hermes/profiles/demo/.env').write_text('OPENAI_KEY=x\nHINDSIGHT_BANK_ID=lnx\n')
+            (state / 'hermes/profiles/demo/.env').write_text('OPENAI_KEY=x\nexport HINDSIGHT_BANK_ID=lnx\n')
             with self.assertRaisesRegex(ValueError, 'HINDSIGHT_'):
                 deployment.configure_memory(state, FakeHermes(state))
         with tempfile.TemporaryDirectory() as td:
