@@ -1,6 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -347,3 +349,100 @@ class RecoveryUnitTests(unittest.TestCase):
             attempt = module.json.loads((status / 'last-attempt.json').read_text())
             self.assertEqual('failed', attempt['status'])
             self.assertNotIn('reason', attempt)
+
+
+class CrmCoverageTests(unittest.TestCase):
+    def module(self):
+        spec = importlib.util.spec_from_file_location('full_create', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_ready_wait_outlasts_twenty_server_healthcheck_budget_from_compose(self):
+        module = self.module()
+        compose = (ROOT / 'deploy/compose.yaml').read_text()
+        server = compose.split('  twenty-server:', 1)[1].split('\n  twenty-worker:', 1)[0]
+        health = server.split('healthcheck:', 1)[1]
+        seconds = lambda key: int(re.search(rf'{key}: (\d+)s', health).group(1))
+        budget = seconds('start_period') + int(re.search(r'retries: (\d+)', health).group(1)) * seconds('interval')
+        self.assertGreater(module.CRM_READY_WAIT_SECONDS, budget)
+        def waited(names):
+            clock = [0.0]
+            with patch.object(module, 'ready', return_value=False), \
+                    patch.object(module.time, 'sleep', side_effect=lambda n: clock.__setitem__(0, clock[0] + n)), \
+                    patch.object(module.time, 'monotonic', side_effect=lambda: clock[0]):
+                with self.assertRaises(module.Refusal):
+                    module.wait_services(names)
+            return clock[0]
+        self.assertAlmostEqual(module.READY_WAIT_SECONDS, waited(['nixos-hermes']), delta=3)
+        self.assertAlmostEqual(module.CRM_READY_WAIT_SECONDS, waited(['nixos-hermes', 'nixos-twenty-server']), delta=3)
+        self.assertGreater(module.CRM_READY_WAIT_SECONDS, module.READY_WAIT_SECONDS)
+
+    def test_twenty_probe_requires_the_migrated_core_schema(self):
+        module = self.module()
+        with patch.object(module, 'run', return_value='1: case = "NIXOS_TWENTY_DB_EMPTY"') as run:
+            with self.assertRaises(module.Refusal):
+                module.twenty_db_check('img@sha256:a', Path('/scratch/state'))
+        self.assertIn("schema_name = 'core'", run.call_args.kwargs['input'])
+        self.assertEqual('none', run.call_args.args[0][run.call_args.args[0].index('--network') + 1])
+        with patch.object(module, 'run', return_value='1: case = "NIXOS_TWENTY_DB_OK"'):
+            module.twenty_db_check('img@sha256:a', Path('/scratch/state'))
+
+    def test_deployment_model_cross_checks_crm_images_and_mounts_when_enabled(self):
+        module = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'root'
+            (root / 'twenty').mkdir(parents=True)
+            (root / 'twenty/ENABLED').write_text('')
+            services = {}
+            for name in ['hermes', 't3', 'reviewer'] + module.CRM_SERVICES:
+                services[name] = {'container_name': 'nixos-' + name, 'image': f'img-{name}',
+                                  'volumes': [{'type': 'bind', 'source': str(root / name), 'target': '/data'}]}
+            inspected = []
+            def command(argv, **kwargs):
+                if argv[:2] == ['docker', 'compose']:
+                    return json.dumps({'services': services})
+                name = argv[2].removeprefix('nixos-')
+                inspected.append(name)
+                return json.dumps([{'Config': {'Image': f'img-{name}', 'Env': ['A=1']},
+                                    'Mounts': [{'Type': 'bind', 'Source': str(root / name), 'Destination': '/data', 'RW': True}]}])
+            versions = {'hermes': {'image': 'img-hermes'}}
+            (Path(td) / 'src/deploy/t3').mkdir(parents=True)
+            (Path(td) / 'src/deploy/t3/Dockerfile').write_text('FROM x\n')
+            with patch.object(module, 'run', side_effect=command):
+                model = module.deployment_model(root, versions, Path(td) / 'src')
+            self.assertEqual(['hermes', 't3', 'reviewer'] + module.CRM_SERVICES, inspected)
+            self.assertEqual({'A': '1'}, model['services']['twenty-db']['environment'])
+            # a CRM container running another image, or with an unexpected mount, is refused
+            def wrong_image(argv, **kwargs):
+                out = command(argv, **kwargs)
+                if argv[:3] == ['docker', 'inspect', 'nixos-twenty-db']:
+                    return out.replace('img-twenty-db', 'img-other')
+                return out
+            with patch.object(module, 'run', side_effect=wrong_image):
+                with self.assertRaisesRegex(module.Refusal, 'image pins'):
+                    module.deployment_model(root, versions, Path(td) / 'src')
+            def extra_mount(argv, **kwargs):
+                out = command(argv, **kwargs)
+                if argv[:3] == ['docker', 'inspect', 'nixos-twenty-server']:
+                    row = json.loads(out)
+                    row[0]['Mounts'].append({'Type': 'volume', 'Name': 'anon', 'Source': '/var/lib/docker/v', 'Destination': '/x', 'RW': True})
+                    return json.dumps(row)
+                return out
+            with patch.object(module, 'run', side_effect=extra_mount):
+                with self.assertRaisesRegex(module.Refusal, 'mounts differ'):
+                    module.deployment_model(root, versions, Path(td) / 'src')
+            # CRM disabled: only the core services are inspected
+            (root / 'twenty/ENABLED').unlink()
+            inspected.clear()
+            with patch.object(module, 'run', side_effect=command):
+                module.deployment_model(root, versions, Path(td) / 'src')
+            self.assertEqual(['hermes', 't3', 'reviewer'], inspected)
+
+    def test_stop_hook_and_capture_cover_reviewer_and_every_crm_container(self):
+        module = self.module()
+        hook = next(l for l in (ROOT / 'automation/recovery/nixos-recovery.service').read_text().splitlines()
+                    if l.startswith('ExecStopPost='))
+        for name in module.CONTAINERS + module.CRM_CONTAINERS:
+            self.assertIn(name, hook)
+        self.assertNotIn('nixos-paperclip', hook)
