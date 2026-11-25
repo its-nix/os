@@ -111,6 +111,66 @@ class FullRecoveryTests(unittest.TestCase):
             recovery.require_state({'hermes/config.yaml': {'type': 'file'},
                                     'paperclip/instances/default/db/PG_VERSION': {'type': 'file'}})
 
+    def test_twenty_flag_database_and_keys_must_travel_together(self):
+        recovery = self.module()
+        base = {'hermes': {'type': 'directory'}, 'hermes/config.yaml': {'type': 'file'}, 'twenty': {'type': 'directory'},
+                'twenty/db': {'type': 'directory'}}
+        full = dict(base, **{'twenty/ENABLED': {'type': 'file', 'size': 0},
+                             'twenty/db/PG_VERSION': {'type': 'file', 'size': 3},
+                             'twenty/db.env': {'type': 'file', 'size': 90},
+                             'twenty/server.env': {'type': 'file', 'size': 200}})
+        recovery.require_state(full)
+        recovery.require_state(base)  # CRM never enabled: nothing required
+        for missing in ('twenty/db/PG_VERSION', 'twenty/db.env', 'twenty/server.env'):
+            partial = {k: v for k, v in full.items() if k != missing}
+            with self.assertRaises(recovery.Refusal, msg=missing):
+                recovery.require_state(partial)
+        with self.assertRaises(recovery.Refusal):  # empty key file
+            recovery.require_state(dict(full, **{'twenty/server.env': {'type': 'file', 'size': 0}}))
+        flag_only = {k: v for k, v in full.items() if k != 'twenty/db/PG_VERSION'}
+        with self.assertRaises(recovery.Refusal):
+            recovery.require_state(flag_only)
+        for missing in ('twenty/ENABLED',):  # database and keys without the flag would restore a disabled CRM
+            with self.assertRaises(recovery.Refusal, msg=missing):
+                recovery.require_state({k: v for k, v in full.items() if k != missing})
+
+    def test_reviewer_logins_and_app_key_are_captured_but_its_caches_are_not(self):
+        recovery = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for name in ('reviewer/secrets/app.pem', 'reviewer/secrets/seed', 'reviewer/reviewer.env',
+                         'reviewer/home/.claude/.credentials.json', 'reviewer/home/.codex/auth.json',
+                         'reviewer/home/.local/share/opencode/auth.json', 'reviewer/home/.grok/auth.json',
+                         'reviewer/home/.gemini/antigravity-cli/state.json',
+                         'reviewer/home/.npm/_cacache/x', 'reviewer/home/.cache/y', 'reviewer/home/.codex/tmp/z'):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text('x')
+            (root / 'reviewer/secrets/app.pem').chmod(0o400)
+            rels = {p.relative_to(root).as_posix() for p in recovery.durable_paths(root)}
+        for kept in ('reviewer/secrets/app.pem', 'reviewer/secrets/seed', 'reviewer/reviewer.env',
+                     'reviewer/home/.claude/.credentials.json', 'reviewer/home/.codex/auth.json',
+                     'reviewer/home/.local/share/opencode/auth.json', 'reviewer/home/.grok/auth.json',
+                     'reviewer/home/.gemini/antigravity-cli/state.json'):
+            self.assertIn(kept, rels)
+        self.assertFalse(any(r.startswith(('reviewer/home/.npm/', 'reviewer/home/.cache/',
+                                           'reviewer/home/.codex/tmp/')) for r in rels))
+
+    def test_twenty_database_redis_storage_and_env_are_captured_cold_state(self):
+        recovery = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for name in ('twenty/ENABLED', 'twenty/db.env', 'twenty/server.env', 'twenty/db/PG_VERSION',
+                         'twenty/db/base/1/1259', 'twenty/db/postmaster.pid', 'twenty/redis/appendonlydir/a.aof',
+                         'twenty/storage/attachment/f.bin'):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text('x')
+            rels = {p.relative_to(root).as_posix() for p in recovery.durable_paths(root)}
+            self.assertTrue({'twenty/ENABLED', 'twenty/db.env', 'twenty/server.env', 'twenty/db/PG_VERSION',
+                             'twenty/db/base/1/1259', 'twenty/redis/appendonlydir/a.aof',
+                             'twenty/storage/attachment/f.bin'} <= rels)
+        # a live PostgreSQL pid file must never be revived on a restored host
+        self.assertIn('postmaster.pid', recovery.INERT)
+
     def test_complete_restore_preserves_learning_and_controller_state(self):
         path = ROOT / 'automation/recovery/full_restore.py'
         self.assertTrue(path.exists(), 'Full-system recovery implementation is missing')

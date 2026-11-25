@@ -33,6 +33,7 @@ CONTAINERS = ['nixos-hermes', 'nixos-t3', 'nixos-reviewer', 'nixos-hindsight']  
 CRM_CONTAINERS = ['nixos-twenty-worker', 'nixos-twenty-server', 'nixos-twenty-db', 'nixos-twenty-redis']
 # Probe image for a restored Twenty database, independent of whether the profile is active now
 # (a test keeps it equal to deploy/compose.yaml).
+CRM_SERVICES = ['twenty-db', 'twenty-redis', 'twenty-server', 'twenty-worker']
 TWENTY_DB_IMAGE = 'postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175'
 
 
@@ -45,6 +46,12 @@ def containers(root=Path('/srv/nix-clean')):
     return CONTAINERS + (CRM_CONTAINERS if crm_enabled(root) else [])
 
 
+# The restored CRM database must open AND carry Twenty's migrated `core` schema: an empty or
+# freshly initialised cluster would also open, and would silently pass a bare SELECT.
+TWENTY_DB_SQL = ("SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'core') "
+                 "THEN 'NIXOS_TWENTY_DB_OK' ELSE 'NIXOS_TWENTY_DB_EMPTY' END;\n")
+
+
 def twenty_db_check(image, restored):
     """Open the restored Twenty PostgreSQL in single-user mode, no network."""
     output = run(['docker', 'run', '--rm', '--interactive', '--network', 'none', '--user', '999:999',
@@ -52,9 +59,9 @@ def twenty_db_check(image, restored):
                   '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777', '--tmpfs', '/var/run/postgresql:rw,mode=1777',
                   '--mount', f'type=bind,source={restored / "twenty/db"},target=/var/lib/postgresql/data',
                   '--entrypoint', 'postgres', image, '--single', '-D', '/var/lib/postgresql/data', 'default'],
-                 input="SELECT 'NIXOS_TWENTY_DB_OK';\n")
+                 input=TWENTY_DB_SQL)
     if 'NIXOS_TWENTY_DB_OK' not in output:
-        raise Refusal('Restored Twenty database did not open')
+        raise Refusal('Restored Twenty database did not open with its migrated schema')
 
 
 def run(argv, **kwargs):
@@ -209,10 +216,20 @@ def start_all(names, root=Path('/srv/nix-clean')):
         raise Refusal('Some services did not start after capture: ' + ', '.join(failed))
 
 
+# Core services were observed healthy well inside 5 minutes. twenty-server's own healthcheck budget
+# is 330s (180s start_period + 10 x 15s; its first start, with migrations, took ~4 minutes), so
+# with the CRM the wait must outlast it: a timeout here fails a capture that already succeeded
+# and makes the unit retry (cold-stopping everything again).
+READY_WAIT_SECONDS = 300
+CRM_READY_WAIT_SECONDS = 600
+
+
 def wait_services(names=None):
-    deadline = time.monotonic() + 300
+    names = names or containers()
+    limit = CRM_READY_WAIT_SECONDS if set(names) & set(CRM_CONTAINERS) else READY_WAIT_SECONDS
+    deadline = time.monotonic() + limit
     while time.monotonic() < deadline:
-        if all(ready(name) for name in (names or containers())):
+        if all(ready(name) for name in names):
             return
         time.sleep(2)
     raise Refusal('Native service health did not recover after capture')
@@ -257,8 +274,11 @@ def deployment_model(root, versions, deployed_source):
     model = json.loads(run(['docker', 'compose', '-f', str(deployed_source / 'deploy/compose.yaml'),
                             *(['--profile', 'crm'] if crm_enabled(root) else []),
                             'config', '--format', 'json'], env=env))
-    for name in ('hermes', 't3', 'reviewer'):
-        actual = json.loads(run(['docker', 'inspect', 'nixos-' + name]))[0]
+    # Every running OS service is cross-checked against the compose model: image pin, and exactly
+    # the declared binds under the captured root (no anonymous volumes, nothing outside it).
+    checked = ['hermes', 't3', 'reviewer'] + (CRM_SERVICES if crm_enabled(root) else [])
+    for name in checked:
+        actual = json.loads(run(['docker', 'inspect', model['services'][name]['container_name']]))[0]
         expected = versions.get(name, {}).get('image') or model['services'][name]['image']  # t3/reviewer: local build
         if actual['Config']['Image'] != expected:
             raise Refusal('Running runtime differs from the immutable OS image pins')
