@@ -184,10 +184,13 @@ def disk_used_percent(path='/'):
 
 def compose_files(root, source):
     """The files the deployment itself layers (scripts/deploy-os.py): the release's compose.yaml plus the
-    pinned NixKit mounts it generated into the state root. Omitting the override would recreate or
-    describe Hermes/T3 without their skill mounts."""
+    pinned NixKit mounts it generated into the state root. Every deployment since #100 requires the
+    override; without it Hermes/T3 would be described or recreated without their skill mounts, so a
+    missing override is a refusal, never a silent fallback to compose.yaml alone."""
     packs = Path(root) / 'packs.compose.json'
-    return ['-f', str(source / 'deploy/compose.yaml')] + (['-f', str(packs)] if packs.is_file() else [])
+    if not packs.is_file() or packs.is_symlink():
+        raise Refusal('The deployment Compose override (NixKit mounts) is missing; redeploy before relying on recovery')
+    return ['-f', str(source / 'deploy/compose.yaml'), '-f', str(packs)]
 
 
 def recreate_missing(root=Path('/srv/nix-clean')):
@@ -253,6 +256,7 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         names = containers(root)
+        compose_files(root, Path('/opt/nix-clean-source').resolve())  # required override present, before stopping
         used = disk_used_percent()
         if used >= DISK_LIMIT_PERCENT:
             raise Refusal(f'Disk is {used:.0f}% full; a cold capture needs it below {DISK_LIMIT_PERCENT}% '

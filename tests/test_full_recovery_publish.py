@@ -45,7 +45,7 @@ class PublicationTests(unittest.TestCase):
             if 'inspect' in argv:
                 return 'exited 0' if 'ExitCode' in argv[3] else 'running'
             return ''
-        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'wait_services') as health:
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'wait_services') as health:
             with self.assertRaisesRegex(RuntimeError, 'capture failed'):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     raise RuntimeError('capture failed')
@@ -63,7 +63,7 @@ class PublicationTests(unittest.TestCase):
             if 'stop' in argv:
                 raise module.Refusal('partial stop')
             return ''
-        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'wait_services'):
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'wait_services'):
             with self.assertRaises(module.Refusal):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     self.fail('Capture cannot run after failed stop')
@@ -201,7 +201,7 @@ class ServiceControlTests(unittest.TestCase):
                 return 'abc123'
             return 'running'
         with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), \
-                patch.object(module, 'disk_used_percent', return_value=50), \
+                patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), \
                 patch.object(module, 'crm_enabled', return_value=False):
             with self.assertRaisesRegex(module.Refusal, 'CRM containers run'):
                 with module.stopped_services(Path(td) / 'lock'):
@@ -249,7 +249,8 @@ class DeletedContainerTests(unittest.TestCase):
             if argv[:2] == ['docker', 'compose']:
                 gone.clear()
             return ''
-        with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+        with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False), \
+                patch.object(module, 'compose_files', return_value=['-f', 'c.yaml', '-f', 'packs.json']):
             module.start_all(list(reversed(module.CONTAINERS)))
         compose = [c for c in calls if c[:2] == ['docker', 'compose']]
         self.assertEqual(1, len(compose))
@@ -263,7 +264,7 @@ class DeletedContainerTests(unittest.TestCase):
         module = self.module()
         calls = []
         with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=lambda a: calls.append(a) or 'running'), \
-                patch.object(module, 'disk_used_percent', return_value=91), patch.object(module, 'crm_enabled', return_value=False):
+                patch.object(module, 'disk_used_percent', return_value=91), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'crm_enabled', return_value=False):
             with self.assertRaisesRegex(module.Refusal, 'Disk is 91% full'):
                 with module.stopped_services(Path(td) / 'lock'):
                     self.fail('must not capture')
@@ -283,7 +284,7 @@ class DeletedContainerTests(unittest.TestCase):
             real = subprocess.run(['df', '-P', '/'], capture_output=True, text=True).stdout.split('\n')[1].split()[4]
             self.assertLessEqual(abs(module.disk_used_percent('/') - int(real.rstrip('%'))), 1)
 
-    def hook_run(self, td, missing, crm, packs=False):
+    def hook_run(self, td, missing, crm, packs=True):
         unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
         line = next(l for l in unit.splitlines() if l.startswith('ExecStopPost='))
         script = line.split("/bin/sh -c '", 1)[1].rsplit("'", 1)[0].replace('$$', '$')
@@ -326,14 +327,17 @@ class DeletedContainerTests(unittest.TestCase):
         self.assertNotIn('--profile', compose[0])
 
 
-    def test_stop_hook_recreates_with_the_generated_nixkit_override_when_present(self):
+    def test_stop_hook_recreates_with_the_generated_nixkit_override_and_refuses_without_it(self):
         with tempfile.TemporaryDirectory() as td:
             rc, calls = self.hook_run(td, ['nixos-t3'], crm=False, packs=True)
             compose = [c for c in calls if c.startswith('compose')]
             self.assertEqual(0, rc)
             self.assertIn(f'-f /opt/nix-clean-source/deploy/compose.yaml -f {td}/packs.compose.json up', compose[0])
+        with tempfile.TemporaryDirectory() as td:
             rc, calls = self.hook_run(td, ['nixos-t3'], crm=False, packs=False)
-        self.assertNotIn('packs.compose.json', [c for c in calls if c.startswith('compose')][-1])  # log accumulates: last run
+        # never recreate Hermes/T3 without their skill mounts: fail loudly instead
+        self.assertNotEqual(0, rc)
+        self.assertFalse([c for c in calls if c.startswith('compose')])
 
 
 class NixKitOverrideTests(unittest.TestCase):
@@ -350,7 +354,8 @@ class NixKitOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root, source = Path(td) / 'root', Path('/release')
             root.mkdir()
-            self.assertEqual(['-f', '/release/deploy/compose.yaml'], module.compose_files(root, source))
+            with self.assertRaisesRegex(module.Refusal, 'override'):
+                module.compose_files(root, source)
             (root / 'packs.compose.json').write_text('{}')
             self.assertEqual(['-f', '/release/deploy/compose.yaml', '-f', str(root / 'packs.compose.json')],
                              module.compose_files(root, source))
@@ -387,6 +392,25 @@ class NixKitOverrideTests(unittest.TestCase):
             with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
                 module.recreate_missing(root)
             self.assertIn(str(root / 'packs.compose.json'), calls[0])
+            (root / 'packs.compose.json').unlink()
+            calls.clear()
+            with patch.object(module, 'run', side_effect=command), patch.object(module, 'crm_enabled', return_value=False):
+                with self.assertRaisesRegex(module.Refusal, 'override'):
+                    module.recreate_missing(root)
+                with self.assertRaisesRegex(module.Refusal, 'override'):
+                    module.deployment_model(root, {'hermes': {'image': 'img'}}, source)
+            self.assertFalse([c for c in calls if c[:2] == ['docker', 'compose']])
+
+    def test_capture_refuses_before_stopping_anything_without_the_override(self):
+        module = self.module()
+        calls = []
+        with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=lambda a: calls.append(a) or 'running'), \
+                patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'crm_enabled', return_value=False), \
+                patch.object(module, 'compose_files', side_effect=module.Refusal('The deployment Compose override is missing')):
+            with self.assertRaisesRegex(module.Refusal, 'override'):
+                with module.stopped_services(Path(td) / 'lock'):
+                    self.fail('must not capture')
+        self.assertFalse(calls)
 
 
 class RecoveryUnitTests(unittest.TestCase):
@@ -470,6 +494,7 @@ class CrmCoverageTests(unittest.TestCase):
             root = Path(td) / 'root'
             (root / 'twenty').mkdir(parents=True)
             (root / 'twenty/ENABLED').write_text('')
+            (root / 'packs.compose.json').write_text('{}')
             services = {}
             for name in ['hermes', 't3', 'reviewer'] + module.CRM_SERVICES:
                 services[name] = {'container_name': 'nixos-' + name, 'image': f'img-{name}',
