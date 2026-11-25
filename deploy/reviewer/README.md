@@ -2,11 +2,12 @@
 
 `reviewer.mjs` produces the required `independent-review` check for every PR into `main`.
 
-- **Selection.** One reviewer per head SHA, chosen pseudo-randomly from the eligible subscription pool, keyed by the head SHA and a secret seed, so reruns keep the same reviewer and a builder cannot predict it. The PR's builder is excluded: a `Builder: <provider>` line, which `skills/t3-delegate` requires, or a co-author trailer. An unavailable provider falls through to the next. If none answers, the check fails.
+- **Selection.** One reviewer per head SHA, chosen pseudo-randomly from the eligible subscription pool, keyed by the head SHA and a secret seed, so reruns keep the same reviewer and a builder cannot predict it. The PR's builders are excluded: `Builder: <provider>` lines, which `skills/t3-delegate` requires, or co-author trailers. Several builders are all excluded while at least two reviewers remain; if naming them would leave fewer, nobody is excluded, so a builder cannot pick its reviewer. An unavailable provider falls through to the next. If none answers, the check fails.
 - **Isolation.** It runs in `nixos-reviewer`: the pinned T3 image, but its own container, network (`nixos-review`) and login home (`/srv/nix-clean/reviewer/home`). Builders in `nixos-t3` can't read its logins or its App key. No ports.
 - **Untrusted input.** It never checks out PR code. The diff comes from the compare API and goes to the CLI in an empty directory, with tools disabled or plan-only.
 - **Key isolation.** The orchestrator alone (root in the container, only SETUID/SETGID/CHOWN/KILL) reads the App key and the secret selection seed (`secrets/`, root 0400). Every reviewer CLI runs as uid 10010 and cannot read them. Published summaries are also redacted for anything token-shaped.
-- **Known limits.** Reviewer CLIs can still read their own login home (Codex read-only, Antigravity plan mode) but never the App key or seed; published text is redacted. Don't configure MCP servers in the reviewer home. PRs above about 100 KB of diff are refused for review and must be split. The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes; any other failure needs a new commit.
+- **Protected paths.** The deployed [CODEOWNERS](../../.github/CODEOWNERS) list requires a founder approval file on the VPS for the exact head SHA. The reviewer checks both names of a rename and fails before invoking a model if approval is missing. It retries when the file appears. See the [approval command](../../docs/AUTHORITY.md#durable-changes-code-skills-workflows-deployment-config).
+- **Known limits.** Reviewer CLIs can still read their own login home (Codex read-only, Antigravity plan mode) but never the App key or seed; published text is redacted. Don't configure MCP servers in the reviewer home. PRs above about 100 KB of diff are refused for review and must be split. The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. A failure caused by no provider being available is retried after 30 minutes. Model rejections need a new commit.
 - **Unforgeable check.** It publishes as a dedicated GitHub App. The `main` ruleset requires the check from that App's id; builder tokens can't create check runs as the App.
 
 ## One-time setup (founder)
@@ -32,7 +33,7 @@
    - require a PR
    - block force pushes and deletion
    - require status checks `verify` (GitHub Actions) and `independent-review` (the App), up to date
-   - require CODEOWNERS review with stale approvals dismissed
+   - leave CODEOWNERS approval and required approving reviews disabled
 
    Then enable repository auto-merge.
 
