@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -180,6 +181,307 @@ def register_t3_for_leads(state, run):
             run(cli + ['config', 'set', '--force', key + '.enabled', 'true'])
         if run(cli + ['config', 'get', '--json', key + '.enabled']) != 'true':
             raise ValueError('Hermes did not enable the venture T3 registration')
+    return pending
+
+
+# Hindsight memory (PRD 7.4). The server is the `hindsight` Compose service; each Hermes profile
+# gets the catalog plugin in local_external mode with its OWN bank. Existing memory config is
+# validated, never rewritten. Pins: the image digest (compose.yaml, equal to this constant by test)
+# and the plugin commit (checked in the Hermes image's catalog BEFORE install, installed with --ref,
+# checked again after install, and only then made the active provider).
+#
+# Threat model (deploy/hindsight/README.md). Banks separate profiles ORGANIZATIONALLY, like Kanban
+# boards; they are not a confidentiality boundary between Hermes profiles. Every profile runs in the
+# one nixos-hermes container as uid 10000 and can read every other profile's files, including its
+# hindsight/config.json (bank and API key), so any Hermes process can address any bank, `personal`
+# included. Hard isolation would need a separate container and uid per profile: out of scope (PRD).
+# The server's API key keeps NON-Hermes host processes out. T3 and the reviewer cannot reach the
+# loopback-published port at all (own bridge networks; probed on the VPS).
+HINDSIGHT_IMAGE = ('ghcr.io/vectorize-io/hindsight-api@sha256:'
+                   'ef1a5ac515a7652fbff605277d44a39e7616e421503c61841189e63ef6db6705')
+HINDSIGHT_PLUGIN_SHA = 'f14cc1eb5624b0374cb4d82768eb2e0b9c21ae24'
+HINDSIGHT_PLUGIN_FILES = Path(__file__).resolve().parents[1] / 'deploy/hindsight/plugin-files.json'
+HINDSIGHT_URL = 'http://127.0.0.1:18888'
+HINDSIGHT_UID = HINDSIGHT_GID = 1000  # the image's unprivileged `hindsight` user
+HINDSIGHT_CATALOG = ('repo: https://github.com/vectorize-io/hindsight', 'sha: ' + HINDSIGHT_PLUGIN_SHA,
+                     'subdir: hindsight-integrations/hermes')
+HINDSIGHT_KEY_NAME = 'HINDSIGHT_API_TENANT_API_KEY'
+REDACTION_PROBE_OK = 'redaction-probe: ok'
+# Keys that would widen what a profile reads or writes beyond its own bank.
+HINDSIGHT_CROSS_BANK_KEYS = ('additional_banks', 'recall_additional_banks', 'recallAdditionalBanks',
+                             'trusted_project_dirs', 'mirror_to_own_bank', 'bank_id_template')
+FIXED_BANKS = {'default': 'lnx', 'engineer': 'engineer', 'reviewer': 'reviewer', 'personal': 'personal'}
+
+
+def ensure_hindsight_state(state):
+    """New, empty Hindsight directories only: the server's home (its database is created there as
+    .pg0 on first start) and its own Codex login. The root-only state parent keeps host users out.
+    Also the server's API key, generated once into a root-only env file that Compose reads."""
+    root = state / 'hindsight'
+    for path in (root, root / 'codex'):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('Hindsight state path is not a plain directory')
+        if not path.exists():
+            path.mkdir(mode=0o700)
+            os.chown(path, HINDSIGHT_UID, HINDSIGHT_GID)
+    key_file = state / 'hindsight.env'
+    if not key_file.exists() and not key_file.is_symlink():
+        import secrets as _secrets
+        _root_write(state, key_file.name, f'{HINDSIGHT_KEY_NAME}={_secrets.token_hex(32)}\n', 0o600)
+    hindsight_api_key(state)
+
+
+def hindsight_api_key(state):
+    """The server's API key. It keeps non-Hermes host processes out; it is not a boundary between
+    Hermes profiles, which can all read it (see the threat model above)."""
+    key_file = state / 'hindsight.env'
+    if key_file.is_symlink() or not key_file.is_file():
+        raise ValueError('Hindsight API key file is missing or not a plain file')
+    match = re.fullmatch(re.escape(HINDSIGHT_KEY_NAME) + r'=([0-9a-f]{64})\n', key_file.read_text())
+    if not match:
+        raise ValueError('Hindsight API key file is malformed; reconcile it by hand')
+    return match.group(1)
+
+
+def probe_hermes_redaction(source, image, run):
+    """Refuse the rollout unless the Hermes image about to start scrubs credentials from every
+    memory-provider hand-off (deploy/hindsight/redaction_probe.py). Runs in a throwaway container
+    with no network, before `compose up`, so a failure changes nothing that is running."""
+    probe = (source / 'deploy/hindsight/redaction_probe.py').read_text()
+    output = run(['docker', 'run', '--rm', '--network', 'none', '--user', '10000', '--cap-drop', 'ALL',
+                  '--security-opt', 'no-new-privileges', '--entrypoint', '/opt/hermes/.venv/bin/python',
+                  image, '-c', probe])
+    if output.splitlines()[-1:] != [REDACTION_PROBE_OK]:
+        raise ValueError('The Hermes image does not scrub secrets before memory hand-off; memory stays off')
+
+
+def memory_banks(state):
+    """(profile, Hermes home, bank) for every profile that gets memory. A profile not listed here
+    (an ad-hoc clone, say) is left without a provider rather than guessed into a shared bank."""
+    hermes = state / 'hermes'
+    found = [('default', hermes, FIXED_BANKS['default'])]
+    ventures = {path.name for path in _token_module().venture_profiles(hermes)}
+    profiles = hermes / 'profiles'
+    if profiles.is_dir() and not profiles.is_symlink():
+        for home in sorted(profiles.iterdir()):
+            if home.is_symlink() or not home.is_dir():
+                continue
+            if home.name in ventures:
+                found.append((home.name, home, 'venture-' + home.name))
+            elif home.name in FIXED_BANKS:
+                found.append((home.name, home, FIXED_BANKS[home.name]))
+    banks = [bank for _, _, bank in found]
+    if len(set(banks)) != len(banks):
+        raise ValueError('Two Hermes profiles would share one memory bank')
+    return found
+
+
+def hindsight_profile_config(profile, bank, api_key):
+    return {
+        'mode': 'local_external', 'api_url': HINDSIGHT_URL, 'bank_id': bank, 'api_key': api_key,
+        'memory_mode': 'hybrid', 'auto_recall': True, 'auto_retain': True, 'retain_cron': False,
+        # Discord/customer channels must not show "👁️ Hindsight" status lines.
+        'recall_indicator': False, 'retain_indicator': False,
+        'retain_context': f'conversation with the Nix OS {profile} Hermes profile',
+        'additional_banks': [], 'recall_additional_banks': [], 'trusted_project_dirs': [],
+        'mirror_to_own_bank': False,
+    }
+
+
+def check_hindsight_config(config, bank, api_key):
+    """An existing profile config must still be ours: loopback server, own bank, nothing shared."""
+    if config.get('mode') != 'local_external' or config.get('api_url') != HINDSIGHT_URL \
+            or config.get('bank_id') != bank or config.get('api_key') != api_key \
+            or config.get('apiKey', api_key) != api_key:
+        raise ValueError('A profile memory config points away from its own local Hindsight bank; reconcile it by hand')
+    if any(config.get(key) for key in HINDSIGHT_CROSS_BANK_KEYS):
+        raise ValueError('A profile memory config reaches other banks; reconcile it by hand')
+
+
+def _profile_secret_names(home):
+    env = home / '.env'
+    if not env.is_file():
+        return set()
+    return {line.split('=', 1)[0].strip() for line in env.read_text(errors='replace').splitlines()
+            if '=' in line and not line.lstrip().startswith('#')}
+
+
+def _config_value(run, cli, key):
+    try:
+        return json.loads(run(cli + ['config', 'get', '--json', key]))
+    except subprocess.CalledProcessError as exc:
+        diagnostic = (exc.stdout or '') + (exc.stderr or '')
+        if exc.returncode != 1 or diagnostic.strip() != f'Config key not set: {key}':
+            raise
+        return None
+
+
+def check_hindsight_catalog(run):
+    """The Hermes image's catalog entry must name the reviewed repository, commit and directory
+    BEFORE anything is downloaded, its dependencies installed or the plugin enabled."""
+    entry = run(['docker', 'exec', '-u', '10000', 'nixos-hermes', 'cat', '/opt/hermes/plugin-catalog/hindsight.yaml'])
+    lines = {line.strip().strip('"') for line in entry.splitlines()}
+    lines |= {line.replace('"', '') for line in lines}
+    if not all(expected in lines for expected in HINDSIGHT_CATALOG):
+        raise ValueError('The Hermes catalog does not pin the reviewed Hindsight plugin; memory stays off')
+
+
+def check_installed_plugin(home):
+    plugin = home / 'plugins' / 'hindsight'
+    catalog = plugin / '.hermes-catalog.json'
+    if home.is_symlink() or plugin.parent.is_symlink() or plugin.is_symlink() or catalog.is_symlink() \
+            or not catalog.is_file() or json.loads(catalog.read_text()).get('sha') != HINDSIGHT_PLUGIN_SHA:
+        raise ValueError('Installed Hindsight plugin is not the reviewed commit')
+    # Generated from every tracked file in hindsight-integrations/hermes at HINDSIGHT_PLUGIN_SHA.
+    # The installer adds only its catalog sidecar. Extra code (including bytecode) also fails.
+    expected = json.loads(HINDSIGHT_PLUGIN_FILES.read_text())
+    if plugin_file_hashes(plugin) != expected:
+        raise ValueError('Installed Hindsight plugin contents differ from the reviewed revision')
+
+
+def plugin_file_hashes(plugin):
+    hashes = {}
+    for path in plugin.rglob('*'):
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            raise ValueError('Installed Hindsight plugin contains a non-regular entry')
+        if path.is_file() and path != plugin / '.hermes-catalog.json':
+            hashes[path.relative_to(plugin).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
+
+
+def shared_hindsight_config(hermes):
+    directory = hermes / '.hindsight'
+    return directory.is_symlink() or os.path.lexists(directory / 'config.json')
+
+
+def preflight_memory(source, state, image, run):
+    hermes = state / 'hermes'
+    profiles = hermes / 'profiles'
+    banks = {home: bank for _, home, bank in memory_banks(state)}
+    if profiles.is_symlink() or shared_hindsight_config(hermes):
+        raise ValueError('Shared Hindsight config or linked profile directory')
+    homes = [hermes] + (sorted(profiles.iterdir()) if profiles.exists() else [])
+    probe = (source / 'deploy/hindsight/active_provider.py').read_text()
+    key = hindsight_api_key(state)
+    for home in homes:
+        if home.is_symlink():
+            raise ValueError('Cannot validate a linked Hermes profile')
+        if not home.is_dir():
+            continue
+        container_home = Path('/opt/data') / home.relative_to(hermes)
+        result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '10000', '--cap-drop', 'ALL',
+                      '--security-opt', 'no-new-privileges', '--env', f'HERMES_HOME={container_home}',
+                      '--mount', f'type=bind,source={hermes},target=/opt/data,readonly',
+                      '--entrypoint', '/opt/hermes/.venv/bin/python', image, '-P', '-s', '-c', probe])
+        provider, overrides = json.loads(result)
+        if overrides and (home in banks or provider == 'hindsight'):
+            raise ValueError('A profile .env sets HINDSIGHT_* values')
+        if provider != 'hindsight':
+            continue
+        path = home / 'hindsight/config.json'
+        if home not in banks or path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            raise ValueError('Invalid active Hindsight profile configuration')
+        check_hindsight_config(json.loads(path.read_text()), banks[home], key)
+        check_installed_plugin(home)
+
+
+def _write_in_hermes(hermes, parts, name, text, mode):
+    """Write hermes/<parts...>/<name> as root without trusting any path the Hermes user controls.
+
+    Every component is opened relative to its parent descriptor with O_NOFOLLOW (a swapped-in
+    symlink fails instead of redirecting root), directories this call creates and the staged file
+    get the Hermes owner through their descriptors, and the final rename stays within the opened
+    directory."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = []
+    try:
+        descriptors.append(os.open(hermes, flags))
+        owner = os.fstat(descriptors[0])
+        for part in parts:
+            created = False
+            try:
+                os.mkdir(part, 0o700, dir_fd=descriptors[-1])
+                created = True
+            except FileExistsError:
+                pass
+            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
+            if created:
+                os.fchown(descriptors[-1], owner.st_uid, owner.st_gid)
+        directory = descriptors[-1]
+        staged = '.' + name + '.' + secrets.token_hex(8)
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=directory)
+        try:
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(text)
+                os.fchmod(handle.fileno(), mode)
+                os.fchown(handle.fileno(), owner.st_uid, owner.st_gid)
+            os.rename(staged, name, src_dir_fd=directory, dst_dir_fd=directory)
+        except BaseException:
+            try:
+                os.unlink(staged, dir_fd=directory)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        raise ValueError('Profile memory config paths must be real directories') from exc
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
+def configure_memory(state, run):
+    """Give each profile the pinned plugin and its own bank. Returns the restart marker: the running
+    gateway imports the plugin's client only after a restart.
+
+    Order per new profile: catalog pin checked, config written, plugin installed DISABLED at the
+    exact commit (--ref, --no-enable), installed commit checked, and only then memory.provider set.
+    A per-profile marker in a root-only directory outside the Hermes home (state/hindsight-enable/)
+    tells an interrupted run that the disabled plugin is ours to finish, not an operator's
+    `hermes memory off`; the Hermes user cannot forge it."""
+    hermes = state / 'hermes'
+    pending = state / '.hindsight-plugin-reload'
+    if shared_hindsight_config(hermes):
+        # The plugin's shared fallback would hand one config (and one bank) to every profile.
+        raise ValueError('A shared ~/.hindsight/config.json exists; remove it after review')
+    api_key = hindsight_api_key(state)
+    owner = hermes.stat()
+    catalog_checked = False
+    for profile, home, bank in memory_banks(state):
+        if any(name.startswith('HINDSIGHT_') for name in _profile_secret_names(home)):
+            raise ValueError('A profile .env sets HINDSIGHT_* values, which override its bank or server')
+        cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes', '-p', profile]
+        provider = _config_value(run, cli, 'memory.provider')
+        catalog = home / 'plugins' / 'hindsight' / '.hermes-catalog.json'
+        directory, path = home / 'hindsight', home / 'hindsight' / 'config.json'
+        enabling = state / 'hindsight-enable' / profile
+        if directory.is_symlink() or path.is_symlink():
+            raise ValueError('Profile memory config paths must not be symlinks')
+        set_up = catalog.exists() or catalog.is_symlink()
+        if provider not in (None, '', 'hindsight') or (set_up and provider != 'hindsight' and not enabling.exists()):
+            continue  # another provider, or `hermes memory off` after setup: an operator decision
+        if not set_up and not catalog_checked:
+            check_hindsight_catalog(run)  # before any write, download, dependency install or enable
+            catalog_checked = True
+        if path.exists():
+            check_hindsight_config(json.loads(path.read_text()), bank, api_key)
+        else:
+            _write_in_hermes(hermes, [*home.relative_to(hermes).parts, 'hindsight'], 'config.json',
+                             json.dumps(hindsight_profile_config(profile, bank, api_key), indent=2) + '\n', 0o600)
+        if not set_up:
+            markers = enabling.parent
+            if markers.is_symlink() or (markers.exists() and not markers.is_dir()):
+                raise ValueError('The Hindsight enable marker directory must be a real directory')
+            markers.mkdir(mode=0o700, exist_ok=True)
+            _root_write(markers, enabling.name, '', 0o600)
+            _root_write(state, pending.name, '', 0o600)
+            run(cli + ['plugins', 'install', 'hindsight', '--ref', HINDSIGHT_PLUGIN_SHA, '--no-deps', '--no-enable'])
+        check_installed_plugin(home)
+        if _config_value(run, cli, 'memory.provider') != 'hindsight':
+            _root_write(state, pending.name, '', 0o600)
+            run(cli + ['config', 'set', 'memory.provider', 'hindsight'])
+            if _config_value(run, cli, 'memory.provider') != 'hindsight':
+                raise ValueError('Hermes did not activate the Hindsight memory provider')
+        enabling.unlink(missing_ok=True)
     return pending
 
 
