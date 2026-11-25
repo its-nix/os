@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Apply a verified main revision to existing native state; never prepare new homes."""
 
+from contextlib import ExitStack
+import ctypes
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -282,7 +284,9 @@ def sync_os_skills(source, state):
 PERSONAL_MANIFEST = 'deploy/profiles/personal.json'
 PERSONAL_STAGING_SUFFIX = 'setup'
 PERSONAL_RECORD = 'personal.json'
-HERMES_HOME = '/opt/data'  # where the Hermes container sees state/hermes
+HERMES_HOME = '/opt/data'  # where the Hermes container sees its data
+HERMES_UID = HERMES_GID = 10000
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 def _personal_contract(source):
@@ -316,45 +320,49 @@ def _personal_contract(source):
         provider, default = pilot['model'].get('provider'), pilot['model'].get('default')
         need(text(provider) and text(default), 'the pilot model needs provider and default')
         config = manifest.get('config')
-        need(isinstance(config, dict) and all(isinstance(k, str) and k for k in config), 'config must be an object')
-        need(all(isinstance(v, bool) or text(v) for v in config.values()), 'config values must be booleans or text')
+        first = ('platforms.discord.enabled', 'approvals.mode', 'approvals.cron_mode')
+        need(isinstance(config, dict), 'config must be an object')
+        need(config.keys() <= {*first, 'terminal.cwd'}, 'config includes an unsupported key')
         need(config.get('platforms.discord.enabled') is False, 'Discord must be declared disabled')
         need(config.get('approvals.mode') == 'manual', 'approvals.mode must be manual')
+        need(config.get('approvals.cron_mode') == 'deny', 'approvals.cron_mode must be deny')
         need(config.get('terminal.cwd') == f'{HERMES_HOME}/workspaces/{name}', 'terminal.cwd must be the profile workspace')
-        need('model.provider' not in config and 'model.default' not in config, 'the model comes from the pilot only')
     except (KeyError, TypeError, AttributeError) as exc:
         raise ValueError('Personal profile contract: unexpected structure (' + type(exc).__name__ + ')') from exc
-    # Restrictive keys first: whatever is applied before a failure must not widen access.
-    first = ('platforms.discord.enabled', 'approvals.mode', 'approvals.cron_mode')
-    settings = {key: config[key] for key in first if key in config}
-    settings.update({'model.provider': provider, 'model.default': default})
-    settings.update({key: value for key, value in config.items() if key not in settings})
+    # Apply the restrictive settings first.
+    settings = {key: config[key] for key in first}
+    settings.update({'model.provider': provider, 'model.default': default, 'terminal.cwd': config['terminal.cwd']})
     return {'name': name, 'description': manifest['description'], 'role': role, 'settings': settings}
 
 
-def _directory_identity(path):
+def _directory_identity(path, *, dir_fd=None):
     """[device, inode] of a real directory, None when absent; a symlink or file there is an error."""
     try:
-        info = os.lstat(path)
+        info = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f'{path.name} must be a real directory')
+        raise ValueError(f'{Path(path).name} must be a real directory')
     return [info.st_dev, info.st_ino]
 
 
 def _personal_record(state, name):
     path = state / 'provisioning' / PERSONAL_RECORD
-    if path.is_symlink() or (path.parent.exists() and (path.parent.is_symlink() or not path.parent.is_dir())):
+    if path.parent.exists() or path.parent.is_symlink():
+        info = path.parent.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != ROOT_UID or info.st_mode & 0o077:
+            raise ValueError('The personal provisioning directory must be root-private')
+    if path.is_symlink():
         raise ValueError('The personal provisioning record must not be a symlink')
     if not path.exists():
         return {'state': 'none'}
     record = json.loads(path.read_text())
     ok = (isinstance(record, dict) and record.get('profile') == name
-          and record.get('state') in ('creating', 'staged', 'complete'))
-    if ok and record['state'] == 'staged':
-        ok = (isinstance(record.get('identity'), list) and len(record['identity']) == 2
-              and all(isinstance(n, int) for n in record['identity']))
+          and record.get('state') in ('creating', 'staged', 'prepared', 'complete'))
+    if ok and record['state'] in ('staged', 'prepared'):
+        fields = ('identity', 'workspace') if record['state'] == 'prepared' else ('identity',)
+        ok = all(isinstance(record.get(key), list) and len(record[key]) == 2
+                 and all(type(n) is int for n in record[key]) for key in fields)
     if not ok:
         raise ValueError('The personal provisioning record is unreadable')
     return record
@@ -367,102 +375,131 @@ def _save_personal_record(state, name, phase, **fields):
     _root_write(directory, PERSONAL_RECORD, json.dumps(payload) + '\n', 0o600)
 
 
-def _make_personal_workspace(hermes, name):
-    """Create hermes/workspaces/<name> for the Hermes user without ever following a symlink.
+def _rename_directory_noreplace(src_fd, src, dst_fd, dst):
+    # Linux deploy hosts use renameat2. macOS has the equivalent for local tests.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename, flag = (libc.renameatx_np, 4) if sys.platform == 'darwin' else (libc.renameat2, 1)
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), flag):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
-    The Hermes user can rename or replace anything under its home, so root opens every component
-    relative to its parent descriptor with O_NOFOLLOW and changes ownership on the descriptor."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    descriptors = []
-    try:
-        descriptors.append(os.open(hermes, flags))
-        owner = os.fstat(descriptors[0])
-        for part, mode in (('workspaces', 0o755), (name, 0o700)):
-            try:
-                os.mkdir(part, mode, dir_fd=descriptors[-1])
-            except FileExistsError:
-                pass
-            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
-        os.fchown(descriptors[-1], owner.st_uid, owner.st_gid)
-        os.fchmod(descriptors[-1], 0o700)
-    except OSError as exc:
-        raise ValueError('The personal workspace path must be real directories') from exc
-    finally:
-        for descriptor in descriptors:
-            os.close(descriptor)
+
+def _build_personal_profile(source, home, contract, staging, run):
+    # Only the disposable CLI container sees this home. It never mounts the live Hermes tree.
+    image = json.loads((source / 'deploy/versions.json').read_text())['hermes']['image']
+    container = ['docker', 'run', '--rm', '--init', '--pull', 'never', '--network', 'none', '--read-only',
+                 '--tmpfs', '/tmp', '--user', f'{HERMES_UID}:{HERMES_GID}',
+                 '--env', f'HERMES_HOME={HERMES_HOME}', '--env', f'HOME={HERMES_HOME}',
+                 '--mount', f'type=bind,source={home},target={HERMES_HOME}']
+
+    def execute(program, *args):
+        return run(container + ['--entrypoint', program, image, *args])
+
+    def cli(*args):
+        return execute('/opt/hermes/.venv/bin/hermes', *args)
+
+    name = contract['name']
+    cli('profile', 'create', staging, '--no-alias')
+    settings = contract['settings']
+    for key, value in settings.items():
+        cli('-p', staging, 'config', 'set', key, json.dumps(value) if isinstance(value, bool) else value)
+    for key, value in settings.items():
+        if json.loads(cli('-p', staging, 'config', 'get', '--json', key)) != value:
+            raise ValueError('Hermes did not apply the personal profile setting ' + key)
+    soul = f'{HERMES_HOME}/profiles/{staging}/SOUL.md'
+    execute('sh', '-c', 'umask 022; printf %s "$1" > "$2.next" && mv -f "$2.next" "$2"',
+            'write-soul', contract['role'], soul)
+    if execute('cat', soul).strip() != contract['role'].strip():
+        raise ValueError('The personal role instructions did not read back')
+    identity = _directory_identity(home / 'profiles' / staging)
+    if identity is None:
+        raise ValueError('Hermes did not create the personal staging profile')
+    cli('profile', 'rename', staging, name)
+    if _directory_identity(home / 'profiles' / name) != identity:
+        raise ValueError('Hermes did not rename the verified personal staging profile')
+    cli('profile', 'describe', name, '--text', contract['description'])
+    return identity
 
 
 def ensure_personal_profile(source, state, run):
-    """Provision the declared personal Hermes profile once, through Hermes' own commands.
-
-    The profile is built under a reserved staging name and renamed to `personal` only after every
-    setting and the role instructions read back, so `personal` never exists half-configured.
-    Root never writes inside the Hermes-writable home (SOUL.md and settings go through
-    `docker exec -u 10000`; the workspace uses descriptor-relative, symlink-refusing calls).
-    Ownership is proven by a root-only record under state/provisioning that binds the staging
-    directory's device and inode; a profile without that proof (the operator's, an agent's) is
-    never adopted or modified. Returns 'created', 'resumed' or 'present'."""
+    """Build in a private home, then publish only the verified directory without replacing a name."""
     contract = _personal_contract(source)
     name = contract['name']
     staging = name + PERSONAL_STAGING_SUFFIX
     hermes = state / 'hermes'
-    profiles = hermes / 'profiles'
-    if hermes.is_symlink() or profiles.is_symlink():
-        raise ValueError('The personal profile paths must not be symlinks')
     record = _personal_record(state, name)
     if record['state'] == 'complete':
         return 'present'
-    target_id, staging_id = _directory_identity(profiles / name), _directory_identity(profiles / staging)
-    container = ['docker', 'exec', '-u', '10000', 'nixos-hermes']
-    cli = container + ['hermes']
 
-    def finish():
-        # Rename moved the directory we recorded; Hermes does its own routing/identity migration.
-        if _directory_identity(profiles / name) != record['identity']:
-            raise ValueError('The personal profile is not the directory this deployment staged')
-        run(cli + ['profile', 'describe', name, '--text', contract['description']])
-        _save_personal_record(state, name, 'complete')
+    with ExitStack() as stack:
+        def open_directory(path, parent=None):
+            try:
+                fd = os.open(path, DIRECTORY_FLAGS, dir_fd=parent)
+            except OSError as exc:
+                raise ValueError('The personal provisioning path must be real directories') from exc
+            stack.callback(os.close, fd)
+            return fd
 
-    if target_id is not None:
-        if record['state'] == 'staged' and target_id == record['identity']:
-            finish()  # an interrupted rename/describe: the directory is provably ours
-            return 'resumed'
-        return 'present'
-    outcome = 'resumed'
-    if record['state'] == 'staged' and staging_id is None:
-        record = {'state': 'none'}  # our staging directory is gone: nothing to adopt, start over
-    if record['state'] == 'staged':
-        if staging_id != record['identity']:
-            raise ValueError('The staging profile is not the directory this deployment created; not adopted')
-    else:
-        if staging_id is not None:
-            raise ValueError(f'A profile named {staging} exists without a deployment record; '
-                             f'inspect it and remove it with `hermes profile delete {staging}`')
-        outcome = 'created'
-        _save_personal_record(state, name, 'creating')
-        run(cli + ['profile', 'create', staging, '--no-alias'])
-        staging_id = _directory_identity(profiles / staging)
-        if staging_id is None:
-            raise ValueError('Hermes did not create the personal staging profile')
-        record = {'state': 'staged', 'identity': staging_id}
-        _save_personal_record(state, name, 'staged', identity=staging_id)
-    settings = contract['settings']
-    for key, value in settings.items():
-        run(cli + ['-p', staging, 'config', 'set', key, json.dumps(value) if isinstance(value, bool) else str(value)])
-    for key, value in settings.items():
-        if json.loads(run(cli + ['-p', staging, 'config', 'get', '--json', key])) != value:
-            raise ValueError('Hermes did not apply the personal profile setting ' + key)
-    soul = f'{HERMES_HOME}/profiles/{staging}/SOUL.md'
-    run(container + ['sh', '-c', 'umask 022; printf %s "$1" > "$2.next" && mv -f "$2.next" "$2"',
-                     'write-soul', contract['role'], soul])
-    if run(container + ['cat', soul]).strip() != contract['role'].strip():
-        raise ValueError('The personal role instructions did not read back')
-    _make_personal_workspace(hermes, name)
-    if _directory_identity(profiles / staging) != record['identity']:
-        raise ValueError('The staging profile changed while it was configured; not renamed')
-    run(cli + ['profile', 'rename', staging, name])
-    finish()
-    return outcome
+        home_fd = open_directory(hermes)
+        profiles_fd = open_directory('profiles', home_fd)
+        target_id = _directory_identity(name, dir_fd=profiles_fd)
+        prepared = record['state'] == 'prepared'
+        if target_id is not None and (not prepared or target_id != record['identity']):
+            return 'present'
+        if _directory_identity(staging, dir_fd=profiles_fd) is not None and target_id is None:
+            raise ValueError('A personal staging profile already exists in the live Hermes home')
+        try:
+            os.mkdir('workspaces', 0o755, dir_fd=home_fd)
+        except FileExistsError:
+            pass
+        workspaces_fd = open_directory('workspaces', home_fd)
+        workspace_id = _directory_identity(name, dir_fd=workspaces_fd)
+        if workspace_id is not None and (not prepared or workspace_id != record['workspace']):
+            raise ValueError('The personal workspace exists without a matching deployment record')
+
+        def verify_live_layout():
+            for fd, path, parent in ((home_fd, hermes, None), (profiles_fd, 'profiles', home_fd),
+                                     (workspaces_fd, 'workspaces', home_fd)):
+                info = os.fstat(fd)
+                if _directory_identity(path, dir_fd=parent) != [info.st_dev, info.st_ino]:
+                    raise ValueError('The live Hermes directory layout changed during provisioning')
+
+        if target_id is None:
+            directory = state / 'provisioning'
+            directory.mkdir(mode=0o700, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=directory, prefix='.personal-build-') as temporary:
+                build = Path(temporary)
+                home = build / 'home'
+                home.mkdir(mode=0o700)
+                os.chown(home, HERMES_UID, HERMES_GID)
+                target_id = _build_personal_profile(source, home, contract, staging, run)
+                build_fd = open_directory(build)
+                built_profiles_fd = open_directory(home / 'profiles')
+                if _directory_identity(name, dir_fd=built_profiles_fd) != target_id:
+                    raise ValueError('The built personal profile changed before publication')
+                new_workspace = workspace_id is None
+                if new_workspace:
+                    workspace = build / 'workspace'
+                    workspace.mkdir(mode=0o700)
+                    os.chown(workspace, HERMES_UID, HERMES_GID)
+                    workspace_id = _directory_identity(workspace)
+
+                verify_live_layout()
+                _save_personal_record(state, name, 'prepared', identity=target_id, workspace=workspace_id)
+                if new_workspace:
+                    _rename_directory_noreplace(build_fd, 'workspace', workspaces_fd, name)
+                if _directory_identity(name, dir_fd=workspaces_fd) != workspace_id:
+                    raise ValueError('The personal workspace changed before publication')
+                _rename_directory_noreplace(built_profiles_fd, name, profiles_fd, name)
+
+        verify_live_layout()
+        if (workspace_id is None or _directory_identity(name, dir_fd=workspaces_fd) != workspace_id
+                or _directory_identity(name, dir_fd=profiles_fd) != target_id):
+            raise ValueError('The published personal profile or workspace changed during provisioning')
+        _save_personal_record(state, name, 'complete', identity=target_id, workspace=workspace_id)
+        return 'resumed' if prepared else 'created'
 
 
 def _root_write(directory, name, text, mode):

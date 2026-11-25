@@ -8,13 +8,15 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('deployment', ROOT / 'scripts/deploy-os.py')
 deployment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deployment)
 deployment.T3_UID, deployment.T3_GID = os.getuid(), os.getgid()
-deployment.ROOT_UID, deployment.ROOT_GID = os.getuid(), os.getgid()  # tests run unprivileged; production chowns to the T3 service user
+deployment.ROOT_UID, deployment.ROOT_GID = os.getuid(), os.getgid()
+deployment.HERMES_UID, deployment.HERMES_GID = os.getuid(), os.getgid()  # Tests run unprivileged.
 
 
 _real_apply = deployment.apply
@@ -36,6 +38,7 @@ class DeploymentTests(unittest.TestCase):
     def prepare_state(self, td):
         state = Path(td) / 'state'
         (state / 'hermes/nix').mkdir(parents=True)
+        (state / 'hermes/profiles').mkdir()
         (state / 'knowledge/company').mkdir(parents=True)
         (state / 'paperclip').mkdir()
         (state / 'hermes/memory.md').write_text('Learning must survive failed deployment')
@@ -260,25 +263,31 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual('kit-owned', (hermes / 'skills/brainstorming/SKILL.md').read_text())
 
     def fake_hermes(self, state, calls, drop=(), fail=None, on_call=None):
-        """Stand-in for `docker exec -u 10000 nixos-hermes ...`: it acts only on the Hermes-owned tree,
-        the way the real container user would, and fails any command whose words match `fail`."""
+        """Run a fake Hermes CLI against the disposable mount, with real shell redirection."""
         store = {}
-        profiles = state / 'hermes/profiles'
-
-        def local(path):
-            return state / 'hermes' / path.removeprefix('/opt/data/')
 
         def run(argv):
             calls.append(argv)
-            args = argv[argv.index('nixos-hermes') + 1:]
+            self.assertEqual(['docker', 'run'], argv[:2])
+            mount = argv[argv.index('--mount') + 1]
+            home = Path(mount.removeprefix('type=bind,source=').removesuffix(',target=/opt/data'))
+            self.assertTrue(home.is_relative_to(state / 'provisioning'))
+            profiles = home / 'profiles'
+            entry = argv.index('--entrypoint')
+            program, args = argv[entry + 1], argv[entry + 3:]
+            args = ['hermes' if program.endswith('/bin/hermes') else program, *args]
+
+            def local(path):
+                return home / path.removeprefix('/opt/data/')
+
             if on_call:
                 on_call(args)
             if fail and fail(args):
                 raise subprocess.CalledProcessError(1, argv)
             if args[0] == 'sh':  # SOUL.md write as the Hermes user
                 _, _, script, _, text, path = args
-                self.assertIn('mv -f', script)
-                local(path).write_text(text)
+                subprocess.run(['sh', '-c', script, 'write-soul', text, str(local(path))],
+                               check=True, capture_output=True, text=True)
                 return ''
             if args[0] == 'cat':
                 return local(args[1]).read_text().strip()
@@ -301,7 +310,8 @@ class DeploymentTests(unittest.TestCase):
         return run
 
     def profile_commands(self, calls):
-        return [c[c.index('hermes') + 1:] for c in calls if 'hermes' in c]
+        return [c[c.index('--entrypoint') + 3:] for c in calls
+                if c[c.index('--entrypoint') + 1].endswith('/bin/hermes')]
 
     def record(self, state):
         return json.loads((state / 'provisioning/personal.json').read_text())
@@ -311,11 +321,8 @@ class DeploymentTests(unittest.TestCase):
             state = self.prepare_state(td)
             calls, early = [], []
 
-            def watch(args):  # `personal` must not exist at any point before the final rename
-                if args[:3] == ['hermes', 'profile', 'rename']:
-                    watch.renamed = True
-                if not getattr(watch, 'renamed', False):
-                    early.append((state / 'hermes/profiles/personal').exists())
+            def watch(args):
+                early.append((state / 'hermes/profiles/personal').exists())
             self.assertEqual('created', deployment.ensure_personal_profile(
                 ROOT, state, self.fake_hermes(state, calls, on_call=watch)))
             self.assertEqual([False] * len(early), early)
@@ -335,6 +342,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(pilot['model']['provider'], by_key['model.provider'])
             self.assertEqual(pilot['model']['default'], by_key['model.default'])
             self.assertEqual('manual', by_key['approvals.mode'])
+            self.assertEqual('deny', by_key['approvals.cron_mode'])
             self.assertEqual(['profile', 'rename', 'personalsetup', 'personal'], commands[-2])
             self.assertEqual(['profile', 'describe', 'personal', '--text', manifest['description']], commands[-1])
             # Shared login only: no clone (would copy .env/credentials), no venture marker, no secrets in the manifest.
@@ -369,11 +377,10 @@ class DeploymentTests(unittest.TestCase):
                     ROOT, state, self.fake_hermes(state, calls, drop=('platforms.discord.enabled',)))
             self.assertFalse((state / 'hermes/profiles/personal').exists())
             self.assertFalse((state / 'hermes/workspaces/personal').exists())
-            self.assertTrue((state / 'hermes/profiles/personalsetup').is_dir())
-            self.assertEqual('staged', self.record(state)['state'])
+            self.assertFalse((state / 'hermes/profiles/personalsetup').exists())
+            self.assertFalse(list((state / 'provisioning').iterdir()))
             calls.clear()
-            self.assertEqual('resumed', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
-            self.assertFalse(any(c[:2] == ['profile', 'create'] for c in self.profile_commands(calls)))
+            self.assertEqual('created', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
             profile = state / 'hermes/profiles/personal'
             self.assertEqual((ROOT / 'deploy/roles/personal.md').read_text(), (profile / 'SOUL.md').read_text())
             self.assertFalse((state / 'hermes/profiles/personalsetup').exists())
@@ -389,24 +396,57 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [], fail=fail))
                 self.assertFalse((state / 'hermes/profiles/personal').exists())
-                self.assertEqual('staged', self.record(state)['state'])
+                self.assertFalse(list((state / 'provisioning').iterdir()))
 
-    def test_personal_rename_and_describe_interruptions_finish_without_recreating(self):
+    def test_personal_rename_and_describe_failures_leave_no_live_changes(self):
         for step in ('rename', 'describe'):
             with self.subTest(step), tempfile.TemporaryDirectory() as td:
                 state = self.prepare_state(td)
-                broken = lambda a: a[1:2] == ['profile'] and a[2] == step and step == 'describe'
-                if step == 'rename':
-                    broken = lambda a: a[1:3] == ['profile', 'rename']
+                broken = lambda a: a[1:3] == ['profile', step]
                 with self.assertRaises(subprocess.CalledProcessError):
                     deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [], fail=broken))
-                self.assertNotEqual('complete', self.record(state)['state'])
-                calls = []
-                self.assertEqual('resumed', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
-                self.assertFalse(any(c[:2] == ['profile', 'create'] for c in self.profile_commands(calls)))
+                self.assertFalse((state / 'hermes/profiles/personal').exists())
+                self.assertFalse((state / 'hermes/workspaces/personal').exists())
+                self.assertEqual('created', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [])))
                 self.assertEqual('complete', self.record(state)['state'])
-                self.assertTrue((state / 'hermes/profiles/personal').is_dir())
-                self.assertFalse((state / 'hermes/profiles/personalsetup').exists())
+
+    def test_interrupted_publication_reuses_only_the_recorded_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            rename = deployment._rename_directory_noreplace
+
+            def interrupt(src_fd, src, dst_fd, dst):
+                if src == 'personal':
+                    raise OSError('interrupted profile publication')
+                rename(src_fd, src, dst_fd, dst)
+            with patch.object(deployment, '_rename_directory_noreplace', side_effect=interrupt):
+                with self.assertRaises(OSError):
+                    deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
+            workspace = state / 'hermes/workspaces/personal'
+            self.assertEqual('prepared', self.record(state)['state'])
+            self.assertEqual(deployment._directory_identity(workspace), self.record(state)['workspace'])
+            workspace.chmod(0o750)
+            self.assertEqual('resumed', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [])))
+            self.assertEqual(0o750, workspace.stat().st_mode & 0o777)
+            self.assertEqual('complete', self.record(state)['state'])
+
+    def test_interrupted_record_update_recovers_without_touching_the_live_profile(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            save = deployment._save_personal_record
+
+            def interrupt(state, name, phase, **fields):
+                if phase == 'complete':
+                    raise OSError('interrupted record update')
+                save(state, name, phase, **fields)
+            with patch.object(deployment, '_save_personal_record', side_effect=interrupt):
+                with self.assertRaises(OSError):
+                    deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
+            self.assertEqual('prepared', self.record(state)['state'])
+            calls = []
+            self.assertEqual('resumed', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
+            self.assertEqual([], calls)
+            self.assertEqual('complete', self.record(state)['state'])
 
     def test_existing_personal_profile_is_never_touched_or_adopted(self):
         with tempfile.TemporaryDirectory() as td:
@@ -432,44 +472,55 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual('present', deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls)))
             self.assertEqual([], calls)
 
-    def test_swapped_or_foreign_staging_profile_is_not_adopted(self):
+    def test_existing_live_staging_profile_is_not_adopted(self):
         with tempfile.TemporaryDirectory() as td:  # staging name taken by something deployment never recorded
             state = self.prepare_state(td)
-            (state / 'hermes/profiles/personalsetup').mkdir(parents=True)
+            (state / 'hermes/profiles/personalsetup').mkdir()
             calls = []
             with self.assertRaises(ValueError):
                 deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls))
             self.assertEqual([], calls)
             self.assertFalse((state / 'hermes/profiles/personal').exists())
-        with tempfile.TemporaryDirectory() as td:  # the Hermes user replaced the staged directory
+
+    def test_live_staging_replacement_is_never_configured_or_published(self):
+        with tempfile.TemporaryDirectory() as td:
             state = self.prepare_state(td)
-            with self.assertRaises(ValueError):
-                deployment.ensure_personal_profile(
-                    ROOT, state, self.fake_hermes(state, [], drop=('platforms.discord.enabled',)))
-            staged = state / 'hermes/profiles/personalsetup'
-            staged.rename(state / 'hermes/profiles/kept-aside')
-            staged.mkdir()
-            calls = []
-            with self.assertRaises(ValueError):
-                deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, calls))
-            self.assertEqual([], calls)
-            self.assertFalse((state / 'hermes/profiles/personal').exists())
-        with tempfile.TemporaryDirectory() as td:  # swapped between the last check and the rename
-            state = self.prepare_state(td)
-            staged = state / 'hermes/profiles/personalsetup'
+            replacement = state / 'hermes/profiles/personalsetup'
 
             def swap(args):
-                if args[1:3] == ['profile', 'rename']:
-                    staged.rename(state / 'hermes/profiles/aside')
-                    staged.mkdir()
-            with self.assertRaises(ValueError):
-                deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, [], on_call=swap))
-            self.assertNotEqual('complete', self.record(state)['state'])
+                if args[-2:-1] == ['platforms.discord.enabled'] and args[3:5] == ['config', 'set']:
+                    replacement.mkdir()
+                    (replacement / 'SOUL.md').write_text('replacement')
+            self.assertEqual('created', deployment.ensure_personal_profile(
+                ROOT, state, self.fake_hermes(state, [], on_call=swap)))
+            target = state / 'hermes/profiles/personal'
+            self.assertNotEqual(replacement.stat().st_ino, target.stat().st_ino)
+            self.assertEqual('replacement', (replacement / 'SOUL.md').read_text())
+            self.assertEqual((ROOT / 'deploy/roles/personal.md').read_text(), (target / 'SOUL.md').read_text())
+
+    def test_personal_publication_never_replaces_a_concurrent_destination(self):
+        for parent in ('profiles', 'workspaces'):
+            with self.subTest(parent), tempfile.TemporaryDirectory() as td:
+                state = self.prepare_state(td)
+                target = state / 'hermes' / parent / 'personal'
+                rename = deployment._rename_directory_noreplace
+                reached = []
+
+                def occupy(src_fd, src, dst_fd, dst):
+                    if (src == 'personal') == (parent == 'profiles'):
+                        target.mkdir()
+                        reached.append(target.stat().st_ino)
+                    rename(src_fd, src, dst_fd, dst)
+                with patch.object(deployment, '_rename_directory_noreplace', side_effect=occupy):
+                    with self.assertRaises(FileExistsError):
+                        deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
+                self.assertEqual([target.stat().st_ino], reached)
+                self.assertEqual([], list(target.iterdir()))
+                self.assertEqual('prepared', self.record(state)['state'])
 
     def test_personal_profile_refuses_symlinks_without_touching_their_targets(self):
         with tempfile.TemporaryDirectory() as td:
             state = self.prepare_state(td)
-            (state / 'hermes/profiles').mkdir()
             (state / 'hermes/profiles/personal').symlink_to(Path(td))
             with self.assertRaises(ValueError):
                 deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
@@ -493,7 +544,21 @@ class DeploymentTests(unittest.TestCase):
             deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
             workspace = state / 'hermes/workspaces/personal'
             self.assertEqual(0o700, workspace.stat().st_mode & 0o777)
-            self.assertEqual((state / 'hermes').stat().st_uid, workspace.stat().st_uid)
+            self.assertEqual(deployment.HERMES_UID, workspace.stat().st_uid)
+
+    def test_existing_personal_workspace_is_refused_with_ownership_and_mode_intact(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            workspace = state / 'hermes/workspaces/personal'
+            workspace.mkdir(parents=True)
+            workspace.chmod(0o751)
+            before = workspace.stat()
+            with self.assertRaises(ValueError):
+                deployment.ensure_personal_profile(ROOT, state, self.fake_hermes(state, []))
+            after = workspace.stat()
+            self.assertEqual((before.st_uid, before.st_gid, before.st_mode),
+                             (after.st_uid, after.st_gid, after.st_mode))
+            self.assertFalse((state / 'hermes/profiles/personal').exists())
 
     def release_with(self, td, edit):
         release = Path(td) / 'release'
@@ -527,7 +592,11 @@ class DeploymentTests(unittest.TestCase):
             'manifest is a list': manifest(lambda data: [data]),
             'config is a list': manifest(lambda data: {**data, 'config': ['x']}),
             'discord not disabled': manifest(lambda data: {**data, 'config': {**data['config'], 'platforms.discord.enabled': True}}),
+            'no manual approval': manifest(drop('config', 'approvals.mode')),
             'approvals loosened': manifest(lambda data: {**data, 'config': {**data['config'], 'approvals.mode': 'off'}}),
+            'no cron approval': manifest(drop('config', 'approvals.cron_mode')),
+            'cron approval loosened': manifest(lambda data: {**data, 'config': {**data['config'], 'approvals.cron_mode': 'allow'}}),
+            'additional config key': manifest(lambda data: {**data, 'config': {**data['config'], 'gateway.multiplex_profiles': True}}),
             'role outside release': manifest(lambda data: {**data, 'role_file': '../../etc/hosts'}),
             'pilot without default': pilot(drop('model', 'default')),
             'pilot without model': pilot(drop(None, 'model')),
@@ -579,7 +648,6 @@ class DeploymentTests(unittest.TestCase):
             outside = Path(td) / 'outside'
             (outside / 'skills').mkdir(parents=True)
             (outside / 'nix-venture.json').write_text('{"venture": "evil"}')
-            (hermes / 'profiles').mkdir()
             (hermes / 'profiles/evil').symlink_to(outside)
             (hermes / 'profiles/clone/skills').mkdir(parents=True)
             (hermes / 'profiles/clone/nix-venture.json').write_text('{"venture": "acme"}')
