@@ -79,12 +79,15 @@ function fakeApi(state) {
 }
 const PR = { number: 5, title: 't', body: 'Builder: codex', draft: false, base: { ref: 'main', sha: 'c'.repeat(40) },
   head: { sha: 'd'.repeat(40), repo: { full_name: 'its-nix/os' } } };
-const CFG = { repo: 'its-nix/os', appId: '1', pool: POOL, timeoutMs: 1000 };
+const CFG = { repo: 'its-nix/os', appId: '1', pool: POOL, timeoutMs: 1000,
+  policy: parseProtectedPaths('/.github/ @o\n/deploy/reviewer/ @o\n') };
+const ordinaryId = `${CFG.policy.version}:ordinary:${PR.base.sha}`;
 
 test('the deployed policy accepts literal CODEOWNERS paths and rejects patterns', () => {
   const text = readFileSync(new URL('../../.github/CODEOWNERS', import.meta.url), 'utf8');
   const { paths } = parseProtectedPaths(text);
-  for (const path of ['.github/', 'tests/', 'scripts/verify.py', 'deploy/reviewer/']) assert.ok(paths.includes(path));
+  for (const path of ['.github/', 'tests/', 'scripts/', 'deploy/reviewer/',
+    'conftest.py', 'pyproject.toml', 'unittest.py', 'sitecustomize.py', 'usercustomize.py']) assert.ok(paths.includes(path), path);
   assert.throws(() => parseProtectedPaths(text + '\n/tests/*.py @owner'));
   assert.throws(() => parseProtectedPaths(text + '\n/../other @owner'));
   assert.throws(() => parseProtectedPaths('/tests/ @owner'));
@@ -109,7 +112,7 @@ test('protected path changes fail before model review and retry when the exact h
   const policy = parseProtectedPaths(readFileSync(new URL('../../.github/CODEOWNERS', import.meta.url), 'utf8'));
   const cfg = { ...CFG, policy };
   const pr = { ...PR, body: 'Builder: codex\nFounder approved.' };
-  const state = { calls: [], headAfter: pr.head.sha, existing: [{ status: 'completed', conclusion: 'success' }],
+  const state = { calls: [], headAfter: pr.head.sha, existing: [{ id: 1, status: 'completed', conclusion: 'success' }],
     files: [{ filename: 'moved.py', previous_filename: 'tests/test_before.py', status: 'renamed', patch: '+x' },
       { filename: 'scripts/verify.py', status: 'removed', patch: '-x' }] };
   let approvedSha = 'e'.repeat(40);
@@ -123,7 +126,7 @@ test('protected path changes fail before model review and retry when the exact h
   assert.equal(blocked.output.title, 'Founder approval required');
   assert.match(blocked.output.summary, /tests\/test_before.py/);
   assert.match(blocked.output.summary, /scripts\/verify.py/);
-  state.existing = [blocked];
+  state.existing = [{ id: 2, ...blocked }];
   state.calls = [];
   await reviewOne(cfg, 't', pr, deps);
   assert.equal(state.calls.length, 1);  // wait for approval, with no duplicate check run
@@ -134,14 +137,24 @@ test('protected path changes fail before model review and retry when the exact h
   assert.equal(success.conclusion, 'success');
   assert.equal(success.external_id, policy.version + ':protected:' + pr.base.sha);
 
-  state.existing = [success];
+  state.existing.push({ id: 3, ...success });
   state.calls = [];
   approvedSha = null;
   await reviewOne(cfg, 't', pr, deps);
-  assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].conclusion, 'failure');
+  const revoked = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.equal(revoked.conclusion, 'failure');
+  assert.equal(revoked.output.title, 'Founder approval required');
+
+  state.existing = [{ id: 3, ...success }, { id: 4, ...revoked }];
+  state.calls = [];
+  approvedSha = pr.head.sha;
+  await reviewOne(cfg, 't', pr, deps);
+  assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].conclusion, 'success');
+  assert.equal(modelCalls, 2);
 
   state.existing = [];
   state.calls = [];
+  approvedSha = null;
   state.files = [{ filename: 'tests-extra/test.py', status: 'added', patch: '+x' }];
   await reviewOne(cfg, 't', pr, deps);
   assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].conclusion, 'success');
@@ -164,12 +177,17 @@ test('review falls back past unavailable providers, never uses the builder, and 
 test('no available reviewer, moved head, or already-reviewed revision', async () => {
   let state = { calls: [], headAfter: PR.head.sha };
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: async () => ({ ok: false, out: '' }) });
-  assert.equal(state.calls.find(([m]) => m === 'PATCH')[2].conclusion, 'failure');
+  const unavailable = state.calls.find(([m]) => m === 'PATCH')[2];
+  assert.equal(unavailable.conclusion, 'failure');
+  assert.equal(unavailable.external_id, ordinaryId);
+  state.existing = [{ id: 7, ...unavailable }];
+  assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(state) }), null);
   state = { calls: [], headAfter: 'e'.repeat(40) };
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
     run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
   assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.title, /Head moved/);
-  state = { calls: [], existing: [{ status: 'completed', output: { title: 'APPROVE by grok' } }] };
+  state = { calls: [], existing: [{ id: 7, status: 'completed', conclusion: 'success',
+    output: { title: 'APPROVE by grok' }, external_id: ordinaryId }] };
   assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(state) }), null);
   assert.ok(!state.calls.some(([m]) => m === 'POST'));
 });
@@ -193,7 +211,8 @@ test('drafts are never claimed; stale runs are reused; infra failures are retrie
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: ok });
   assert.ok(!state.calls.some(([m]) => m === 'POST'));                       // no duplicate run
   assert.ok(state.calls.some(([m, path]) => m === 'PATCH' && path.endsWith('/9')));
-  state = { calls: [], headAfter: PR.head.sha, existing: [{ status: 'completed', completed_at: old, output: { title: 'No reviewer available' } }] };
+  state = { calls: [], headAfter: PR.head.sha, existing: [{ id: 7, status: 'completed', completed_at: old,
+    output: { title: 'No reviewer available' }, external_id: ordinaryId }] };
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: ok });
   assert.ok(state.calls.some(([m]) => m === 'POST'));                        // retried
 });
@@ -241,7 +260,7 @@ test('a verdict is bound to its exact base; a moved base is re-reviewed', async 
   const cfg = { ...CFG, policy };
   const ok = { diff: '+x', commits: [], protectedPaths: [] };
   const run = async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' });
-  const done = (base) => ({ status: 'completed', conclusion: 'success', external_id: `${policy.version}:ordinary:${base}` });
+  const done = (base) => ({ id: 7, status: 'completed', conclusion: 'success', external_id: `${policy.version}:ordinary:${base}` });
   let state = { calls: [], headAfter: PR.head.sha, existing: [done(PR.base.sha)] };
   assert.equal(await reviewOne(cfg, 't', PR, { gh: fakeApi(state), collect: async () => ok, run }), null);
   state = { calls: [], headAfter: PR.head.sha, existing: [done('e'.repeat(40))] };
@@ -249,5 +268,50 @@ test('a verdict is bound to its exact base; a moved base is re-reviewed', async 
   assert.ok(state.calls.some(([m]) => m === 'POST'));
   state = { calls: [], headAfter: PR.head.sha, baseAfter: 'e'.repeat(40) };
   await reviewOne(cfg, 't', PR, { gh: fakeApi(state), collect: async () => ok, run });
-  assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.title, /Base moved/);
+  const baseMoved = state.calls.find(([m]) => m === 'PATCH')[2];
+  assert.equal(baseMoved.output.title, 'Base moved');
+  assert.equal(baseMoved.external_id, `${policy.version}:ordinary:${PR.base.sha}`);
+  state.existing = [{ id: 7, ...baseMoved }];
+  state.calls = [];
+  const moved = { ...PR, base: { ...PR.base, sha: state.baseAfter } };
+  await reviewOne(cfg, 't', moved, { gh: fakeApi(state), collect: async (_repo, _token, pr) => {
+    assert.equal(pr.base.sha, moved.base.sha);
+    return ok;
+  }, run });
+  const reviewed = state.calls.find(([m]) => m === 'PATCH')[2];
+  assert.equal(reviewed.conclusion, 'success');
+  assert.equal(reviewed.external_id, `${policy.version}:ordinary:${moved.base.sha}`);
+});
+
+test('legacy and stale-policy failures trigger review even during the infra cooldown', async () => {
+  for (const external_id of ['', `old:ordinary:${PR.base.sha}`, `${CFG.policy.version}:ordinary:${'e'.repeat(40)}`]) {
+    const state = { calls: [], headAfter: PR.head.sha, existing: [{ id: 7, status: 'completed', conclusion: 'failure',
+      output: { title: 'No reviewer available' }, completed_at: new Date().toISOString(), external_id }] };
+    await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+      run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
+    const verdict = state.calls.find(([method]) => method === 'PATCH')[2];
+    assert.equal(verdict.conclusion, 'success');
+    assert.equal(verdict.external_id, ordinaryId);
+  }
+});
+
+test('only the latest completed run across all pages determines whether to review again', async () => {
+  const policy = parseProtectedPaths('/.github/ @o\n/deploy/reviewer/ @o\n');
+  const valid = { id: 1, status: 'completed', conclusion: 'success',
+    external_id: `${policy.version}:ordinary:${PR.base.sha}` };
+  const firstPage = Array.from({ length: 100 }, (_, i) => ({ ...valid, id: i + 1 }));
+  const latest = { ...valid, id: 101, conclusion: 'failure',
+    external_id: `${policy.version}:ordinary:${'e'.repeat(40)}` };
+  const state = { calls: [], headAfter: PR.head.sha };
+  const api = fakeApi(state);
+  const gh = (path, options) => {
+    if (!path.includes('/check-runs?')) return api(path, options);
+    const params = new URLSearchParams(path.split('?')[1]);
+    assert.equal(params.get('filter'), 'all');
+    assert.equal(params.get('per_page'), '100');
+    return { check_runs: params.get('page') === '2' ? [latest] : firstPage };
+  };
+  await reviewOne({ ...CFG, policy }, 't', PR, { gh, collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
+  assert.equal(state.calls.find(([m]) => m === 'PATCH')[2].conclusion, 'success');
 });

@@ -2,8 +2,8 @@
 // Rotating independent reviewer for its-nix/os pull requests. No dependencies.
 //
 // Runs on the VPS in its own container with its own subscription logins (separate from T3,
-// where builders run). For each open same-repository PR into main it reviews exactly one head
-// SHA once: it picks one provider pseudo-randomly from the eligible pool (seeded by the head SHA,
+// where builders run). For each open same-repository PR into main it reviews the base...head diff
+// and picks one provider pseudo-randomly from the eligible pool (seeded by the head SHA,
 // so reruns keep the same reviewer), excluding the PR's builder, and publishes the
 // `independent-review` check run as a GitHub App. The main ruleset requires that check from this
 // App, so a builder's token cannot forge it. The PR head is never checked out or executed: the
@@ -282,30 +282,38 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const approved = () => (deps.approved || hasFounderApproval)(pr.head.sha);
   if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft || !SHA.test(pr.head.sha)) return null;
   const staleMs = cfg.timeoutMs * cfg.pool.length + 10 * 60 * 1000;
-  const runs = (await api(`/repos/${cfg.repo}/commits/${pr.head.sha}/check-runs?check_name=${CHECK}&app_id=${cfg.appId}`, { token })).check_runs || [];
+  const checks = `/repos/${cfg.repo}/commits/${pr.head.sha}/check-runs?check_name=${CHECK}&app_id=${cfg.appId}`;
+  const runs = [];
+  const perPage = 100;
+  for (let page = 1; ; page++) {
+    const { check_runs = [] } = await api(`${checks}&filter=all&per_page=${perPage}&page=${page}`, { token });
+    runs.push(...check_runs);
+    if (check_runs.length < perPage) break;
+  }
+  runs.sort((a, b) => b.id - a.id);
   const now = Date.now();
-  const decided = runs.find((c) => {
-    if (c.status !== 'completed') return false;
-    if (c.output?.title === APPROVAL_REQUIRED) return !approved();
-    if (c.output?.title === RETRYABLE) return now - Date.parse(c.completed_at) <= RETRY_AFTER_MS;
-    if (c.conclusion === 'success' && cfg.policy) {
-      // A verdict covers one exact base...head diff: a moved base invalidates it.
-      if (c.external_id === `${cfg.policy.version}:protected:${pr.base.sha}`) return approved();
-      return c.external_id === `${cfg.policy.version}:ordinary:${pr.base.sha}`;
-    }
-    return true;
-  });
-  if (decided) return null;
+  const externalId = (scope) => `${cfg.policy.version}:${scope}:${pr.base.sha}`;
+  const completed = runs.find((c) => c.status === 'completed');
+  const wasProtected = completed?.external_id === externalId('protected');
+  // Legacy runs lack a trusted policy/base binding and get reviewed again.
+  if (wasProtected || completed?.external_id === externalId('ordinary')) {
+    const title = completed.output?.title;
+    const retryAfterApproval = title === APPROVAL_REQUIRED && approved();
+    const retryAfterRevocation = wasProtected && completed.conclusion === 'success' && !approved();
+    const retryAfterCooldown = title === RETRYABLE && !(now - Date.parse(completed.completed_at) <= RETRY_AFTER_MS);
+    if (!retryAfterApproval && !retryAfterRevocation && !retryAfterCooldown) return null;
+  }
   const active = runs.find((c) => c.status !== 'completed' && now - Date.parse(c.started_at) < staleMs);
   if (active) return null;  // under review
-  const stale = runs.find((c) => c.status !== 'completed');
+  // Reuse only a run that can supersede the latest completed run.
+  const stale = runs.find((c) => c.status !== 'completed' && (!completed || c.id > completed.id));
   const check = stale || await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
     name: CHECK, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date().toISOString() } });
   if (stale) await api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: { started_at: new Date().toISOString() } });
   let protectedPaths = [];
   const finish = (conclusion, title, summary) => api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: {
     status: 'completed', conclusion, completed_at: new Date().toISOString(),
-    ...(cfg.policy ? { external_id: `${cfg.policy.version}:${protectedPaths.length ? 'protected' : 'ordinary'}:${pr.base.sha}` } : {}),
+    external_id: externalId(protectedPaths.length ? 'protected' : 'ordinary'),
     output: { title, summary: redact(summary).slice(0, 60000) } } });
   const data = await (deps.collect || collect)(cfg.repo, token, pr, cfg.policy, api);
   if (!data || data.refuse) return finish('failure', 'Not reviewable', data?.refuse || 'Not reviewable.');

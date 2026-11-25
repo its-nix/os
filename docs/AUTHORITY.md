@@ -1,6 +1,6 @@
 # Authority and change governance
 
-Root policy, owned by the founder. [CODEOWNERS](../.github/CODEOWNERS) lists the protected paths, including workflows, tests, the repository verifier, the reviewer, and root-executed deployment and recovery code.
+Root policy, owned by the founder. [CODEOWNERS](../.github/CODEOWNERS) lists the protected paths, including workflows, tests, scripts, the reviewer, and root-executed deployment and recovery code.
 
 ## Durable changes (code, skills, workflows, deployment config)
 
@@ -8,7 +8,7 @@ Path: branch → PR with the original acceptance criteria → required checks �
 
 The active `main-protection` ruleset requires a PR, blocks force-pushes and deletion, and has an empty bypass list. It requires `verify` from GitHub Actions and `independent-review` from the Nix reviewer GitHub App, with the PR branch up to date with `main`. Repository auto-merge is enabled. The ruleset requires zero approving reviews and does not require CODEOWNERS approval. Agents open PRs with the founder's GitHub identity, which cannot approve its own PRs. A GitHub approval, label, or comment provides no founder authorization to the App.
 
-`verify` runs the PR's own suite on GitHub-hosted runners with read-only contents access, no persisted checkout credentials and no deployment secrets. It deliberately does not also run the base suite: a legitimate behaviour change that an existing test asserts would then fail forever with no override. Instead, weakening the evaluation is a protected-path change. Any change under `tests/` (additions included, since a new module can alter discovery or patch the runner), `scripts/verify.py`, `.github/` (including the workflow itself) or the reviewer requires founder approval below.
+`verify` runs the PR's own suite on GitHub-hosted runners with read-only contents access, no persisted checkout credentials and no deployment secrets. Running the base suite as well would block legitimate behaviour changes that need corresponding test updates. The check starts Python in isolated mode and loads `unittest` before appending the repository to the import path for application imports. Changes under `tests/`, `scripts/`, `.github/` or `deploy/reviewer/`, and to the root files `conftest.py`, `pyproject.toml`, `unittest.py`, `sitecustomize.py` and `usercustomize.py`, require founder approval. This includes added files.
 
 `independent-review` runs from deployed main on the VPS. It uses the deployed CODEOWNERS list to inspect changed paths in the exact base...head comparison, including both names of a rename. If any path is protected, the App publishes a failure until it sees a root-owned approval file for that exact head SHA. Normal deployment creates the directory and mounts it read-only in the reviewer container. Neither T3 nor Hermes mounts it. The gate depends on the ruleset, App signing key and VPS root access remaining under trusted control.
 
@@ -18,7 +18,7 @@ After reviewing the exact diff, the founder or a founder-authorized root operato
 sha='<full head SHA>'; [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && install -o root -g root -m 0400 /dev/null "/srv/nix-clean/reviewer/approvals/$sha"
 ```
 
-The reviewer retries on its next poll. A new commit needs its own approval. The file authorizes protected-path changes and the model review must still pass. The App excludes the declared builder, chooses a reviewer per head SHA, and rechecks the head before posting the verdict. It leaves drafts, forks and non-main PRs without an approving check, and fails incomplete, binary or oversized diffs. It reads the diff through the GitHub API and runs the review CLI with tools disabled.
+The reviewer retries on its next poll after approval. If approval is removed while the PR is open, the next poll replaces any passing protected verdict with a failure. A new commit needs its own approval. The file authorizes protected-path changes and the model review must still pass. The App excludes the declared builder, chooses a reviewer per head SHA and rechecks both the head and base before publishing the model verdict. It considers only the latest completed check for that head and reviews again if the policy version or base has changed. Legacy checks without a policy and base binding are reviewed again. A missing reviewer triggers a 30-minute retry for the same policy and base. The App leaves drafts, forks and non-main PRs without an approving check, fails incomplete, binary or oversized diffs, reads the diff through the GitHub API and runs the review CLI with tools disabled.
 
 Ordinary business events (CRM updates, analytics reads, approved procedure runs) are not PRs.
 

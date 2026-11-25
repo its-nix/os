@@ -24,14 +24,15 @@ jobs:
         with:
           python-version: "3.11"
       - name: Unit tests
-        run: python3 -m unittest discover -s tests -v
+        # Load the standard-library runner before adding the repo for application imports.
+        run: python3 -I -c 'import sys, unittest; sys.path.append("."); unittest.main(module=None)' discover -s tests -v
       - name: Synthetic Docker recovery canary
         env:
           HERMES_RECOVERY_TEST_IMAGE: python:3.11-slim
-        run: python3 -m unittest discover -s tests -p test_recovery_container.py -v
+        run: python3 -I -c 'import sys, unittest; sys.path.append("."); unittest.main(module=None)' discover -s tests -p test_recovery_container.py -v
       - name: Clean Compose contract
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import json, os, subprocess
           from pathlib import Path
           versions = json.loads(Path('deploy/versions.json').read_text())
@@ -47,19 +48,19 @@ jobs:
       - name: Reviewer service tests
         run: node --test deploy/reviewer/reviewer.test.mjs
       - name: Repository verifier
-        run: python3 scripts/verify.py
+        run: python3 -I scripts/verify.py
       - name: Bootstrap syntax
         run: |
           bash -n scripts/bootstrap.sh
           sh -n scripts/deploy-os.sh
       - name: Python syntax
-        run: python3 -m compileall -q scripts tests automation
+        run: python3 -I -m compileall -q scripts tests automation
       - name: Bootstrap preview
         run: HERMES_BIN=/not-installed/hermes bash scripts/bootstrap.sh
       - name: Skill installer interface
-        run: python3 scripts/install-skills.py --help
+        run: python3 -I scripts/install-skills.py --help
       - name: Scout setup preview
-        run: HERMES_BIN=/not-installed/hermes python3 scripts/setup-skill-scouts.py
+        run: HERMES_BIN=/not-installed/hermes python3 -I scripts/setup-skill-scouts.py
       - name: Diff whitespace
         run: git diff --check
 
