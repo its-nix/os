@@ -98,7 +98,7 @@ ROOT_UID = ROOT_GID = 0
 REVIEWER_ENV_TEMPLATE = '''# Rotating independent reviewer (non-secret settings). Secrets: reviewer/secrets/app.pem.
 # REVIEW_APP_ID=<GitHub App id>
 REVIEW_POOL=claude,codex,opencode,grok,antigravity
-# OPENCODE_REVIEW_MODEL=opencode-go/<model>
+# OPENCODE_REVIEW_MODEL=opencode/<Go model id>  (default opencode/kimi-k3.1-pro, via the Go endpoint)
 '''
 
 

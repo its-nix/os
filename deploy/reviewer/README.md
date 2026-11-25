@@ -23,11 +23,11 @@
    ```bash
    docker exec -it -u t3 nixos-reviewer claude                      # /login (Claude Pro)
    docker exec -it -u t3 nixos-reviewer codex login --device-auth   # ChatGPT Plus
-   docker exec -it -u t3 nixos-reviewer opencode auth login         # OpenCode Go key, Extra Usage off
+   docker exec -it -u t3 nixos-reviewer opencode auth login         # provider "OpenCode", paste the OpenCode Go key
    docker exec -it -u t3 nixos-reviewer grok                        # SuperGrok sign-in
    docker exec -it -u t3 nixos-reviewer agy                         # Google AI Pro: open the printed URL, paste the code back
    ```
-   A provider without a working login simply drops out of rotation. Set `OPENCODE_REVIEW_MODEL` in `reviewer.env` to pin the OpenCode model.
+   A provider without a working login simply drops out of rotation. OpenCode reviews always go to the OpenCode Go endpoint (`https://opencode.ai/zen/go/v1`), never pay-as-you-go; the default model is `opencode/kimi-k3.1-pro`. To change it, set `OPENCODE_REVIEW_MODEL` in `reviewer.env` to another id from the Go model list.
 4. **Ruleset** on `main` (empty bypass list):
    - require a PR
    - block force pushes and deletion
