@@ -60,7 +60,9 @@ def safe_link(name, target):
 # GitHub, and caches are regenerated. The directories themselves are preserved (empty).
 REBUILDABLE = ('t3/work/', 't3/home/.t3/worktrees/', 't3/home/.t3/caches/', 't3/home/.cache/', 't3/home/.npm/',
                't3/home/.codex/tmp/', 't3/home/.codex/.tmp/',
-               'reviewer/home/.cache/', 'reviewer/home/.npm/', 'reviewer/home/.codex/tmp/', 'reviewer/home/.codex/.tmp/')
+               'reviewer/home/.cache/', 'reviewer/home/.npm/', 'reviewer/home/.codex/tmp/', 'reviewer/home/.codex/.tmp/',
+               # Hindsight's separate Codex login home: the runtime's arg0 helper links point into the image.
+               'hindsight/codex/tmp/', 'hindsight/codex/.tmp/')
 
 
 def durable_paths(root):
