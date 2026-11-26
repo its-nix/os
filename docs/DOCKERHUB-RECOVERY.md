@@ -49,6 +49,8 @@ The controls are unchanged: the repository must be explicitly private (checked b
 
 Only state inside the declared root and the pinned runtime are covered. Unexpected external mounts/databases/links cause refusal. Host SSH keys, Docker Hub login, CI bootstrap and external Todoist/GitHub/Drive services are not backed up. Recreate the host access boundary separately. A restored OAuth login may still require provider reauthorization after token rotation or revocation.
 
+The founder approval spool and idempotency store are captured during the same cold window. The account-wide Todoist API token at `/srv/nix-clean/todoist/token` is excluded from the image. See the [queue runbook](FOUNDER-APPROVAL-QUEUE.md) for reactivation.
+
 ## Operator installation
 
 Sign in from the `nixos` account on the VPS using a Docker Hub personal access token at the native password prompt. Creating the private repository requires **Repo Read, Write, Delete** permission; **Repo Read & Write** is sufficient for daily uploads after the repository exists. After creating the repository, reduce the same token to **Repo Read & Write**. Docker Hub allows changing an existing token’s permissions without generating a new token or repeating login ([permission reference](https://docs.docker.com/security/access-tokens/reference/)). Do not paste the token into chat or a shell argument.

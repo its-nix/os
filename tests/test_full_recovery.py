@@ -83,6 +83,20 @@ class FullRecoveryTests(unittest.TestCase):
             self.assertIn('t3/work', rels)
             self.assertFalse(any(r.startswith(('t3/work/', 't3/home/.cache/', 't3/home/.codex/tmp/', 't3/home/.t3/worktrees/')) for r in rels))
 
+    def test_approval_state_is_captured_without_the_host_token(self):
+        recovery = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'state'
+            persisted = ('hermes/config.yaml', 'approvals/outbox/request.json', 'approvals/status/state.json',
+                         'approvals/state/queue.sqlite3', 'todoist/project-id')
+            for name in (*persisted, 'todoist/token'):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture')
+            inventory = recovery.snapshot(root, Path(td) / 'snapshot.tar.gz')
+            self.assertTrue(set(persisted).issubset(inventory))
+            self.assertNotIn('todoist/token', inventory)
+
     def test_unit_stop_hook_restarts_every_service(self):
         unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
         create = (ROOT / 'automation/recovery/full_create.py').read_text()

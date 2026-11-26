@@ -525,16 +525,31 @@ def confirm_t3_credential(state):
     _token_module().mark_loaded(state / 'hermes')
 
 
+def ensure_approval_state(state):
+    """Only the outbox is writable in Hermes, and neither mounted directory can be listed."""
+    for name, mode in (('approvals', 0o700), ('approvals/outbox', 0o733),
+                       ('approvals/status', 0o711), ('approvals/state', 0o700), ('todoist', 0o700)):
+        path = state / name
+        path.mkdir(mode=mode, exist_ok=True)
+        meta = path.lstat()
+        if not path.is_dir() or path.is_symlink() or (meta.st_uid, meta.st_gid) != (ROOT_UID, ROOT_GID):
+            raise ValueError('Approval state must use root-owned plain directories')
+        path.chmod(mode)
+
+
 RECOVERY_UNITS = ('nixos-recovery.service', 'nixos-recovery.timer')
 
 
 def sync_recovery_units(source, run, unit_dir=Path('/etc/systemd/system')):
-    """Keep already-adopted recovery units equal to the reviewed release (one root writer)."""
+    """Keep adopted host timers equal to the reviewed release."""
     changed = False
-    for name in RECOVERY_UNITS:
-        installed, reviewed = unit_dir / name, source / 'automation/recovery' / name
+    reviewed_units = [source / 'automation/recovery' / name for name in RECOVERY_UNITS]
+    reviewed_units += [source / 'scripts/approval' / name
+                       for name in ('nixos-approval.service', 'nixos-approval.timer')]
+    for reviewed in reviewed_units:
+        installed = unit_dir / reviewed.name
         if not installed.exists():
-            continue  # recovery not adopted on this host; enabling it stays an explicit step
+            continue  # first-time activation is an operator step
         if installed.read_bytes() != reviewed.read_bytes():
             shutil.copyfile(reviewed, installed)
             installed.chmod(0o644)
@@ -933,6 +948,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         }.items()))
         prepare_vault(state)
         ensure_t3_state(state)
+        ensure_approval_state(state)
         ensure_hindsight_state(state)
         reviewer_changed = ensure_reviewer_state(source, state)
         candidate.chmod(0o600)
