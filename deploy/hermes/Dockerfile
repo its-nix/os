@@ -1,5 +1,13 @@
 FROM nousresearch/hermes-agent@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/opt/data/.config/gws \
+    GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file
+# Upstream Google Workspace CLI release for the Linux amd64 Hermes base.
+ADD --checksum=sha256:4db473dde4b1ab872e4ff35d769b0d4af1f1a6441a605e79d5cf8ada9c87e920 https://github.com/googleworkspace/cli/releases/download/v0.22.5/google-workspace-cli-x86_64-unknown-linux-musl.tar.gz /tmp/gws.tar.gz
+RUN tar -xzf /tmp/gws.tar.gz -C /tmp ./gws && \
+    install -m 0755 /tmp/gws /usr/local/bin/gws && \
+    /usr/local/bin/gws --version && \
+    rm /tmp/gws /tmp/gws.tar.gz
 # Wheels from the reviewed plugin uv.lock. The pinned base supplies their other dependencies.
 ADD --checksum=sha256:66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54 https://files.pythonhosted.org/packages/1a/99/84ba7273339d0f3dfa57901b846489d2e5c2cd731470167757f1935fffbd/aiohttp_retry-2.9.1-py3-none-any.whl /tmp/hindsight-wheels/
 ADD --checksum=sha256:690c728a17207a9e4df0b26c32abd1dfee627d1895615881f30ed709ab4126c3 https://files.pythonhosted.org/packages/6a/d0/848c7734d37215df53353dcea3de326ecc3bab6d908a12621530f5b81562/hindsight_client-1.2.0-py3-none-any.whl /tmp/hindsight-wheels/

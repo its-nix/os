@@ -1,31 +1,38 @@
-# Nix knowledge vault
+# Nix knowledge in Google Drive
 
-Open the founder's **My Drive → Nix** as the Obsidian vault. Put shared Markdown, templates, attachments and Google document index notes under **Workspace/**. Both Hermes and the founder can edit that subtree. Configure Obsidian's default new-note and attachment locations there. Ordinary files keep their names, subdirectories, YAML properties, relative links and wiki links. Vault-root Obsidian settings can remain device-local to the host bridge. Only sync trusted Obsidian plugin code between devices.
+Hermes works directly in **My Drive → Nix** on the founder’s own Google account. The pinned Google Workspace CLI (`gws`) runs in the Hermes container. The host sync bridge from PR #109 was retired before activation.
 
-**Policies (from Git)/** mirrors the deployed, reviewed archive of `its-nix/knowledgebase`. The authority note inside identifies its source. Hermes can read the projection and write Workspace at `/opt/data/vault`. The bridge regenerates the policies folder from Git and can replace or remove Drive edits there. Agents must propose evidence-linked changes by PR against the KB. Only reviewed and deployed policy is executable. Never point bisync at a Git checkout.
+Keep shared notes, templates and links as ordinary Markdown files under **Nix**. For a native Google Doc or Sheet, write an index note with its title, summary and link, and keep the original in Google Drive. Keep raw customer data and bulk transcript imports out of shared notes. Reviewed policy stays in the read-only Git KB snapshot at `/knowledge/company`. Propose evidence-linked policy changes by PR against the KB.
 
-For a Google Doc or Sheet, create an ordinary note such as `Workspace/Decisions/Forecast.md` with a title, owner, summary and a link copied from the original. Keep its access controls on Google. The job skips native Google files and shortcuts, including shortcuts leading outside Nix. For shared learning, record the observation, source link with appropriate access, proposed change and reviewer. Keep raw customer messages and bulk transcript imports out of the vault.
+## Founder sign-in
 
-## Connect the founder's account
-
-1. In the founder's personal My Drive, create or open the owned top-level folder **Nix**. In its browser URL, copy the component after `/folders/`, stopping before any question mark. Keep it private. Existing ordinary files in `Nix/Workspace` can seed the vault. Leave the VPS Workspace empty for first login. Reserve the new folder name `Policies (from Git)` for the reviewed projection.
-2. After deployment, use the operator SSH alias from a computer with a browser. Run this single command and keep the terminal open.
+1. Create or confirm one owned top-level folder named **Nix** in My Drive. In your Google Cloud project, enable the **Google Drive API**, add `https://www.googleapis.com/auth/drive` in the consent screen’s Data Access settings, and download the OAuth client JSON for a **Desktop app**. For a personal Google account, use an External audience. An External app left in Testing gets a refresh token that expires after seven days. For durable personal use, publish the consent configuration to In production. Google allows a personal-use verification exception and may show an unverified-app warning. [Google OAuth refresh-token rules](https://developers.google.com/identity/protocols/oauth2#expiration) · [Personal-use exception](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification#personal-use)
+2. After the new Hermes image is deployed, send the client JSON directly from your device. Use your configured SSH alias in place of `vps` if needed.
 
    ```sh
-   ssh -t -o ExitOnForwardFailure=yes -L 53682:127.0.0.1:53682 -l nixos vps 'sudo -n /usr/local/sbin/nix-drive login'
+   ssh -l nixos vps 'docker exec -i -u 10000 nixos-hermes sh -c "umask 077 && mkdir -p /opt/data/.config/gws && cat > /opt/data/.config/gws/client_secret.json"' < ./client_secret.json
    ```
 
-   Paste the folder ID at the hidden prompt. Open the loopback URL printed in the terminal **on that same device** and authorize rclone using the founder's account. The callback goes through SSH to the host. The VPS captures the token directly. A phone can use the same flow with an SSH client that supports local port forwarding and a browser on that phone. No desktop rclone installation is needed.
-3. In Google Drive for desktop, make Nix available offline, wait for download, then open the local Nix folder as a vault. On Android, pair only the Nix folder with a local device folder using an Obsidian-compatible Drive sync client configured for two-way sync and conflict retention. Open that device folder in Obsidian. Keep existing note names and attachment paths when pairing. Set the Android client's Google access according to its own permission model.
+3. Start login from the device where you will open the consent page. The explicit Workspace API scope is Drive read/write. This `gws` release also adds Google sign-in identity scopes (`openid`, email address and profile). [Pinned login implementation](https://github.com/googleworkspace/cli/blob/v0.22.5/crates/google-workspace-cli/src/auth_commands.rs#L595-L619)
 
-The personal Drive OAuth grant covers **the account's entire Drive**. The application verifies the selected folder's ownership, type, name and My Drive parent on sign-in. rclone's `root_folder_id` sets its operating root. Google does not enforce that boundary on the token. Only the root-run host helper uses the mode-0600 config in `/srv/nix-clean/drive/`. No runtime container receives it. The host runs the checksum-pinned Linux amd64 rclone 1.70.3 binary. It needs util-linux with bind-mount `nosymfollow` support and a kernel supporting that flag.
+   ```sh
+   ssh -l nixos vps 'docker exec -u 10000 nixos-hermes gws auth login --scopes https://www.googleapis.com/auth/drive >/dev/null'
+   ```
 
-## Operate and recover
+4. Keep login running. Read the port from the printed authorization URL’s `redirect_uri` (the digits after `localhost`, with the colon possibly encoded as `%3A`). In a second session on the same device, replace both instances of `PORT` with those digits and keep the tunnel running. Open the printed Google URL in that device’s browser and approve with your own Google account. Close the tunnel after the login command succeeds. The pinned CLI listens for the callback on `127.0.0.1:PORT` (IPv4) inside `nixos-hermes`. That container runs with `network_mode: host` (`deploy/compose.yaml`), so its loopback is the VPS host's loopback and the tunnel's `127.0.0.1:PORT` target reaches it; the explicit IPv4 address avoids a `localhost` → `::1` mismatch. On a phone, use an SSH client with local port forwarding, set the local and remote ports to the printed port, and open the URL in the phone’s browser. [Upstream authentication guide](https://github.com/googleworkspace/cli/tree/v0.22.5#authentication)
 
-Deployment installs the helper and systemd units. Successful login initializes bisync and enables the seven-minute timer. Check `systemctl status nix-drive.timer nix-drive.service` and `journalctl -u nix-drive.service` on the host. Normal sync requires matching access sentinels, refuses deletions above 10% on either side and keeps numbered copies on conflicts. Reconcile those copies explicitly. The wrapper takes the deploy/recovery lock before any state access.
+   ```sh
+   ssh -N -o ExitOnForwardFailure=yes -L PORT:127.0.0.1:PORT -l nixos vps
+   ```
 
-If sync refuses, stop the timer (`sudo systemctl stop nix-drive.timer`), let any running service finish, and pause editing on all clients. Verify the account, folder, connectivity, and the two Workspace directories. Preserve both sides independently. For missing `RCLONE_TEST`, verify that the correct complete directories are present before restoring the sentinel from the saved copy. For excessive deletion, restore the missing files or reconcile the intended deletion on both sides from the saved copies. Never automatically force or resync past a refusal.
+5. Check the grant with a read-only Drive API call that returns no file names or IDs.
 
-For lost listings or a rolled-back VPS, save the current Drive Workspace and the restored local Workspace separately. Resolve divergent versions under distinct names and make both trees agree. As root run `/usr/local/sbin/nix-drive resync`. It checks content equality before rebuilding listings. Any overwritten resync versions go into private host or Drive resync backups. After success run `systemctl enable --now nix-drive.timer`. Only one host may sync the vault. For a revoked grant, repeat the SSH login for the same folder. Keep an isolated restore drill offline.
+   ```sh
+   ssh -l nixos vps 'docker exec -u 10000 nixos-hermes gws drive files list --params "{\"pageSize\":1,\"fields\":\"kind\"}"'
+   ```
 
-After sign-in, verify from each client with a disposable Markdown note containing YAML, a wiki link and a relative attachment. Confirm a round trip on Hermes and the other device, open the original Doc from an index note, and confirm the policies mount rejects agent writes. [rclone bisync reference](https://rclone.org/bisync/) · [Drive backend](https://rclone.org/drive/)
+## Access and recovery
+
+The grant covers the founder’s account-wide Drive access. Every Hermes profile runs under the same UID in the same container and can read the credential and its key. The **Nix** folder boundary and the founder-only sharing rules are agent instructions. The Drive API can enforce the Google account’s permissions, and the token can use them to change sharing. All sharing and permission changes remain founder-gated under [Authority](AUTHORITY.md). The deployment installs the [Drive skill](../skills/google-drive/SKILL.md) for LNX and venture leads. T3 and the independent reviewer have separate mounts and receive no Drive credential. Keep credential material and private Drive output out of delegated prompts and PRs.
+
+`gws` stores `credentials.enc` (AES-256-GCM) with its `.encryption_key` in `/opt/data/.config/gws` in the shared Hermes home. The private daily cold recovery image includes both files and the OAuth client JSON. Treat access to those images as access to the grant. Restore the Hermes home as a unit. If the grant is exposed, revoke it in the founder’s Google account, run `gws auth logout` as UID 10000 in Hermes, then repeat the login. [Recovery runbook](DOCKERHUB-RECOVERY.md)
