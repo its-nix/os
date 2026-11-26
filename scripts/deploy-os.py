@@ -105,6 +105,7 @@ REVIEWER_ENV_TEMPLATE = '''# Rotating independent reviewer (non-secret settings)
 # REVIEW_APP_ID=<GitHub App id>
 REVIEW_POOL=claude,codex,opencode,grok,antigravity
 # OPENCODE_REVIEW_MODEL=opencode/<Go model id>  (default opencode/kimi-k3.1-pro, via the Go endpoint)
+# REVIEW_ONLY_REPOS=  (comma-separated owner/repo names to keep review-only even with CI)
 '''
 
 

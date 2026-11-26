@@ -877,6 +877,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(0o700, (root / 'state').stat().st_mode & 0o777)
             self.assertEqual(os.getuid(), (root / 'state').stat().st_uid)
             self.assertIn('REVIEW_POOL=', (root / 'reviewer.env').read_text())
+            self.assertIn('# REVIEW_ONLY_REPOS=', (root / 'reviewer.env').read_text())
             (root / 'reviewer.env').write_text('REVIEW_APP_ID=42\n')
             apply('9' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
             self.assertEqual('REVIEW_APP_ID=42\n', (root / 'reviewer.env').read_text())  # settings never overwritten
