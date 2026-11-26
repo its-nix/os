@@ -356,24 +356,50 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
 // required checks (verify + independent-review, up to date) pass. The ruleset stays the gate:
 // enabling auto-merge never bypasses a check. A `hold` label opts a PR out (and turns it off).
 const HOLD_LABEL = 'hold';
-const autoMergeTried = new Set();
+const RETRY_MS = 30 * 60 * 1000;
+const autoMergeBackoff = new Map();  // pr number -> {key, until}: only failed attempts back off
 
-export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.error) {
+const isHeld = (pr) => (pr.labels || []).some((l) => String(l.name || '').toLowerCase() === HOLD_LABEL);
+
+export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.error, now = Date.now()) {
   if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft || !pr.node_id) return null;
-  const held = (pr.labels || []).some((l) => l.name === HOLD_LABEL);
-  let mutation;
-  if (held && pr.auto_merge) mutation = 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}';
-  else if (!held && !pr.auto_merge) mutation = 'enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}';
+  const held = isHeld(pr);
+  // State comes from the live PR each poll, so successes need no cache: the next poll sees auto_merge.
+  let action;
+  if (held && pr.auto_merge) action = 'disable';
+  else if (!held && !pr.auto_merge) action = 'enable';
   else return null;
-  const key = `${pr.head.sha}:${held}`;
-  if (autoMergeTried.has(key)) return null;  // one attempt per head and state: no log spam on a missing permission
-  autoMergeTried.add(key);
-  const res = await api('/graphql', { method: 'POST', token, body: { query: `mutation($id:ID!){${mutation}}`, variables: { id: pr.node_id } } });
-  if (res?.errors?.length) {
-    log(`auto-merge #${pr.number}: ${String(res.errors[0].message || 'refused').slice(0, 200)}`);
-    return false;
+  const key = `${pr.head.sha}:${action}`;
+  const backoff = autoMergeBackoff.get(pr.number);
+  if (backoff && backoff.key === key && now < backoff.until) return null;
+  for (const [number, entry] of autoMergeBackoff) if (now >= entry.until) autoMergeBackoff.delete(number);
+  const mutation = action === 'disable'
+    ? 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}'
+    : 'enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}';
+  let res;
+  try {
+    res = await api('/graphql', { method: 'POST', token, body: { query: `mutation($id:ID!){${mutation}}`, variables: { id: pr.node_id } } });
+  } catch (e) {
+    res = { errors: [{ message: e.message }] };
   }
-  return held ? 'disabled' : 'enabled';
+  const error = res?.errors?.[0]?.message;
+  if (!error) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
+  if (action === 'enable' && /clean status/i.test(error)) {
+    // Already green and up to date: GitHub refuses auto-merge, so merge now, pinned to this head.
+    // The ruleset still gates the merge; a stale or red head is refused by GitHub.
+    try {
+      await api(`/repos/${cfg.repo}/pulls/${pr.number}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
+      autoMergeBackoff.delete(pr.number);
+      return 'merged';
+    } catch (e) {
+      log(`auto-merge #${pr.number}: direct merge refused (${String(e.message).slice(0, 120)})`);
+      autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });
+      return false;
+    }
+  }
+  log(`auto-merge #${pr.number}: ${String(error).slice(0, 200)}`);
+  autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });
+  return false;
 }
 
 // The ruleset requires branches to be up to date and auto-merge does not update them, so an
@@ -381,7 +407,7 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
 // gets its own CI run and independent review; nothing is skipped.
 export async function keepUpToDate(cfg, token, pr, api = gh) {
   if (!pr.auto_merge || pr.draft || pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main') return null;
-  if ((pr.labels || []).some((l) => l.name === HOLD_LABEL)) return null;
+  if (isHeld(pr)) return null;
   const full = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
   if (full.mergeable_state !== 'behind' || full.head.sha !== pr.head.sha) return null;
   await api(`/repos/${cfg.repo}/pulls/${pr.number}/update-branch`, { method: 'PUT', token, body: { expected_head_sha: pr.head.sha } });
@@ -395,7 +421,9 @@ async function loop(cfg) {
       const prs = await gh(`/repos/${cfg.repo}/pulls?state=open&base=main&per_page=50`, { token });
       for (const pr of prs) {
         try { await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
-        try { await keepUpToDate(cfg, token, pr); } catch (e) { console.error(`update #${pr.number}: ${e.message}`); }
+        let updated = null;
+        try { updated = await keepUpToDate(cfg, token, pr); } catch (e) { console.error(`update #${pr.number}: ${e.message}`); }
+        if (updated) continue;  // the new head is reviewed on the next poll, not this stale snapshot
         try { await reviewOne(cfg, token, pr); } catch (e) { console.error(`review #${pr.number}: ${e.message}`); }
       }
     } catch (e) { console.error(`cycle: ${e.message}`); }

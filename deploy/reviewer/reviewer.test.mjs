@@ -341,25 +341,48 @@ test('PR content is entity-encoded reversibly and cannot close the prompt tags',
   assert.equal(prompt.split('</pull_request>').length - 1, 1);
 });
 
-test('always-merge: enables squash auto-merge once per head, honours the hold label, skips ineligible PRs', async () => {
+test('always-merge: live state drives enable/disable; hold toggles on one head; failures back off, then retry', async () => {
   const calls = [];
-  const api = async (path, { body }) => { calls.push(body.query); return { data: {} }; };
+  const ok = async (path, { body }) => { calls.push([path, body]); return { data: {} }; };
+  const sha = '1'.repeat(40);
   const base = { number: 9, node_id: 'PR_1', draft: false, base: { ref: 'main' },
-    head: { sha: '1'.repeat(40), repo: { full_name: 'its-nix/os' } }, labels: [], auto_merge: null };
-  assert.equal(await ensureAutoMerge(CFG, 't', base, api), 'enabled');
-  assert.match(calls[0], /enablePullRequestAutoMerge\(input:\{pullRequestId:\$id,mergeMethod:SQUASH\}\)/);
-  assert.equal(await ensureAutoMerge(CFG, 't', base, api), null);  // same head: not retried
-  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, auto_merge: { merge_method: 'squash' } }, api), null);
-  const held = { ...base, head: { ...base.head, sha: '2'.repeat(40) }, labels: [{ name: 'hold' }], auto_merge: { merge_method: 'squash' } };
-  assert.equal(await ensureAutoMerge(CFG, 't', held, api), 'disabled');
-  assert.equal(await ensureAutoMerge(CFG, 't', { ...held, head: { ...held.head, sha: '3'.repeat(40) }, auto_merge: null }, api), null);
+    head: { sha, repo: { full_name: 'its-nix/os' } }, labels: [], auto_merge: null };
+  const on = { merge_method: 'squash' };
+  assert.equal(await ensureAutoMerge(CFG, 't', base, ok), 'enabled');
+  assert.match(calls[0][1].query, /enablePullRequestAutoMerge\(input:\{pullRequestId:\$id,mergeMethod:SQUASH\}\)/);
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, auto_merge: on }, ok), null);
+  // Same head: hold -> disabled, unhold -> enabled again, re-hold -> disabled again.
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'HOLD' }], auto_merge: on }, ok), 'disabled');
+  assert.match(calls.at(-1)[1].query, /disablePullRequestAutoMerge/);
+  assert.equal(await ensureAutoMerge(CFG, 't', base, ok), 'enabled');
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'hold' }], auto_merge: on }, ok), 'disabled');
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'hold' }] }, ok), null);
   for (const pr of [{ ...base, draft: true }, { ...base, base: { ref: 'dev' } }, { ...base, head: { ...base.head, repo: { full_name: 'x/fork' } } }]) {
-    assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, head: { ...pr.head, sha: '4'.repeat(40) } }, api), null);
+    assert.equal(await ensureAutoMerge(CFG, 't', pr, ok), null);
   }
+  // Permission refusal: logged once, suppressed for 30 minutes, retried after.
   const logs = [];
-  const denied = async () => ({ errors: [{ message: 'Resource not accessible by integration' }] });
-  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, head: { ...base.head, sha: '5'.repeat(40) } }, denied, (m) => logs.push(m)), false);
-  assert.match(logs[0], /not accessible/);
+  let denials = 0;
+  const denied = async () => { denials++; return { errors: [{ message: 'Resource not accessible by integration' }] }; };
+  const pr2 = { ...base, number: 10, node_id: 'PR_2' };
+  const t0 = 1_000_000;
+  assert.equal(await ensureAutoMerge(CFG, 't', pr2, denied, (m) => logs.push(m), t0), false);
+  assert.equal(await ensureAutoMerge(CFG, 't', pr2, denied, (m) => logs.push(m), t0 + 60_000), null);
+  assert.equal(logs.length, 1);
+  assert.equal(denials, 1);
+  assert.equal(await ensureAutoMerge(CFG, 't', pr2, ok, (m) => logs.push(m), t0 + 31 * 60_000), 'enabled');
+});
+
+test('always-merge: an already-green PR is merged directly, pinned to its head', async () => {
+  const calls = [];
+  const api = async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    return path === '/graphql' ? { errors: [{ message: 'Pull request is in clean status' }] } : { merged: true };
+  };
+  const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha: '7'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api), 'merged');
+  assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/11/merge', { merge_method: 'squash', sha: pr.head.sha }]);
 });
 
 test('auto-merge PRs left behind are updated with the exact head; others are left alone', async () => {
