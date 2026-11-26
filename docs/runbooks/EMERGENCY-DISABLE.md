@@ -23,7 +23,7 @@ SSH access is the `nixos` operator alias used by the other guides. GitHub steps 
 - Never delete or regenerate a state directory under `/srv/nix-clean` to "reset" anything.
 - Credential revocation (layer 7) is the last resort: it breaks recovery until each login is re-issued.
 
-## 1. Hold PR auto-merge
+## 1. Hold PR auto-merge (an auto-merge freeze, not a merge block)
 
 Holding takes effect on the reviewer's next poll (about a minute); an already-armed PR whose checks finish inside that window can still merge. **Converting to a draft is the guarantee**: GitHub never merges drafts.
 
@@ -35,7 +35,8 @@ gh pr ready <number> --undo                  # per PR, when the guarantee matter
 
 - Scope (`deploy/reviewer/reviewer.mjs`): every eligible PR — same repository, base `main`, not a draft. `HOLD_LABEL` is `hold`.
 - **Per-PR only.** This disarms exactly the PRs listed above: a PR opened or retargeted to `main` while the reviewer runs is armed on its next poll (about a minute), and a merge that slipped in just before the hold can still be deploying — the deploy pause is layer 6.
-- For a sustained freeze, turn auto-merge off at the repository level and draft the already-armed PRs. This is the freeze; do not rely on a stopped reviewer instead, because a recovery capture (`ExecStopPost`) or any deploy starts `nixos-reviewer` again:
+- This layer stops **automatic** merges only. Anyone with write access (including an agent using the founder's token) can still merge an eligible PR by hand; if that is the risk, revoke the token (layer 7) or add a temporary ruleset restriction, and verify it with `gh api repos/its-nix/os/rulesets`.
+- For a sustained auto-merge freeze, turn auto-merge off at the repository level and draft the already-armed PRs. This is the freeze; do not rely on a stopped reviewer instead, because a recovery capture (`ExecStopPost`) or any deploy starts `nixos-reviewer` again:
   - A repo settings change (Settings → General → Allow auto-merge): `gh api -X PATCH repos/its-nix/os -F allow_auto_merge=false` (restore with `-F allow_auto_merge=true`; `-F` sends a boolean, `-f` would send a string). Verify with `gh api repos/its-nix/os -q .allow_auto_merge`, which must print `false`.
   - It does not disarm PRs already armed; draft those (`gh pr ready <number> --undo`).
   - Stopping `nixos-reviewer` (`docker stop --time 90 nixos-reviewer`) is optional on top: it stops new reviews, but it is not a freeze on its own.
@@ -177,9 +178,9 @@ Resume in this order, not in any order — the Twenty marker, the containers and
 
 1. If any credential was revoked (layer 7), re-issue it first ([PROVIDER-AUTH-RECOVERY](PROVIDER-AUTH-RECOVERY.md)); nothing else resumes a dead login.
 2. Restore the Twenty `ENABLED` marker (layer 5 resume) if the CRM was enabled before the incident, and verify it. This comes before any deploy or container start: with the marker absent, the deploy stops the CRM again (`crm_enabled` in `scripts/deploy-os.py`).
-3. Before anything below can restart the reviewer, confirm the merge freeze is the repository-level one: `gh api repos/its-nix/os -q .allow_auto_merge` prints `false` (layer 1). Steps 3–5 can each start `nixos-reviewer` (a container start, a missed recovery capture, a deploy). Then start the containers (layer 6 resume): the core runtimes, then the Twenty containers — only after step 2. A single deploy of current main starts and health-checks the whole stack instead. Keep `nixos-t3` stopped if the Hermes→T3 bearer was compromised (layer 7).
+3. Before anything below can restart the reviewer, confirm the merge freeze is the repository-level one: `gh api repos/its-nix/os -q .allow_auto_merge` prints `false` (layer 1). Steps 3–5 can each start `nixos-reviewer` (a container start, a missed recovery capture, a deploy). Then start the containers (layer 6 resume): the core runtimes, then the Twenty containers — only after step 2. A single deploy of current main starts and health-checks the whole stack instead. If the Hermes→T3 bearer was compromised (layer 7), keep `nixos-t3` stopped and skip the deploy option, steps 4 (recovery timer) and 5 until the old bearer's revocation or expiry is verified: a deploy, a recovery capture's `ExecStopPost` and a lifted deploy pause each start T3 again. No manual deploys in that window.
 4. Re-enable the host timers: the approval timer (layer 2), then the recovery timer — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running.
-5. Lift the GitHub deploy pause (layer 6): restore the `vps` environment's protection to what `vps-environment-before.json` recorded (if it already had required reviewers, keep them; remove only the reviewer you added), and verify with `gh api repos/its-nix/os/environments/vps`. Or re-enable the `ci` workflow if it was disabled outright.
+5. Lift the GitHub deploy pause (layer 6): restore the `vps` environment's protection exactly as `vps-environment-before.json` recorded it — the full required-reviewer list (re-add any you removed, drop any you added), the wait timer and the admin-bypass setting — then fetch `gh api repos/its-nix/os/environments/vps` and compare `protection_rules` and `can_admins_bypass` field by field with the snapshot. Or re-enable the `ci` workflow if it was disabled outright.
 6. Lift the merge freeze (layer 1): restore repo auto-merge (`-F allow_auto_merge=true`, verify `true`), then unhold and mark ready each PR.
 
 Layers 3 and 4 (ventures, Hermes cron) can resume in either order once Hermes is running; their own commands are enough.

@@ -80,7 +80,7 @@ curl -s http://127.0.0.1:18888/health
 
 ## Hermes→T3 token
 
-Symptom: a venture lead's delegation to T3 fails; `hermes mcp test t3` does not connect. This is the 30-day OAuth bearer the root deploy mints via T3's own pairing approval ([REFACTOR D7](../REFACTOR.md)); it has no refresh. A deployment mints a new one only when fewer than 7 days remain on the recorded expiry, or when the stored token is missing or rejected by T3 (`RENEW_DAYS = 7`, `ensure()` in [deploy/t3/hermes_token.py](../../deploy/t3/hermes_token.py)); with a current, accepted token a deployment changes nothing.
+Symptom: a venture lead's delegation to T3 fails; `hermes mcp test t3` does not connect. This is the 30-day OAuth bearer the root deploy mints via T3's own pairing approval ([REFACTOR D7](../REFACTOR.md)); it has no refresh. A deployment mints a new one only when fewer than 7 days remain on the recorded expiry, or when the stored token is missing or rejected by T3, or when the non-secret sidecar `t3-mcp.json` is missing (`RENEW_DAYS = 7`, `ensure()` in [deploy/t3/hermes_token.py](../../deploy/t3/hermes_token.py)); with a current, accepted token and its sidecar present, a deployment leaves the token unchanged.
 
 Confirm:
 
