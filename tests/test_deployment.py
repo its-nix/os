@@ -908,6 +908,18 @@ class DriveCredentialIsolationTests(unittest.TestCase):
                 self.assertNotEqual(path.parts[0], 'hermes', service + ' must not mount Hermes state (Drive credential)')
             for forbidden in ('docker.sock', '.config/gws', 'GOOGLE_WORKSPACE_CLI'):
                 self.assertNotIn(forbidden, section, service)
+        # Hermes itself keeps the generic isolation guards: bind sources under the native root, no parent escapes,
+        # no Docker socket, and no legacy Drive bridge state (the retired rclone vault).
+        hermes_section = re.search(r'^  hermes:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
+        hermes_mounts = re.findall(r'^        source: (.+)$', hermes_section, re.M)
+        self.assertTrue(hermes_mounts)
+        for source in hermes_mounts:
+            self.assertRegex(source, r'^\$\{NIX_CLEAN_ROOT:[^}]+\}/[\w(]')
+            path = Path(source.split('}/', 1)[1])
+            self.assertNotIn('..', path.parts)
+            self.assertNotEqual(path.parts[0], 'drive', 'Hermes must not mount the legacy Drive bridge state')
+        for forbidden in ('docker.sock', 'rclone.conf'):
+            self.assertNotIn(forbidden, hermes_section)
         dockerfile = (ROOT / 'deploy/hermes/Dockerfile').read_text()
         self.assertIn('GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/opt/data/.config/gws', dockerfile)  # inside the Hermes home only
         hermes = re.search(r'^  hermes:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
