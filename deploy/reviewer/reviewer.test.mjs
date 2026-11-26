@@ -462,3 +462,28 @@ test('always-merge: base retargeting is re-validated live; an armed PR leaving m
   assert.equal(await ensureAutoMerge(CFG, 't', armedElsewhere, ok), 'disabled');
   assert.match(calls.at(-1)[2].query, /disablePullRequestAutoMerge/);
 });
+
+test('a PR into another base is never reviewed or given a check run', async () => {
+  const state = { calls: [], headAfter: PR.head.sha };
+  const result = await reviewOne(CFG, 't', { ...PR, base: { ...PR.base, ref: 'release' } }, {
+    gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
+  assert.equal(result, null);
+  assert.equal(state.calls.length, 0);
+});
+
+test('a backed-off enable makes no API call at all', async () => {
+  let gets = 0;
+  const sha = 'a'.repeat(40);
+  const api = async (path, { method = 'GET' } = {}) => {
+    if (method === 'GET') { gets++; return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' },
+      head: { sha, repo: { full_name: 'its-nix/os' } } }; }
+    return { errors: [{ message: 'Resource not accessible by integration' }] };
+  };
+  const pr = { number: 30, node_id: 'PR_30', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  await ensureAutoMerge(CFG, 't', pr, api, () => {}, 1);
+  const after = gets;
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}, 2), null);
+  assert.equal(gets, after);
+});

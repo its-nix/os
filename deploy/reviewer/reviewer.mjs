@@ -374,15 +374,15 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   if (pr.auto_merge && (held || !eligible(cfg, pr))) action = 'disable';
   else if (!pr.auto_merge && !held && eligible(cfg, pr)) action = 'enable';
   else return null;
+  const key = `${pr.head.sha}:${action}`;
+  const backoff = autoMergeBackoff.get(pr.number);
+  // Disabling is the hold safety brake: it is retried every poll and never backs off.
+  if (action === 'enable' && backoff && backoff.key === key && now < backoff.until) return null;
   if (action === 'enable') {
     // Re-validate on the live PR right before arming: the listing may be stale (retarget, draft, hold).
     const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
     if (live.head?.sha !== pr.head.sha || live.state !== 'open' || !eligible(cfg, live) || isHeld(live) || live.auto_merge) return null;
   }
-  const key = `${pr.head.sha}:${action}`;
-  const backoff = autoMergeBackoff.get(pr.number);
-  // Disabling is the hold safety brake: it is retried every poll and never backs off.
-  if (action === 'enable' && backoff && backoff.key === key && now < backoff.until) return null;
   for (const [number, entry] of autoMergeBackoff) if (now >= entry.until) autoMergeBackoff.delete(number);
   const mutation = action === 'disable'
     ? 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}'
@@ -432,9 +432,11 @@ async function loop(cfg) {
         if (batch.length < 100) break;
       }
       for (const pr of prs) {
-        let merged = null;
-        try { merged = await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
-        if (merged === 'merged') continue;
+        try { await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
+        // Only PRs into main are kept up to date or reviewed. Other bases are listed solely so an armed
+        // PR retargeted away from main can be disarmed: a check run is keyed by head SHA, so reviewing
+        // another base's diff could later satisfy main's required check for that same head.
+        if (pr.base?.ref !== 'main') continue;
         let updated = null;
         try { updated = await keepUpToDate(cfg, token, pr); } catch (e) { console.error(`update #${pr.number}: ${e.message}`); }
         if (updated) continue;  // the new head is reviewed on the next poll, not this stale snapshot
