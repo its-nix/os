@@ -1,0 +1,15 @@
+{
+ "description": "Recorded floor for the current health.py, measured when the evaluator was introduced. A later health.py may only handle more cases, never fewer; it cannot raise this file because it is a protected path.",
+ "measured_main_commit": "33ad13bd84896c84d437f276d4703113692e7a06",
+ "target_sha256": "4b4d908af5b9baa596274a499700c14b74e2fd8acb1bdf5dd6a35e72d4c4c46e",
+ "cases_sha256": "556283849b4b1772f9b5fd7070e74ad8c1946be826509d55af69558e7f8690ea",
+ "score": "6/15",
+ "passing": [
+  "c01-healthy-is-silent",
+  "c02-stale-backup-and-t3-down",
+  "c03-undelivered-approval-and-old-blocked-card",
+  "c04-unreadable-board-keeps-other-findings",
+  "c05-paused-venture-is-not-read",
+  "c06-garbage-timestamps-are-reported"
+ ]
+}
