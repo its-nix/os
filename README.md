@@ -35,6 +35,7 @@ Founder-only steps are one Todoist request (project `Nix`, label `nix-approval`)
 - [Deployment and inputs](deploy/README.md) · [T3 container](deploy/t3/README.md) · [VPS access and CI/CD](docs/OS-DELIVERY.md)
 - [Authority and change governance](docs/AUTHORITY.md): what agents do autonomously vs what the founder executes
 - [Recovery](docs/DOCKERHUB-RECOVERY.md): capture, verification, and restore on a new host
+- [Emergency disable](docs/runbooks/EMERGENCY-DISABLE.md) and [provider login recovery](docs/runbooks/PROVIDER-AUTH-RECOVERY.md): operator runbooks
 - [Refactor record](docs/REFACTOR.md): baseline, migration map, decisions, evidence ledger
 
 ### Common tasks

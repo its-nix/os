@@ -9,6 +9,7 @@ The deployed container-native backup uses [liornis/nixos-recovery](https://hub.d
 | `t3/work/`, `t3/home/.t3/worktrees/`, caches | T3 clones and worktrees | **no**: rebuildable from GitHub (the directories are kept, empty). Unpushed work in a worktree is not backed up |
 | `reviewer/home/` | Reviewer subscription logins (Claude, Codex, OpenCode, Antigravity, Grok) | yes, except `.cache/`, `.npm/`, `.codex/tmp/` |
 | `reviewer/secrets/`, `reviewer/reviewer.env`, `reviewer/app/` | GitHub App private key (`app.pem`, root 0400), review-selection seed, App id, reviewer code | yes |
+| `hindsight/` | Hindsight memory server: banks, its API key and its separate Codex extraction login | yes, cold, except `codex/tmp/` and `codex/.tmp/` (runtime helper links into the image) |
 | `twenty/` (when `ENABLED` exists) | Twenty CRM: PostgreSQL `db/`, Redis AOF `redis/`, file `storage/`, `db.env`, `server.env`, the flag | yes, cold (see below) |
 | `paperclip/` | Retired Paperclip (archived, not running): PostgreSQL, files, encryption keys | yes; stays restorable |
 | `packs.compose.json`, `pack-releases/` | Generated Compose override and release store for the pinned NixKit skill mounts of Hermes and T3 (root-owned, tens of MB) | yes; the capture's deployment model layers the override exactly as the deploy does, so a restored `compose.json` keeps the skill mounts |
