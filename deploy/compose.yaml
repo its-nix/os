@@ -30,15 +30,6 @@ services:
         read_only: true
         bind: {create_host_path: false}
       - type: bind
-        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/vault
-        target: /opt/data/vault
-        read_only: true
-        bind: {create_host_path: false}
-      - type: bind
-        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/vault/Workspace
-        target: /opt/data/vault/Workspace
-        bind: {create_host_path: false}
-      - type: bind
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/approvals/outbox
         target: /run/nix-approvals-outbox
         bind: {create_host_path: false}

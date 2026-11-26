@@ -32,7 +32,7 @@ def apply(*args, **kwargs):
     kwargs.setdefault('t3_loaded', lambda state: None)
     kwargs.setdefault('units', lambda source, run: False)
     kwargs.setdefault('memory', lambda state, run: state / '.hindsight-plugin-reload')  # see test_hindsight_memory
-    kwargs.setdefault('drive', lambda source, run: None)
+    kwargs.setdefault('retire_drive', lambda state, run: None)
     kwargs.setdefault('login', lambda source: None)
     kwargs.setdefault('memory_preflight', lambda source, state, image, run: None)
     kwargs.setdefault('redaction', lambda source, image, run: None)  # see test_hindsight_memory
@@ -318,12 +318,77 @@ class DeploymentTests(unittest.TestCase):
                     (hermes / 'profiles' / name / 'nix-venture.json').write_text('{"venture": "acme"}')
             apply('e' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
             for skills in (hermes / 'skills', hermes / 'profiles/acme/skills'):
-                self.assertEqual({'venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops', 'company-ops'}, {p.name for p in (skills / 'nix-os').iterdir()})
+                self.assertEqual({'venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops',
+                                  'company-ops', 'google-drive'}, {p.name for p in (skills / 'nix-os').iterdir()})
                 self.assertEqual((ROOT / 'skills/venture-lead/SKILL.md').read_text(),
                                  (skills / 'nix-os/venture-lead/SKILL.md').read_text())
+                self.assertEqual((ROOT / 'skills/google-drive/SKILL.md').read_text(),
+                                 (skills / 'nix-os/google-drive/SKILL.md').read_text())
                 self.assertEqual([], [p.name for p in skills.iterdir() if p.name.startswith('.nix-os')])
             self.assertFalse((hermes / 'profiles/engineer/skills/nix-os').exists())
             self.assertEqual('kit-owned', (hermes / 'skills/brainstorming/SKILL.md').read_text())
+
+    def test_deploy_retires_the_drive_bridge_and_removes_the_empty_vault_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            current = Path(td) / 'current'
+            vault = state / 'vault'
+            for name in ('Workspace', 'Policies (from Git)'):
+                (vault / name).mkdir(parents=True)
+            bin_dir, unit_dir, sudoers_dir = [Path(td) / name for name in ('bin', 'units', 'sudoers')]
+            for directory in (bin_dir, unit_dir, sudoers_dir):
+                directory.mkdir()
+            timer, service = unit_dir / 'nix-drive.timer', unit_dir / 'nix-drive.service'
+            artifacts = (timer, service, bin_dir / 'nix-drive', sudoers_dir / 'nix-drive-login')
+            for path in artifacts:
+                path.touch()
+
+            commands = []
+            healthy = self.healthy_runner([])
+
+            def run(argv):
+                if argv[0] == 'systemctl':
+                    commands.append(argv)
+                    installed = argv[-1] != 'daemon-reload'
+                    self.assertEqual(installed, timer.exists())
+                    self.assertEqual(installed, service.exists())
+                return healthy(argv)
+
+            def retire_drive(state, run):
+                deployment.retire_drive_bridge(state, run, bin_dir=bin_dir, unit_dir=unit_dir,
+                                               sudoers_dir=sudoers_dir)
+
+            for revision in ('a' * 40, 'b' * 40):
+                apply(revision, ROOT, state, current, run=run, retire_drive=retire_drive)
+                self.assertFalse(any(path.exists() for path in artifacts))
+                self.assertFalse(vault.exists())
+            self.assertEqual([
+                ['systemctl', 'disable', '--now', timer.name],
+                ['systemctl', 'stop', service.name],
+                ['systemctl', 'daemon-reload'],
+            ], commands)
+
+    def test_drive_bridge_retirement_preserves_files_and_does_not_follow_vault_links(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            vault = root / 'vault'
+            (vault / 'Workspace').mkdir(parents=True)
+            note = vault / 'Workspace/note.md'
+            note.write_text('keep this')
+            destination = root / 'elsewhere'
+            (destination / 'Workspace').mkdir(parents=True)
+            (vault / 'Policies (from Git)').symlink_to(destination, target_is_directory=True)
+            linked = root / 'symlink-test'
+            linked.mkdir()
+            (linked / 'vault').symlink_to(destination, target_is_directory=True)
+
+            calls = []
+            for state in (root, linked):
+                deployment.retire_drive_bridge(state, calls.append, bin_dir=root, unit_dir=root, sudoers_dir=root)
+            self.assertEqual('keep this', note.read_text())
+            self.assertTrue((vault / 'Policies (from Git)').is_symlink())
+            self.assertTrue((destination / 'Workspace').is_dir())
+            self.assertEqual([], calls)
 
     def fake_hermes(self, state, calls, drop=(), fail=None, on_call=None):
         """Run a fake Hermes CLI against the disposable mount, with real shell redirection."""
@@ -826,3 +891,36 @@ class DeploymentTests(unittest.TestCase):
                 result = subprocess.run(['sh', str(ROOT / 'scripts/deploy-os.sh'), value],
                                         capture_output=True, text=True)
                 self.assertNotEqual(0, result.returncode)
+
+
+class DriveCredentialIsolationTests(unittest.TestCase):
+    def test_only_hermes_can_reach_the_drive_credential(self):
+        import re
+        compose = (ROOT / 'deploy/compose.yaml').read_text()
+        for service in ('t3', 'reviewer', 'hindsight'):
+            section = re.search(rf'^  {service}:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
+            mounts = re.findall(r'^        source: (.+)$', section, re.M)
+            self.assertTrue(mounts, service)
+            for source in mounts:
+                self.assertRegex(source, r'^\$\{NIX_CLEAN_ROOT:[^}]+\}/[\w(]')
+                path = Path(source.split('}/', 1)[1])
+                self.assertNotIn('..', path.parts)
+                self.assertNotEqual(path.parts[0], 'hermes', service + ' must not mount Hermes state (Drive credential)')
+            for forbidden in ('docker.sock', '.config/gws', 'GOOGLE_WORKSPACE_CLI'):
+                self.assertNotIn(forbidden, section, service)
+        # Hermes itself keeps the generic isolation guards: bind sources under the native root, no parent escapes,
+        # no Docker socket, and no legacy Drive bridge state (the retired rclone vault).
+        hermes_section = re.search(r'^  hermes:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
+        hermes_mounts = re.findall(r'^        source: (.+)$', hermes_section, re.M)
+        self.assertTrue(hermes_mounts)
+        for source in hermes_mounts:
+            self.assertRegex(source, r'^\$\{NIX_CLEAN_ROOT:[^}]+\}/[\w(]')
+            path = Path(source.split('}/', 1)[1])
+            self.assertNotIn('..', path.parts)
+            self.assertNotEqual(path.parts[0], 'drive', 'Hermes must not mount the legacy Drive bridge state')
+        for forbidden in ('docker.sock', 'rclone.conf'):
+            self.assertNotIn(forbidden, hermes_section)
+        dockerfile = (ROOT / 'deploy/hermes/Dockerfile').read_text()
+        self.assertIn('GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/opt/data/.config/gws', dockerfile)  # inside the Hermes home only
+        hermes = re.search(r'^  hermes:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
+        self.assertIn('network_mode: host', hermes)  # the documented gws loopback sign-in tunnel depends on it
