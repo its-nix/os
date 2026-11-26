@@ -21,6 +21,7 @@ Each row is as of its evidence date. Founder items were requested on 2026-11-23 
 | Lead → CRM → approval-gated action procedure | Deployed, live proof pending | `skills/crm-lead-ops` (#77); requires a Twenty workspace key |
 | Founder approval queue (PRD §7.5 / H) | Host worker staged, live proof pending | Founder-owned Todoist, local Hermes spool, root-only token. [Setup and demo](docs/FOUNDER-APPROVAL-QUEUE.md) |
 | Company loops (health, digest, improvement) | **Running** | LNX cron: no-agent health check every 6 h (silent when healthy), daily digest, weekly improvement (#78) |
+| Reviewed improvement loop (F) | **Deployed and rollback-tested** | The deployed health check scored 15/15, up from 6/15 on main, with all six controls preserved. 1,175 of 1,176 files outside `company-ops` matched, with one Hermes usage telemetry file changed. The draft revert passed CI and closed unmerged. [Evidence](docs/REFACTOR.md#4-evidence-ledger) |
 | Hindsight memory | **Running** for `demo` on 2026-11-26 | Hermes loaded the Hindsight plugin in `local_external` mode. Authenticated readback found `venture-demo` with one document and four observations. [Runtime setup](deploy/hindsight/README.md) |
 | Drive + Obsidian knowledge | Staged pending founder sign-in | [Vault setup and operations](docs/KNOWLEDGE-VAULT.md) · two-way Workspace, one-way reviewed KB |
 | Personal agent profile (`personal`) | Contract + idempotent deploy step ([contract](docs/PERSONAL-PROFILE.md)) | Logical separation only; email/calendar blocked on the founder |
