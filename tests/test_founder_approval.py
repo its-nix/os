@@ -40,7 +40,7 @@ class FakeTodoist(worker.Todoist):
         if self.offline:
             raise TimeoutError
         if path == 'projects/Project1':
-            return {'id': self.project, 'name': 'Nix', 'is_archived': False, 'is_shared': False}
+            return {'id': self.project, 'name': 'Nix approvals', 'is_archived': False, 'is_shared': False}
         if path == 'tasks':
             return {'results': list(self.active.values()), 'next_cursor': None}
         if path == 'tasks/completed/by_completion_date':
