@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
+import { acceptedRisk, ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
   hasFounderApproval, parseProtectedPaths } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
@@ -501,4 +501,22 @@ test('a backed-off enable makes no API call at all', async () => {
   const after = gets;
   assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}, 2), null);
   assert.equal(gets, after);
+test('founder-accepted risk: only from an approved head, sanitized, shown to the reviewer and in the result', async () => {
+  const sha = 'b'.repeat(40);
+  const file = 'accepted-risk: Drive grant readable by Hermes (D17)\u0007\nnoise line\naccepted-risk:  revert via Drive trash\n';
+  assert.equal(acceptedRisk(sha, () => false, () => file), '');
+  assert.equal(acceptedRisk(sha, () => true, () => file), 'Drive grant readable by Hermes (D17) revert via Drive trash');
+  assert.equal(acceptedRisk(sha, () => true, () => ''), '');
+  const prompt = buildPrompt({ title: 't', body: 'b' }, '+x', 'Drive <grant>');
+  assert.match(prompt, /FOUNDER-ACCEPTED RISK/);
+  assert.ok(prompt.includes('Drive &lt;grant&gt;'));
+  assert.ok(prompt.indexOf('FOUNDER-ACCEPTED RISK') < prompt.indexOf('<pull_request>\n<title>'));
+  assert.doesNotMatch(buildPrompt({ title: 't', body: 'b' }, '+x'), /FOUNDER-ACCEPTED RISK/);
+  const state = { calls: [], headAfter: PR.head.sha };
+  let seen = '';
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    accepted: () => 'Drive grant (D17)',
+    run: async (cmd, args) => { seen = args.join(' '); return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }; } });
+  assert.match(seen, /FOUNDER-ACCEPTED RISK/);
+  assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.summary, /Founder-accepted risk .*Drive grant \(D17\)/);
 });
