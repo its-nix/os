@@ -790,8 +790,10 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   // A held public default-branch PR is disarmed whoever armed it. For a PR that becomes ineligible,
   // or belongs to a private or review-only repo, only disarm the App's own auto-merge.
   const publicAutoMerge = cfg.private === false && cfg.enforced === true && !cfg.reviewOnly;
+  // The hold brake is independent of arming: on any public default-branch PR it disarms whoever armed it.
+  const publicHoldBrake = cfg.private === false && !cfg.reviewOnly;
   let action;
-  if (pr.auto_merge && ((publicAutoMerge && held && pr.base?.ref === cfg.defaultBranch) ||
+  if (pr.auto_merge && ((publicHoldBrake && held && pr.base?.ref === cfg.defaultBranch) ||
       ((!publicAutoMerge || !eligible(cfg, pr)) && armedByReviewer(cfg, pr)))) action = 'disable';
   else if (publicAutoMerge && !pr.auto_merge && !held && eligible(cfg, pr)) action = 'enable';
   else return null;

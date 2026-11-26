@@ -1063,6 +1063,9 @@ test('an unenforced public repo is never armed, disarms its own auto-merge, and 
   assert.equal(await keepUpToDate(cfg, 't', { ...pr, auto_merge: {} }, api), null);
   assert.ok(!calls.some(([, opts]) => opts?.method && opts.method !== 'GET'));
   assert.equal(await ensureAutoMerge(cfg, 't', { ...pr, auto_merge: { enabled_by: { login: 'nix-reviewer[bot]' } } }, api), 'disabled');
+  // A held PR armed by someone else is still disarmed: the hold brake does not depend on enforcement.
+  assert.equal(await ensureAutoMerge(cfg, 't', { ...pr, labels: [{ name: 'hold' }], auto_merge: { enabled_by: { login: 'maintainer' } } }, api), 'disabled');
+  assert.equal(await ensureAutoMerge(cfg, 't', { ...pr, auto_merge: { enabled_by: { login: 'maintainer' } } }, api), null);
   assert.equal(await mergePrivate(cfg, 't', pr, mergeFixture({ live: pr })), 'merged');
   assert.equal(await mergePrivate({ ...cfg, enforced: true }, 't', pr, mergeFixture({ live: pr })), null);
   // A private repo flipped to public mid-poll does not self-merge on that pass.
