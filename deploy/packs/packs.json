@@ -46,7 +46,6 @@
     ],
     "operations": [
       "technical-project-management",
-      "todoist-cli",
       "retro"
     ],
     "data-ai": [
@@ -188,11 +187,6 @@
         "repo": "mattpocock/skills",
         "ref": "49dd158d1076134a641b33efb035946536778336",
         "sha256": "14bc5712b9eb4f177dd58c1604fbbdc770d3953ed2905af4a6b60ffe7d7778b1"
-      },
-      "todoist-cli": {
-        "repo": "Doist/todoist-cli",
-        "ref": "340d7b21b89d329d8cae4a6325450911998bdf70",
-        "sha256": "b3e1edfa65d2366db5d4015d9ccbaa8122aae387c280c5cf68a1b0e8a211234b"
       },
       "web-accessibility": {
         "repo": "magnus919/agent-skills",
