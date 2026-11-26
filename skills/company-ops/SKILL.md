@@ -1,5 +1,6 @@
 ---
 name: company-ops
+version: 1.1.0
 description: "Use for LNX portfolio duties: the daily founder digest, the weekly NixKit/T3 improvement loop, and handling company-health alerts."
 license: MIT
 ---
