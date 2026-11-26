@@ -224,21 +224,41 @@ test('new heads are reviewed against escaped blocking findings from earlier head
   assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].external_id, `${ordinaryId}:pr:${PR.number}`);
 });
 
-test('oversized prior findings keep the newest within budget instead of blocking the PR', async () => {
+const priorRun = (id, who, text) => ({ id, app: { id: 1 }, status: 'completed', conclusion: 'failure',
+  output: { title: `REQUEST_CHANGES by ${who}`, summary: `Reviewer: **${who}**\n\nChanges requested.\n\n- **blocking** \`a.mjs\`: ${text}` } });
+
+test('older prior findings are dropped for length, the newest verdict always carried', async () => {
   const older = 'a'.repeat(40), newer = 'b'.repeat(40);
   const state = { calls: [], headAfter: PR.head.sha,
     history: { null: { nodes: [{ commit: { oid: older } }, { commit: { oid: newer } }], pageInfo: {} } },
-    priorRuns: {
-      [older]: [{ id: 1, app: { id: 1 }, status: 'completed', conclusion: 'failure',
-        output: { title: 'REQUEST_CHANGES by codex', summary: `Reviewer: **codex**\n\nChanges requested.\n\n- **blocking** \`a.mjs\`: OLD ${'x'.repeat(7_000)}` } }],
-      [newer]: [{ id: 2, app: { id: 1 }, status: 'completed', conclusion: 'failure',
-        output: { title: 'REQUEST_CHANGES by grok', summary: `Reviewer: **grok**\n\nChanges requested.\n\n- **blocking** \`b.mjs\`: NEW ${'y'.repeat(3_000)}` } }] } };
+    priorRuns: { [older]: [priorRun(1, 'codex', `OLD ${'x'.repeat(7_000)}`)], [newer]: [priorRun(2, 'grok', `NEW ${'y'.repeat(3_000)}`)] } };
   let prompt;
   await reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
     run: async (_cmd, args) => { [, prompt] = args; return { ok: true, out: '{"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}' }; } });
   assert.match(prompt, /NEW y/);
   assert.doesNotMatch(prompt, /OLD x/);
   assert.match(prompt, /Older prior findings omitted for length/);
+});
+
+test('review fails closed when the newest blocking verdict alone exceeds the budget', async () => {
+  const old = 'a'.repeat(40);
+  const state = { calls: [], headAfter: PR.head.sha,
+    history: { null: { nodes: [{ commit: { oid: old } }], pageInfo: {} } },
+    priorRuns: { [old]: [priorRun(1, 'codex', 'x'.repeat(8_001))] } };
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => assert.fail('provider called with incomplete context') });
+  const check = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.equal(check.conclusion, 'failure');
+  assert.match(check.output.summary, /latest blocking review is too large/);
+});
+
+test('a verdict bound to another PR on the same head and base is not reused', async () => {
+  const state = { calls: [], headAfter: PR.head.sha, existing: [{ id: 7, status: 'completed', conclusion: 'success',
+    output: { title: 'APPROVE by grok' }, external_id: `${ordinaryId}:pr:${PR.number + 1}` }] };
+  let ran = false;
+  await reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => { ran = true; return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }; } });
+  assert.ok(ran);
 });
 
 test('no available reviewer, moved head, or already-reviewed revision', async () => {

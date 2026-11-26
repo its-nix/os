@@ -387,22 +387,28 @@ async function priorBlockingFindings(cfg, token, pr, api) {
       checks.push(check);
     }
   }
-  // Newest verdicts first. Each later review already had to resolve the findings it was given, so when the
-  // history outgrows the budget the oldest findings are the safest to omit (a long PR must stay reviewable).
+  // Newest verdict first. The prompt requires every reviewer to restate any prior finding it did not see resolved
+  // as blocking, so the newest REQUEST_CHANGES carries all still-open findings: it is mandatory and the check fails
+  // closed if it alone does not fit. Older verdicts are extra context, added while they fit.
   checks.sort((a, b) => b.id - a.id);
-  const findings = new Set();
+  const findings = [];
   let size = 0;
   let omitted = false;
-  for (const check of checks) {
+  for (const [index, check] of checks.entries()) {
     for (const item of blockingItems(check.output.summary || '')) {
-      const finding = item.trim().slice(0, MAX_PRIOR_FINDINGS_CHARS);
-      if (!finding || findings.has(finding)) continue;
-      if (size + finding.length + 2 > MAX_PRIOR_FINDINGS_CHARS) { omitted = true; continue; }
-      size += finding.length + 2;
-      findings.add(finding);
+      const finding = item.trim();
+      if (!finding || findings.includes(finding)) continue;
+      const cost = finding.length + (findings.length ? 2 : 0);
+      if (size + cost > MAX_PRIOR_FINDINGS_CHARS) {
+        if (index === 0) return null;
+        omitted = true;
+        continue;
+      }
+      size += cost;
+      findings.push(finding);
     }
   }
-  return [...findings].join('\n\n') + (omitted ? '\n\n(Older prior findings omitted for length; later reviews already had to resolve them.)' : '');
+  return findings.join('\n\n') + (omitted ? '\n\n(Older prior findings omitted for length; the newest verdict above had to restate any that remained open.)' : '');
 }
 
 export async function reviewOne(cfg, token, pr, deps = {}) {
@@ -415,7 +421,9 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const now = Date.now();
   const externalId = (scope) => `${cfg.policy.version}:${scope}:${pr.base.sha}`;
   const completed = runs.find((c) => c.status === 'completed');
-  const completedBinding = completed?.external_id?.replace(PR_BINDING, '');
+  const completedPr = completed?.external_id?.match(PR_BINDING)?.[1];
+  // A verdict bound to another PR (same head and base) must not stand in for this PR's review and history.
+  const completedBinding = completedPr && completedPr !== String(pr.number) ? null : completed?.external_id?.replace(PR_BINDING, '');
   const wasProtected = completedBinding === externalId('protected');
   // A pending 'Re-review requested' run newer than every verdict asks for a full fresh review now.
   const rereview = runs[0] && runs[0].status !== 'completed' && runs[0].output?.title === REREVIEW;
@@ -450,6 +458,7 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const attempts = [];
   const accepted = (deps.accepted || acceptedRisk)(pr.head.sha);
   const priorFindings = await priorBlockingFindings(cfg, token, pr, api);
+  if (priorFindings === null) return finish('failure', 'Not reviewable', 'The latest blocking review is too large to carry into the next review; split the PR.');
   const prompt = buildPrompt(pr, data.diff, accepted, priorFindings);
   if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) return finish('failure', 'Not reviewable', 'PR text plus diff too large to review in one pass; split the PR.');
   for (const provider of order) {
