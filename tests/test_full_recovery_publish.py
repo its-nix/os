@@ -59,12 +59,12 @@ class PublicationTests(unittest.TestCase):
         def command(argv):
             calls.append(argv)
             if 'inspect' in argv:
-                return 'running'
+                return 'running 0' if 'ExitCode' in argv[3] else 'running'
             if 'stop' in argv:
                 raise module.Refusal('partial stop')
             return ''
         with tempfile.TemporaryDirectory() as td, patch.object(module, 'run', side_effect=command), patch.object(module, 'disk_used_percent', return_value=50), patch.object(module, 'compose_files', return_value=[]), patch.object(module, 'wait_services'):
-            with self.assertRaises(module.Refusal):
+            with self.assertRaisesRegex(module.Refusal, r'nixos-hermes \(running, exit 0\)'):
                 with module.stopped_services(Path(td) / 'deployment.lock'):
                     self.fail('Capture cannot run after failed stop')
         self.assertEqual([['docker', 'start', n] for n in reversed(module.CONTAINERS)],
@@ -184,15 +184,83 @@ class ServiceControlTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def test_worker_without_healthcheck_counts_as_ready_and_sigterm_is_clean(self):
+    def test_worker_without_healthcheck_counts_as_ready(self):
         module = self.module()
         with patch.object(module, 'run', return_value='running'):
             self.assertTrue(module.ready('nixos-twenty-worker'))
         with patch.object(module, 'run', return_value='starting'):
             self.assertFalse(module.ready('nixos-hermes'))
-        self.assertIn('exited 143', module.CLEAN_EXIT)
-        self.assertIn('exited 130', module.CLEAN_EXIT)  # T3 under tini
-        self.assertNotIn('exited 137', module.CLEAN_EXIT)  # killed after timeout
+
+    def test_cold_capture_requires_a_clean_exit_from_each_service(self):
+        module = self.module()
+        names = module.CONTAINERS + module.CRM_CONTAINERS
+        clean = {'nixos-t3': 'exited 130', 'nixos-twenty-worker': 'exited 143'}
+        cases = [
+            (None, None, None),
+            ('nixos-twenty-worker', 'exited 129', 'nixos-twenty-worker (exited, exit 129)'),
+            ('nixos-twenty-worker', 'exited 137', 'nixos-twenty-worker (exited, exit 137)'),
+            ('nixos-twenty-server', 'exited 2', 'nixos-twenty-server (exited, exit 2)'),
+            ('nixos-twenty-db', 'exited 143', 'nixos-twenty-db (exited, exit 143)'),
+            ('nixos-twenty-redis', 'exited 130', 'nixos-twenty-redis (exited, exit 130)'),
+            ('nixos-hindsight', 'exited 143', 'nixos-hindsight (exited, exit 143)'),
+            ('nixos-reviewer', 'running 0', 'nixos-reviewer (running, exit 0)'),
+            ('nixos-hermes', 'private-output', 'nixos-hermes (stop status unavailable)'),
+        ]
+        for service, status, diagnostic in cases:
+            with self.subTest(service=service, status=status):
+                stops = []
+
+                def command(argv):
+                    if argv[1] == 'inspect':
+                        if 'ExitCode' not in argv[3]:
+                            return 'running'
+                        name = argv[-1]
+                        return status if name == service else clean.get(name, 'exited 0')
+                    if argv[1] == 'stop':
+                        stops.append(argv[-1])
+                    return ''
+
+                with tempfile.TemporaryDirectory() as td, \
+                        patch.object(module, 'run', side_effect=command), \
+                        patch.object(module, 'compose_files'), \
+                        patch.object(module, 'crm_enabled', return_value=True), \
+                        patch.object(module, 'disk_used_percent', return_value=50), \
+                        patch.object(module, 'start_all') as start, \
+                        patch.object(module, 'wait_services'):
+                    root = Path(td)
+                    if diagnostic:
+                        with self.assertRaisesRegex(module.Refusal, re.escape(diagnostic)):
+                            with module.stopped_services(root / 'lock', root):
+                                self.fail('A failed shutdown must not permit capture')
+                        self.assertEqual(names[:names.index(service) + 1], stops)
+                    else:
+                        with module.stopped_services(root / 'lock', root):
+                            self.assertEqual(names, stops)
+                    start.assert_called_once_with(list(reversed(names)), root)
+
+    def test_stop_diagnostic_survives_failed_health_recovery(self):
+        module = self.module()
+        def command(argv):
+            if argv[1] == 'inspect':
+                return 'exited 1' if 'ExitCode' in argv[3] else 'running'
+            return ''
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(module, 'run', side_effect=command), \
+                patch.object(module, 'compose_files'), \
+                patch.object(module, 'disk_used_percent', return_value=50), \
+                patch.object(module, 'crm_writers_running', return_value=[]), \
+                patch.object(module, 'start_all'), \
+                patch.object(module, 'wait_services', side_effect=module.Refusal('Health recovery failed')), \
+                self.assertRaisesRegex(module.Refusal, r'nixos-hermes \(exited, exit 1\)\. Health recovery failed'):
+            with module.stopped_services(Path(td) / 'lock', Path(td)):
+                self.fail('A failed shutdown must not permit capture')
+
+    def test_twenty_worker_launches_node_directly_under_docker_init(self):
+        compose = (ROOT / 'deploy/compose.yaml').read_text()
+        worker = compose.split('\n  twenty-worker:', 1)[1].split('\nnetworks:', 1)[0]
+        self.assertIn('\n    init: true\n', worker)
+        self.assertIn('\n    command: [node, dist/queue-worker/queue-worker]\n', worker)
 
     def test_capture_refuses_running_crm_writers_when_disabled(self):
         module = self.module()

@@ -158,9 +158,25 @@ def create_private(image, hub):
 
 
 HEALTH = '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
-# Graceful exits after `docker stop`: 0; 130 (T3 under tini, observed 2026-11-23); 143 (SIGTERM,
-# e.g. the Twenty queue worker). 137 (SIGKILL after the timeout) is never clean.
-CLEAN_EXIT = {'exited 0', 'exited 130', 'exited 143'}
+# T3 completes shutdown reconciliation under tini and returns 130. The Twenty worker
+# closes its queues before Nest re-raises SIGTERM (143), passed through Docker's init.
+GRACEFUL_SIGNAL_EXIT = {'nixos-t3': '130', 'nixos-twenty-worker': '143'}
+
+
+def require_clean_stop(name):
+    try:
+        result = run(['docker', 'inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', name])
+    except (Refusal, subprocess.TimeoutExpired):
+        result = ''
+    # Receipts may include Docker's fixed status and numeric code, never raw command output.
+    match = re.fullmatch(r'(created|running|paused|restarting|removing|exited|dead) ([0-9]{1,10})', result)
+    reason = 'stop status unavailable'
+    if match:
+        status, code = match.groups()
+        if status == 'exited' and (code == '0' or code == GRACEFUL_SIGNAL_EXIT.get(name)):
+            return
+        reason = f'{status}, exit {code}'
+    raise Refusal(f'Shutdown refused for {name} ({reason})')
 
 
 def ready(name):
@@ -269,15 +285,25 @@ def stopped_services(lock_path=Path('/run/lock/nix-os-deploy.lock'), root=Path('
             raise Refusal('All OS services must be running before capture')
         try:
             for name in names:  # sequential: apps drain before the databases they use stop
-                run(['docker', 'stop', '--time', '90', name])
+                try:
+                    run(['docker', 'stop', '--time', '90', name])
+                except (Refusal, subprocess.TimeoutExpired):
+                    require_clean_stop(name)
+                    raise Refusal(f'Shutdown refused for {name} (docker stop failed)') from None
+                require_clean_stop(name)
             for name in names:
-                if run(['docker', 'inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', name]) not in CLEAN_EXIT:
-                    raise Refusal('Native services did not stop cleanly')
+                require_clean_stop(name)
             yield
         finally:
             # Even a failed/partial stop must not leave the company OS down. Databases start first.
-            start_all(list(reversed(names)), root)
-            wait_services(names)
+            failure = sys.exc_info()[1]
+            try:
+                start_all(list(reversed(names)), root)
+                wait_services(names)
+            except Refusal as restart_failure:
+                if isinstance(failure, Refusal):
+                    raise Refusal(f'{failure}. {restart_failure}') from None
+                raise
 
 
 def deployment_model(root, versions, deployed_source):
