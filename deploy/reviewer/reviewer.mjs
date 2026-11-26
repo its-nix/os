@@ -371,7 +371,8 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   else return null;
   const key = `${pr.head.sha}:${action}`;
   const backoff = autoMergeBackoff.get(pr.number);
-  if (backoff && backoff.key === key && now < backoff.until) return null;
+  // Disabling is the hold safety brake: it is retried every poll and never backs off.
+  if (action === 'enable' && backoff && backoff.key === key && now < backoff.until) return null;
   for (const [number, entry] of autoMergeBackoff) if (now >= entry.until) autoMergeBackoff.delete(number);
   const mutation = action === 'disable'
     ? 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}'
@@ -382,8 +383,8 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   } catch (e) {
     res = { errors: [{ message: e.message }] };
   }
-  const error = res?.errors?.[0]?.message;
-  if (!error) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
+  if (!res?.errors?.length) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
+  const error = String(res.errors[0]?.message || 'refused');
   if (action === 'enable' && /clean status/i.test(error)) {
     // Already green and up to date: GitHub refuses auto-merge, so merge now, pinned to this head.
     // The ruleset still gates the merge; a stale or red head is refused by GitHub.
@@ -397,7 +398,8 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
       return false;
     }
   }
-  log(`auto-merge #${pr.number}: ${String(error).slice(0, 200)}`);
+  const repeated = backoff && backoff.key === key;
+  if (!repeated) log(`auto-merge #${pr.number}: ${action} refused (${error.slice(0, 200)})`);
   autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });
   return false;
 }
@@ -410,6 +412,7 @@ export async function keepUpToDate(cfg, token, pr, api = gh) {
   if (isHeld(pr)) return null;
   const full = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
   if (full.mergeable_state !== 'behind' || full.head.sha !== pr.head.sha) return null;
+  if (!full.auto_merge || full.draft || isHeld(full)) return null;  // live state may have changed since the listing
   await api(`/repos/${cfg.repo}/pulls/${pr.number}/update-branch`, { method: 'PUT', token, body: { expected_head_sha: pr.head.sha } });
   return 'updated';
 }
@@ -420,7 +423,9 @@ async function loop(cfg) {
       const token = await installationToken(cfg);
       const prs = await gh(`/repos/${cfg.repo}/pulls?state=open&base=main&per_page=50`, { token });
       for (const pr of prs) {
-        try { await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
+        let merged = null;
+        try { merged = await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
+        if (merged === 'merged') continue;
         let updated = null;
         try { updated = await keepUpToDate(cfg, token, pr); } catch (e) { console.error(`update #${pr.number}: ${e.message}`); }
         if (updated) continue;  // the new head is reviewed on the next poll, not this stale snapshot

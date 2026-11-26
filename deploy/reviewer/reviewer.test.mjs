@@ -373,6 +373,21 @@ test('always-merge: live state drives enable/disable; hold toggles on one head; 
   assert.equal(await ensureAutoMerge(CFG, 't', pr2, ok, (m) => logs.push(m), t0 + 31 * 60_000), 'enabled');
 });
 
+test('always-merge: a failed disable (hold brake) is retried on the very next poll; logs are not repeated', async () => {
+  const logs = [];
+  let attempts = 0;
+  const flaky = async () => { attempts++; return attempts < 3 ? { errors: [{ message: 'timeout' }] } : { data: {} }; };
+  const held = { number: 12, node_id: 'PR_4', draft: false, base: { ref: 'main' }, labels: [{ name: 'hold' }],
+    auto_merge: { merge_method: 'squash' }, head: { sha: '8'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', held, flaky, (m) => logs.push(m), 1), false);
+  assert.equal(await ensureAutoMerge(CFG, 't', held, flaky, (m) => logs.push(m), 2), false);
+  assert.equal(await ensureAutoMerge(CFG, 't', held, flaky, (m) => logs.push(m), 3), 'disabled');
+  assert.equal(attempts, 3);
+  assert.equal(logs.length, 1);
+  const empty = async () => ({ errors: [{}] });  // an error without a message is still an error
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...held, number: 13 }, empty, () => {}, 4), false);
+});
+
 test('always-merge: an already-green PR is merged directly, pinned to its head', async () => {
   const calls = [];
   const api = async (path, { method = 'GET', body } = {}) => {
@@ -391,11 +406,16 @@ test('auto-merge PRs left behind are updated with the exact head; others are lef
   const calls = [];
   const api = (state) => async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
-    return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha } } : {};
+    return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha }, auto_merge: pr.auto_merge, labels: [] } : {};
   };
   assert.equal(await keepUpToDate(CFG, 't', pr, api('behind')), 'updated');
   assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/9/update-branch', { expected_head_sha: pr.head.sha }]);
   assert.equal(await keepUpToDate(CFG, 't', pr, api('blocked')), null);
   assert.equal(await keepUpToDate(CFG, 't', { ...pr, auto_merge: null }, api('behind')), null);
   assert.equal(await keepUpToDate(CFG, 't', { ...pr, labels: [{ name: 'hold' }] }, api('behind')), null);
+  const liveHeld = async (path, { method = 'GET' } = {}) => {
+    calls.push([method, path]);
+    return { mergeable_state: 'behind', head: { sha: pr.head.sha }, auto_merge: pr.auto_merge, labels: [{ name: 'hold' }] };
+  };
+  assert.equal(await keepUpToDate(CFG, 't', pr, liveHeld), null);  // labelled hold after the listing
 });
