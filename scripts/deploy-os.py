@@ -488,6 +488,28 @@ def configure_memory(state, run):
     return pending
 
 
+def prepare_vault(state):
+    vault = state / 'vault'
+    for path in (vault, vault / 'Workspace', vault / 'Policies (from Git)'):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError('Expected a plain vault directory')
+        path.mkdir(mode=0o755, exist_ok=True)
+    # Root owns the directory entry. Files created by root sync and Hermes share the group.
+    workspace = vault / 'Workspace'
+    os.chown(workspace, ROOT_UID, HERMES_GID)
+    workspace.chmod(0o2770)
+
+
+def install_drive(source, run):
+    files = source / 'deploy/drive'
+    _root_write(Path('/usr/local/sbin'), 'nix-drive', (files / 'nix-drive').read_text(), 0o755)
+    for unit in ('nix-drive.service', 'nix-drive.timer'):
+        _root_write(Path('/etc/systemd/system'), unit, (files / unit).read_text(), 0o644)
+    _root_write(Path('/etc/sudoers.d'), 'nix-drive-login',
+                'nixos ALL=(root) NOPASSWD: /usr/local/sbin/nix-drive login\n', 0o440)
+    run(['systemctl', 'daemon-reload'])
+
+
 def install_hindsight_login(source, bin_dir=Path('/usr/local/bin'), tmpfiles_dir=Path('/etc/tmpfiles.d'), run=run):
     """Root-owned copy of the founder's one-time Hindsight sign-in, runnable by the `nixos` operator
     (who cannot read the release directory)."""
@@ -874,7 +896,7 @@ def install_health_script(source, state):
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
           t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory,
           login=install_hindsight_login, redaction=probe_hermes_redaction, personal=ensure_personal_profile,
-          memory_preflight=preflight_memory):
+          memory_preflight=preflight_memory, drive=install_drive):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -909,6 +931,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': hermes_image,
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
+        prepare_vault(state)
         ensure_t3_state(state)
         ensure_hindsight_state(state)
         reviewer_changed = ensure_reviewer_state(source, state)
@@ -980,6 +1003,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             memory_pending.unlink(missing_ok=True)
         units(source, run)
         login(source)
+        drive(source, run)
         sync_os_skills(source, state)
         install_health_script(source, state)
         link = current.with_name(current.name + '.next')

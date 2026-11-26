@@ -174,3 +174,7 @@ echo "restore proof PASSED"
 ```
 
 Expected for a capture taken with the reviewer and CRM running: every listed path exists, and `compose.json` lists the `reviewer` and `twenty-*` services. The Twenty and Paperclip databases themselves are opened in single-user mode by every capture (and its remote readback), not by this extraction.
+
+## Drive vault
+
+The private cold image includes `/srv/nix-clean/vault` and `/srv/nix-clean/drive` with the founder’s **account-wide Google Drive refresh token**, pinned helper binary and bisync history. Treat image access as credential access. Revoke the rclone grant in the Google account if an image is exposed. The host wrapper shares the deploy/capture lock. Keep sync disabled on a restored host until the former writer is offline and current Drive content has been reconciled with the restored vault. The OS deploy installs the host units. Follow the [vault recovery procedure](KNOWLEDGE-VAULT.md#operate-and-recover).

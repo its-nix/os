@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronize the Nix knowledge workspace
+ConditionPathExists=/srv/nix-clean/drive/initialized
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0007
+ExecStart=/usr/local/sbin/nix-drive sync
