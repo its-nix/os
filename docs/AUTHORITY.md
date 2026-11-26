@@ -41,4 +41,4 @@ Agents prepare these and never perform them:
 
 The founder executes the action, or approves a narrowly bounded method, and the receipt is recorded on the originating Kanban card. A completed Todoist task is **not** an authenticated approval and never triggers an effect by itself. A missing reply is not approval; an expired request is closed. Agents check for an existing receipt (by action id) before queueing or executing anything, and never blindly retry an ambiguous irreversible action.
 
-Credentials that could perform these effects are not given to Hermes or T3 runtimes. A prompt rule does not enforce anything that the runtime credential allows.
+Keep credentials for founder-gated actions out of agent runtimes. The founder authorized one exception for direct Drive access in Hermes. The account-wide Drive credential can change Drive permissions, so the founder-only sharing rule relies on agent conduct. T3 and the independent reviewer receive no Drive credential. [Drive access and recovery](KNOWLEDGE-VAULT.md#access-and-recovery)

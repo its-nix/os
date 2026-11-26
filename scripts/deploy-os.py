@@ -4,6 +4,7 @@
 from contextlib import ExitStack
 import ctypes
 from datetime import datetime, timezone
+import errno
 import hashlib
 import importlib.util
 import json
@@ -488,26 +489,31 @@ def configure_memory(state, run):
     return pending
 
 
-def prepare_vault(state):
+def retire_drive_bridge(state, run, *, bin_dir=Path('/usr/local/sbin'),
+                        unit_dir=Path('/etc/systemd/system'), sudoers_dir=Path('/etc/sudoers.d')):
+    """Remove the old bridge, preserving any vault contents."""
+    timer, service = (unit_dir / f'nix-drive.{kind}' for kind in ('timer', 'service'))
+    wrapper, sudoers = bin_dir / 'nix-drive', sudoers_dir / 'nix-drive-login'
+    if timer.exists() or timer.is_symlink():
+        run(['systemctl', 'disable', '--now', timer.name])
+    if service.exists() or service.is_symlink():
+        run(['systemctl', 'stop', service.name])
+    if any(path.exists() or path.is_symlink() for path in (timer, service, wrapper, sudoers)):
+        timer.unlink(missing_ok=True)
+        service.unlink(missing_ok=True)
+        run(['systemctl', 'daemon-reload'])
+        # Keep the host files until reload succeeds so an interrupted run retries it.
+        sudoers.unlink(missing_ok=True)
+        wrapper.unlink(missing_ok=True)
+
     vault = state / 'vault'
-    for path in (vault, vault / 'Workspace', vault / 'Policies (from Git)'):
-        if path.is_symlink() or (path.exists() and not path.is_dir()):
-            raise ValueError('Expected a plain vault directory')
-        path.mkdir(mode=0o755, exist_ok=True)
-    # Root owns the directory entry. Files created by root sync and Hermes share the group.
-    workspace = vault / 'Workspace'
-    os.chown(workspace, ROOT_UID, HERMES_GID)
-    workspace.chmod(0o2770)
-
-
-def install_drive(source, run):
-    files = source / 'deploy/drive'
-    _root_write(Path('/usr/local/sbin'), 'nix-drive', (files / 'nix-drive').read_text(), 0o755)
-    for unit in ('nix-drive.service', 'nix-drive.timer'):
-        _root_write(Path('/etc/systemd/system'), unit, (files / unit).read_text(), 0o644)
-    _root_write(Path('/etc/sudoers.d'), 'nix-drive-login',
-                'nixos ALL=(root) NOPASSWD: /usr/local/sbin/nix-drive login\n', 0o440)
-    run(['systemctl', 'daemon-reload'])
+    if not vault.is_symlink():
+        for path in (vault / 'Workspace', vault / 'Policies (from Git)', vault):
+            try:
+                path.rmdir()
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ENOTEMPTY, errno.EEXIST):
+                    raise
 
 
 def install_hindsight_login(source, bin_dir=Path('/usr/local/bin'), tmpfiles_dir=Path('/etc/tmpfiles.d'), run=run):
@@ -556,7 +562,7 @@ def native_inputs(source):
 
 # First-party OS skills. The deployment is the ONLY writer of each profile's `skills/nix-os/`
 # category; NixKit owns its own skill directories. Copies (not links) pin the reviewed revision.
-OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops', 'company-ops')
+OS_SKILLS = ('venture-factory', 'venture-lead', 't3-delegate', 'crm-lead-ops', 'company-ops', 'google-drive')
 OS_SKILL_CATEGORY = 'nix-os'
 
 
@@ -896,7 +902,7 @@ def install_health_script(source, state):
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
           t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory,
           login=install_hindsight_login, redaction=probe_hermes_redaction, personal=ensure_personal_profile,
-          memory_preflight=preflight_memory, drive=install_drive):
+          memory_preflight=preflight_memory, retire_drive=retire_drive_bridge):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -931,7 +937,6 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': hermes_image,
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
-        prepare_vault(state)
         ensure_t3_state(state)
         ensure_hindsight_state(state)
         reviewer_changed = ensure_reviewer_state(source, state)
@@ -1003,7 +1008,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             memory_pending.unlink(missing_ok=True)
         units(source, run)
         login(source)
-        drive(source, run)
+        retire_drive(state, run)
         sync_os_skills(source, state)
         install_health_script(source, state)
         link = current.with_name(current.name + '.next')

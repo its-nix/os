@@ -29,15 +29,6 @@ services:
         target: /knowledge/company
         read_only: true
         bind: {create_host_path: false}
-      - type: bind
-        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/vault
-        target: /opt/data/vault
-        read_only: true
-        bind: {create_host_path: false}
-      - type: bind
-        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/vault/Workspace
-        target: /opt/data/vault/Workspace
-        bind: {create_host_path: false}
     healthcheck:
       test: [CMD, /opt/hermes/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18642/health', timeout=3)"]
       interval: 15s

@@ -47,7 +47,7 @@ Running record for the Docker-first Company OS refactor (PRD v1.1). It records w
 | D12 | 2026-11-23 | The Venture Factory requires a non-empty approved PRD/GTM (#79) | Observed: a lead without them had no source-of-truth metric and blocked (improvement loop, before/after below) |
 | D13 | 2026-11-23 | Unattended agent execution is effectively on (venture cron loops, Kanban dispatch, LNX loops), although `deploy/pilot.json` still says `unattended_execution: false` (checked on `main` 2026-11-25). That file is a hashed native input describing the retired pilot and is not edited | Safeguards: Hermes holds no outbound, payment or publishing credentials; the approval tool never executes; T3 is isolated from Hermes state and the Docker socket; pause/retire stop routines; health checks report by exception |
 | D14 | 2026-11-25 | Hindsight runs as its own digest-pinned server container (`hindsight-api` 1.2.0) with the catalog plugin in `local_external` mode. Extraction uses `openai-codex` through a separate ChatGPT device login; embeddings are local (bge-small); the reranker is `rrf`; there is one bank per profile. Banks are an organizational separation, not a confidentiality boundary between Hermes profiles (one container, one uid); an API key keeps non-Hermes host processes out. Secrets are scrubbed by Hermes's native memory egress redaction, which the deploy proves against each new Hermes image. Supersedes the embedded-mode part of D8 | The founder chose the ChatGPT subscription: Hermes already runs on OpenAI, so no new third party sees text; what is new is durable storage (local Postgres and the recovery image). Per-profile keys would add no boundary, because every profile can read every key. Embedded mode cannot be pinned without forking the Hermes image. With no `hindsight-api` beside the plugin, the plugin falls back to `uvx hindsight-api@<embed version>` = `hindsight-api-slim[all]` (torch). That resolves at runtime, its cache lands in the Hermes home, and it runs inside Hermes's 2 GB cgroup. The plugin's own README says the server cannot be installed in Hermes's venv (protobuf/otel conflicts). A separate container gets its own memory and CPU caps and a digest pin |
-| D15 | 2026-11-26 | Use the founder’s personal My Drive/Nix. A host-only token runs folder-rooted bisync for Workspace. Project the Git-reviewed KB one way | Founder chose one account. A personal OAuth token grants account-wide access. Host placement isolates it from the runtimes. [Setup](KNOWLEDGE-VAULT.md) |
+| D15 | 2026-11-26 | Reverse PR #109 before activation. Hermes uses the pinned Google Workspace CLI with the founder’s own Google account. Agents work in My Drive/Nix and reviewed policy stays in Git | Direct access gives the founder and Hermes one working copy with no sync job or second account. The account-wide grant is readable by every Hermes profile. [Setup](KNOWLEDGE-VAULT.md) |
 
 ## 4. Evidence ledger
 
@@ -91,10 +91,10 @@ One consolidated Todoist request (project `Nix`, label `nix-approval`), raised 2
 2. Builder GitHub identity for T3 (contents + PR write; no workflows/admin/bypass). **Open:** agents still open PRs with the founder's identity ([AUTHORITY](AUTHORITY.md)).
 3. Coding-harness logins inside T3. Open; not re-verified.
 4. The founder chose ChatGPT for Hindsight extraction (D14). After #102 deploys, complete the [one-time device sign-in](../deploy/hindsight/README.md).
-5. Drive vault activation awaits the founder’s one-time sign-in after deployment (D15).
+5. Direct Hermes Drive access awaits the founder’s one-time sign-in after deployment (D15).
 6. Todoist API token for the agents' approval queue (`TODOIST_API_TOKEN` in Hermes). Open; not re-verified.
 7. Twenty first admin + per-venture workspace and role-scoped API key, when a venture needs CRM. Open (CRM is off).
-8. Personal profile connectors (email, calendar, private documents): founder-authorized Google session and a scoped Drive location. Open.
+8. Personal profile email and calendar connectors. Open.
 
 Removed as obsolete on 2026-11-25: the request to allow `pull_request_target` for `independent-review.yml` (that workflow was removed from `main`), and the review of #80 (merged 2026-11-23 20:41 UTC).
 
@@ -104,7 +104,7 @@ Removed as obsolete on 2026-11-25: the request to allow `pull_request_target` fo
 - **After harness logins and the builder identity:** a venture lead launches a T3 task through `t3-delegate`; two concurrent tasks on separate worktrees; a red CI proves merge blocking (acceptance D).
 - **After a Twenty key and a Todoist token:** run `crm-lead-ops` live for the `demo` venture with a fictitious lead; the approval appears in Todoist; nothing is sent (acceptance E/H).
 - **Hindsight:** After #102 deploys and the founder signs in, verify extraction and recall with synthetic text in a test bank on the pinned server (D14).
-- **Drive + Obsidian:** one-way projection of the reviewed KB into the vault; human documents Drive-native; PR-mediated promotion back.
+- **Drive:** after founder sign-in, verify a Markdown round trip inside Nix and open a native Google document from an index note (D15).
 - **NixKit packs and Skillshare:** core and engineering packs are deployed through Skillshare (#100, merged 2026-11-25). Remaining: a native discovery readback on production after a healthy `main` deployment (see the pack migration evidence below).
 
 ## Pack migration evidence — 2026-11-25
