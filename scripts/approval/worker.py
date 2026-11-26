@@ -21,6 +21,9 @@ import uuid
 
 ROOT = Path('/srv/nix-clean')
 API = 'https://api.todoist.com/api/v1/'
+# A private personal project: the shared `Nix` workspace project is visible to other members, and
+# approval requests carry exact previews (outbound text, costs, lead details).
+PROJECT_NAME = 'Nix approvals'
 LABEL = 'nix-approval'
 NAMESPACE = uuid.UUID('6f1c8e2a-6f3b-4d1e-9a52-2d6c3b1f0a77')
 SLUG = re.compile(r'[a-z0-9][a-z0-9-]{2,63}')
@@ -150,9 +153,9 @@ class Todoist:
 
     def check(self):
         project = self.call('projects/' + self.project)
-        if (project['id'] != self.project or project['name'] != 'Nix'
+        if (project['id'] != self.project or project['name'] != PROJECT_NAME
                 or project['is_archived'] or project['is_shared'] or project.get('workspace_id') is not None):
-            raise ValueError('Expected an active, private Nix project')
+            raise ValueError('Expected the active, private ' + PROJECT_NAME + ' project')
 
     def tasks(self, *, completed=False, now=None):
         params = {'project_id': self.project, 'limit': 100}
@@ -164,7 +167,7 @@ class Todoist:
         for _ in range(20):
             page = self.call(endpoint, params)
             yield from (task for task in page[field] if task['project_id'] == self.project)
-            cursor = page['next_cursor']
+            cursor = page.get('next_cursor')  # absent on the last page of completed tasks
             if not cursor:
                 return
             params['cursor'] = cursor
@@ -335,7 +338,7 @@ def main():
         remote = Todoist(token, project)
         if args.check:
             remote.check()
-            print('Todoist credential and Nix project access verified.')
+            print('Todoist credential and ' + PROJECT_NAME + ' project access verified.')
         else:
             tick(ROOT, remote, datetime.now(timezone.utc))
     except HTTPError as error:

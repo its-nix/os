@@ -40,3 +40,7 @@
 ## Operate
 
 `docker logs nixos-reviewer` shows one line per failure (never PR contents). Each check run's summary names the reviewer, the excluded builder and any providers skipped. To take a provider out of rotation, edit `REVIEW_POOL` in `reviewer.env` and recreate the container with the same `docker compose … up -d reviewer` command as in step 2 (a plain restart keeps the old environment).
+
+## Always-merge
+
+Each poll, the App enables squash auto-merge on every eligible PR (same repository, base `main`, not a draft, no `hold` label) and updates auto-merge PRs that are behind `main`. It needs the App's Contents and Pull requests permissions set to read and write. The ruleset remains the only gate: auto-merge waits for `verify` and `independent-review` on an up-to-date head. To guarantee a PR stays open, convert it to a draft: GitHub never merges drafts. The `hold` label turns auto-merge off on the next poll (about a minute), so an already-armed PR whose checks finish within that window can still merge.
