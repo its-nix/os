@@ -9,9 +9,10 @@
 // The PR head is never checked out or executed. The diff comes from the API and goes to a
 // reviewer CLI with tools disabled.
 
-import { createHash, createHmac, createSign, randomUUID } from 'node:crypto';
+import { createHash, createHmac, createSign, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, chownSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,6 +32,10 @@ const DEFAULT_COOLDOWN_MS = 60 * MIN_RETRY_MS;
 const DAY_MS = 24 * DEFAULT_COOLDOWN_MS;
 const MAX_COOLDOWN_MS = 7 * DAY_MS;
 const USAGE_LIMIT = 'usage-limit';
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const MAX_WEBHOOK_BYTES = 1024 * 1024;
+const MAX_PENDING_HINTS = 1024;
+const PR_WEBHOOK_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review', 'labeled', 'unlabeled', 'edited']);
 // Any change under a protected path needs approval, additions included: a new test module can
 // still alter discovery or patch the runner.
 export function isProtectedChange(policy, f) {
@@ -470,7 +475,7 @@ function run(cmd, args, timeoutMs, extraEnv = {}) {
     chownSync(cwd, CLI_UID, CLI_UID);
     const env = { PATH: process.env.PATH, HOME: '/var/lib/t3', LANG: 'C.UTF-8', TZ: 'UTC', NO_COLOR: '1', ...extraEnv };
     // The orchestrator holds the App key (root-only); reviewer CLIs run as the login user, which
-    // cannot read it or the selection seed.
+    // cannot read it, the selection seed or the webhook secret.
     try {
       const child = execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env,
         ...(process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : {}) },
@@ -676,14 +681,18 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     const retryAfterRevocation = wasProtected && completed.conclusion === 'success' && !approved();
     const retryAt = Number(binding.match(RETRY_BINDING)?.[1]);
     const completedAt = Date.parse(completed.completed_at);
-    const retryAfterCooldown = title === RETRYABLE && (Number.isSafeInteger(retryAt) && retryAt > 0
-      ? now >= Math.max(retryAt, (completedAt || 0) + MIN_RETRY_MS)
-      : !(now - completedAt <= RETRY_AFTER_MS));
+    const retryDue = title === RETRYABLE && (Number.isSafeInteger(retryAt) && retryAt > 0
+      ? Math.max(retryAt, (completedAt || 0) + MIN_RETRY_MS)
+      : completedAt + RETRY_AFTER_MS);
     // An approval is reused only if no blocking verdict on this PR is newer: approved A, rejected B, back to A
     // must be reviewed again with B's findings rather than ride A's old success.
     const supersededApproval = completed.conclusion === 'success' && !retryAfterRevocation &&
       (await priorBlockingChecks(cfg, token, pr, api)).some((c) => c.id > completed.id);
-    if (!retryAfterApproval && !retryAfterRevocation && !retryAfterCooldown && !supersededApproval) return null;
+    if (!retryAfterApproval && !retryAfterRevocation && !supersededApproval &&
+        (title !== RETRYABLE || retryDue > now)) {
+      if (title === RETRYABLE) deps.scheduleRetry?.(retryDue);
+      return null;
+    }
   }
   const active = runs.find((c) => c.status !== 'completed' && c.output?.title !== REREVIEW && now - Date.parse(c.started_at) < staleMs);
   if (active) return null;  // under review
@@ -751,15 +760,17 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const resets = order.map((provider) => cooldowns?.until(provider, completedAt));
   const retryAt = resets.length && resets.every(Boolean) ? Math.max(Math.min(...resets), completedAt + MIN_RETRY_MS) : null;
   const retry = retryAt ? `Retried automatically at or after ${resetTime(retryAt)}.` : 'Retried automatically after 30 minutes.';
-  return finish('failure', RETRYABLE, `No eligible provider produced a verdict (excluded builder: ${excluded.join(', ') || 'none declared'}). ` +
+  const result = await finish('failure', RETRYABLE, `No eligible provider produced a verdict (excluded builder: ${excluded.join(', ') || 'none declared'}). ` +
     retry + skipped(), retryAt, completedAt);
+  deps.scheduleRetry?.(retryAt ?? completedAt + RETRY_AFTER_MS);
+  return result;
 }
 
 // Always-merge: every eligible PR gets squash auto-merge, so it merges as soon as the ruleset's
 // required checks (verify + independent-review, up to date) pass. The ruleset stays the gate:
 // enabling auto-merge never bypasses a check. Opt-outs: a draft PR is never merged (GitHub enforces
-// it, and converting to draft disables auto-merge); a `hold` label turns auto-merge off on the next
-// poll (about a minute), so an already-armed PR whose checks finish inside that window can merge.
+// it, and converting to draft disables auto-merge); a `hold` label turns auto-merge off when the
+// PR is next checked, so an already-armed PR can merge before the hold is processed.
 const HOLD_LABEL = 'hold';
 const RETRY_MS = 30 * 60 * 1000;
 const autoMergeBackoff = new Map();  // repository/PR -> {key, until}: only failed attempts back off
@@ -940,8 +951,13 @@ export async function reviewRepository(cfg, token, repository, deps = {}) {
   if (!defaultBranch || typeof isPrivate !== 'boolean') throw new Error('Incomplete repository metadata');
   const repoCfg = { ...cfg, repo, defaultBranch, private: isPrivate, reviewOnly: cfg.reviewOnlyRepos?.has(repo.toLowerCase()) };
   const prs = [];
-  // All bases are listed so the App sees and disarms PRs retargeted away from the default branch.
-  for await (const batch of pages(`/repos/${repo}/pulls?state=open`, token, api)) prs.push(...batch);
+  if (deps.number) {
+    const pr = await api(`/repos/${repo}/pulls/${deps.number}`, { token });
+    if (pr.state === 'open') prs.push(pr);
+  } else {
+    // All bases are listed so the App can disarm PRs retargeted away from the default branch.
+    for await (const batch of pages(`/repos/${repo}/pulls?state=open`, token, api)) prs.push(...batch);
+  }
   const policies = new Map();
   for (const pr of prs) {
     const key = `${repo}#${pr.number}`;
@@ -955,10 +971,177 @@ export async function reviewRepository(cfg, token, repository, deps = {}) {
       // Pin both policy files to the exact commit on the default branch used for the review.
       if (!policies.has(base)) policies.set(base, loadRepoPolicy(repoCfg, token, base, api));
       const prCfg = { ...repoCfg, policy: await policies.get(base) };
-      await reviewOne(prCfg, token, pr, deps);
+      await reviewOne(prCfg, token, pr, { ...deps, scheduleRetry: (due) => deps.scheduleRetry?.(pr.number, due) });
       if (isPrivate) await mergePrivate(prCfg, token, pr, deps);
     } catch (e) { reportFailure(`review ${key}`, e, log); }
   }
+}
+
+export function webhookHints(event, payload) {
+  const repo = payload?.repository?.full_name;
+  if (typeof repo !== 'string') return [];
+  const action = payload.action;
+  const validNumber = (number) => Number.isSafeInteger(number) && number > 0;
+  if ((event === 'pull_request' && PR_WEBHOOK_ACTIONS.has(action)) ||
+      (event === 'pull_request_review' && action === 'submitted')) {
+    const number = payload.pull_request?.number;
+    return validNumber(number) ? [{ repo, number }] : [];
+  }
+  if ((event !== 'check_run' && event !== 'check_suite') || action !== 'completed') return [];
+  const check = payload[event];
+  const numbers = (Array.isArray(check?.pull_requests) ? check.pull_requests : [])
+    .map((pr) => pr?.number).filter(validNumber);
+  if (numbers.length) return [...new Set(numbers)].map((number) => ({ repo, number }));
+  const sha = check?.head_sha;
+  return typeof sha === 'string' && SHA.test(sha) ? [{ repo, sha }] : [];
+}
+
+function removeWebhookSocket(path) {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return;
+  if (!stat.isSocket()) throw new Error('Webhook path is not a socket');
+  rmSync(path);
+}
+
+export async function listenWebhook(path, secret, enqueue) {
+  if (!path.startsWith('/')) throw new Error('Webhook socket path must be absolute');
+  removeWebhookSocket(path);
+  const server = createServer({ requestTimeout: 10_000, headersTimeout: 10_000, connectionsCheckingInterval: 1000 },
+    async (req, res) => {
+      const reply = (status) => res.writeHead(status, { Connection: 'close' }).end();
+      // Tailscale removes its /github mount prefix when proxying to the Unix socket.
+      if (req.url !== '/github' && req.url !== '/') return reply(404);
+      if (req.method !== 'POST') return reply(405);
+      const signature = req.headers['x-hub-signature-256'];
+      if (typeof signature !== 'string' || !/^sha256=[0-9a-f]{64}$/i.test(signature)) return reply(401);
+      if (Number(req.headers['content-length']) > MAX_WEBHOOK_BYTES) return reply(413);
+      const chunks = [];
+      let bytes = 0;
+      try {
+        for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+          bytes += chunk.length;
+          if (bytes > MAX_WEBHOOK_BYTES) return reply(413);
+          chunks.push(chunk);
+        }
+      } catch { return reply(400); }
+      const body = Buffer.concat(chunks, bytes);
+      const expected = createHmac('sha256', secret).update(body).digest();
+      if (!timingSafeEqual(expected, Buffer.from(signature.slice(7), 'hex'))) return reply(401);
+      let payload;
+      try { payload = JSON.parse(body.toString('utf8')); } catch { return reply(400); }
+      let accepted = true;
+      for (const hint of webhookHints(req.headers['x-github-event'], payload)) {
+        if (enqueue(hint) === false) accepted = false;
+      }
+      reply(accepted ? 204 : 503);
+    });
+  server.maxConnections = 32;
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(path, resolve);
+  });
+  try { chmodSync(path, 0o600); } catch (error) {
+    server.close();
+    throw error;
+  }
+  return server;
+}
+
+export function loadWebhookSecret(path, log = console.error, uid = 0) {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.uid !== uid || (stat.mode & 0o7777) !== 0o400) throw new Error();
+    const secret = readFileSync(path, 'utf8').trim();
+    if (!secret) throw new Error();
+    return secret;
+  } catch {
+    log('Webhook secret missing or unreadable (requires root ownership and mode 0400); polling only.');
+    return null;
+  }
+}
+
+export function reconcileInterval(webhook, env = process.env) {
+  const configured = Number(webhook ? env.REVIEW_RECONCILE_INTERVAL_MS : env.REVIEW_INTERVAL_MS);
+  if (Number.isSafeInteger(configured) && configured > 0 && configured <= MAX_TIMER_MS) return configured;
+  return webhook ? 30 * MIN_RETRY_MS : MIN_RETRY_MS;
+}
+
+const hintKey = ({ repo, number, sha }) => `${repo}#${number ?? sha}`;
+
+export function reviewerWork(cfg, api, { log = console.error, delay = 250, now = Date.now,
+  later = setTimeout, cancel = clearTimeout, ...deps } = {}) {
+  let repositories = new Map();
+  const pending = new Map();
+  const retries = new Map();
+  let running = false;
+
+  const enqueue = (key, work) => {
+    pending.set(key, work);
+    if (!running) {
+      running = true;
+      later(drain, delay);
+    }
+  };
+
+  async function drain() {
+    const [key, work] = pending.entries().next().value;
+    // Leaving the pending map allows exactly one trailing evaluation while this key is running.
+    pending.delete(key);
+    try { await work(); } catch (error) { reportFailure('reviewer work', error, log); }
+    if (pending.size) later(drain, delay);
+    else running = false;
+  }
+
+  function scheduleRetry(hint, due) {
+    const key = hintKey(hint);
+    const retry = retries.get(key);
+    if (retry?.due === due) return;
+    if (retry) cancel(retry.timer);
+    const timer = later(() => {
+      retries.delete(key);
+      if (now() < due) scheduleRetry(hint, due);
+      else addHint(hint, true);
+    }, Math.min(MAX_TIMER_MS, Math.max(0, due - now())));
+    retries.set(key, { due, timer });
+  }
+
+  function addHint({ repo, number, sha }, internal = false) {
+    repo = repo.toLowerCase();
+    if (!repositories.has(repo)) return true;
+    const key = hintKey({ repo, number, sha });
+    if (!internal && !pending.has(key) && pending.size >= MAX_PENDING_HINTS) return false;
+    enqueue(key, async () => {
+      const repository = repositories.get(repo);
+      if (!repository) return;
+      if (number) await evaluate(repo, repository, number);
+      else {
+        // GitHub can omit check-to-PR associations. Find open PRs with this exact head in the API.
+        for await (const batch of pages(`/repos/${repository.full_name}/pulls?state=open`, null, api)) {
+          for (const pr of batch) if (pr.head?.sha === sha) addHint({ repo, number: pr.number }, true);
+        }
+      }
+    });
+    return true;
+  }
+
+  async function evaluate(repo, repository, number) {
+    await reviewRepository(cfg, null, repository, { ...deps, gh: api, log, now, number,
+      scheduleRetry: (number, due) => scheduleRetry({ repo, number }, due) });
+  }
+
+  function sweep() {
+    enqueue('sweep', async () => {
+      const installed = await listInstallationRepositories(null, api);
+      repositories = new Map(installed.map((repo) => [repo.full_name.toLowerCase(), repo]));
+      for (const [repo, repository] of repositories) {
+        try { await evaluate(repo, repository); } catch (error) {
+          reportFailure(`repository ${repository.full_name}`, error, log);
+        }
+      }
+    });
+  }
+
+  return { addHint, sweep };
 }
 
 async function loop(cfg) {
@@ -968,16 +1151,17 @@ async function loop(cfg) {
     if (!credentials || Date.parse(credentials.expires_at) - Date.now() < MIN_RETRY_MS) credentials = await installationToken(cfg);
     return gh(path, { ...options, token: credentials.token });
   };
-  for (;;) {
-    try {
-      credentials = await installationToken(cfg);
-      for (const repository of await listInstallationRepositories(null, api)) {
-        try { await reviewRepository(cfg, null, repository, { gh: api }); }
-        catch (e) { reportFailure(`repository ${repository.full_name}`, e, console.error); }
-      }
-    } catch (e) { reportFailure('cycle', e, console.error); }
-    await new Promise((r) => setTimeout(r, cfg.intervalMs));
+  const work = reviewerWork(cfg, api);
+  const secret = loadWebhookSecret('/run/reviewer/webhook-secret');
+  let webhook;
+  try {
+    if (secret) webhook = await listenWebhook(cfg.socketPath, secret, work.addHint);
+    else if (cfg.socketPath.startsWith('/')) removeWebhookSocket(cfg.socketPath);
+  } catch {
+    console.error('Could not prepare the webhook socket; polling only.');
   }
+  work.sweep();
+  setInterval(work.sweep, reconcileInterval(webhook));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -989,7 +1173,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     pool: parsePool(process.env.REVIEW_POOL),
     reviewOnlyRepos: new Set((process.env.REVIEW_ONLY_REPOS || '').split(',').map((repo) => repo.trim().toLowerCase()).filter(Boolean)),
     timeoutMs: Number(process.env.REVIEW_TIMEOUT_MS || 600000),
-    intervalMs: Number(process.env.REVIEW_INTERVAL_MS || 60000),
+    socketPath: process.env.REVIEW_WEBHOOK_SOCKET || '/run/nix-reviewer/webhook.sock',
   };
   if (!cfg.seed) console.error('Selection seed missing: reviewer order is predictable until reviewer/secrets/seed exists.');
   if (!cfg.appId) { console.error('REVIEW_APP_ID is not configured; reviewer idle (gate fails closed: no check is posted).'); setInterval(() => {}, 1 << 30); }
