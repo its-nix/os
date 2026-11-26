@@ -329,6 +329,12 @@ async function listReviewRuns(cfg, token, sha, api) {
 
 const PR_BINDING = /:pr:(\d+)$/;
 
+// Runs bound to another PR (same head SHA) never stand in for this PR's state. Legacy runs carry no binding.
+const ownRuns = (runs, number) => runs.filter((run) => {
+  const bound = run.external_id?.match(PR_BINDING)?.[1];
+  return !bound || bound === String(number);
+});
+
 async function earlierCommits(cfg, token, pr, api) {
   const [owner, repo] = cfg.repo.split('/');
   const query = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String) {
@@ -354,15 +360,23 @@ async function earlierCommits(cfg, token, pr, api) {
       }
       if (!SHA.test(before) || !SHA.test(after)) continue;
       // A force push can remove earlier reviewed heads as well as the immediately preceding head.
+      let seen = 0;
+      let total = 0;
       for (let page = 1; ; page++) {
         const removed = await api(`/repos/${cfg.repo}/compare/${after}...${before}?per_page=100&page=${page}`, { token });
+        total = removed.total_commits ?? total;
+        seen += removed.commits.length;
         for (const { sha } of removed.commits) if (SHA.test(sha)) commits.add(sha);
         if (removed.commits.length < 100) break;
       }
+      // The compare API caps how many commits it returns; a history it cannot list fully fails closed.
+      if (seen < total) throw new Error('Could not read PR review history');
     }
     cursor = timeline.pageInfo.hasNextPage ? timeline.pageInfo.endCursor : null;
   } while (cursor);
-  commits.delete(pr.head.sha);
+  // The current head is scanned too: a re-review of the same head (main moved, a requested re-review, a policy
+  // change, or a force push back to a rejected head) must still carry that head's own blocking verdicts.
+  commits.add(pr.head.sha);
   return commits;
 }
 
@@ -417,7 +431,7 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const approved = () => (deps.approved || hasFounderApproval)(pr.head.sha);
   if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft || !SHA.test(pr.head.sha)) return null;
   const staleMs = cfg.timeoutMs * cfg.pool.length + 10 * 60 * 1000;
-  const runs = await listReviewRuns(cfg, token, pr.head.sha, api);
+  const runs = ownRuns(await listReviewRuns(cfg, token, pr.head.sha, api), pr.number);
   const now = Date.now();
   const externalId = (scope) => `${cfg.policy.version}:${scope}:${pr.base.sha}`;
   const completed = runs.find((c) => c.status === 'completed');
@@ -581,7 +595,7 @@ export async function keepUpToDate(cfg, token, pr, api = gh) {
   // Live state may have changed since the listing: only an armed, held-free main PR from this repo.
   if (!full.auto_merge || !eligible(cfg, full) || isHeld(full)) return null;
   if (!SHA.test(full.head.sha)) return null;
-  const runs = await listReviewRuns(cfg, token, full.head.sha, api);
+  const runs = ownRuns(await listReviewRuns(cfg, token, full.head.sha, api), full.number);
   const decided = runs.find((run) => run.status === 'completed' && ['success', 'failure'].includes(run.conclusion));
   if (decided?.conclusion === 'failure') return null;
   // update-branch pins the head but not the base. A same-head retarget in the gap would merge another

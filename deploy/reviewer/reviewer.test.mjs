@@ -240,6 +240,27 @@ test('older prior findings are dropped for length, the newest verdict always car
   assert.match(prompt, /Older prior findings omitted for length/);
 });
 
+test('a re-review of the same head after main moved carries that head\'s own blocking verdict', async () => {
+  const state = { calls: [], headAfter: PR.head.sha,
+    history: { null: { nodes: [], pageInfo: {} } },
+    existing: [{ ...priorRun(3, 'codex', 'SAME HEAD blocker'), external_id: `${CFG.policy.version}:ordinary:${'0'.repeat(40)}:pr:${PR.number}` }] };
+  let prompt;
+  await reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async (_cmd, args) => { [, prompt] = args; return { ok: true, out: '{"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}' }; } });
+  assert.match(prompt, /SAME HEAD blocker/);
+});
+
+test('a force push the compare API cannot list in full fails closed', async () => {
+  const before = 'c'.repeat(40), after = 'd'.repeat(40);
+  const state = { calls: [], headAfter: PR.head.sha,
+    history: { null: { nodes: [{ beforeCommit: { oid: before }, afterCommit: { oid: after } }], pageInfo: {} } } };
+  const api = fakeApi(state);
+  await assert.rejects(reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, {
+    gh: (path, options) => path.includes('/compare/') ? { commits: [{ sha: 'e'.repeat(40) }], total_commits: 300 } : api(path, options),
+    collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => assert.fail('reviewed with incomplete history') }), /review history/);
+});
+
 test('review fails closed when the newest blocking verdict alone exceeds the budget', async () => {
   const old = 'a'.repeat(40);
   const state = { calls: [], headAfter: PR.head.sha,
@@ -562,6 +583,17 @@ test('update-branch waits when the latest decided review on the live head failed
   runs.push(completed(4, 'success', 'APPROVE by grok'));
   assert.equal(await keepUpToDate(CFG, 't', pr, api), 'updated');
   assert.equal(calls.at(-1)[0], 'PUT');
+});
+
+test('update-branch ignores a passing verdict bound to another PR on the same head', async () => {
+  const pr = { ...PR, auto_merge: { merge_method: 'squash' } };
+  const runs = [{ id: 1, app: { id: 1 }, status: 'completed', conclusion: 'failure', output: { title: 'REQUEST_CHANGES by codex' }, external_id: `x:ordinary:b:pr:${pr.number}` },
+    { id: 2, app: { id: 1 }, status: 'completed', conclusion: 'success', output: { title: 'APPROVE by grok' }, external_id: `x:ordinary:b:pr:${pr.number + 1}` }];
+  const api = async (path, { method = 'GET' } = {}) => {
+    if (method !== 'GET') assert.fail('updated despite its own failed review');
+    return path.includes('/check-runs?') ? { check_runs: runs } : { ...pr, mergeable_state: 'behind' };
+  };
+  assert.equal(await keepUpToDate(CFG, 't', pr, api), null);
 });
 
 test('always-merge: base retargeting is re-validated live; an armed PR leaving main is disarmed', async () => {
