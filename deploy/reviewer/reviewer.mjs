@@ -789,9 +789,11 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   // State comes from the live PR each poll, so successes need no cache: the next poll sees auto_merge.
   // A held public default-branch PR is disarmed whoever armed it. For a PR that becomes ineligible,
   // or belongs to a private or review-only repo, only disarm the App's own auto-merge.
-  const publicAutoMerge = cfg.private === false && !cfg.reviewOnly;
+  const publicAutoMerge = cfg.private === false && cfg.enforced === true && !cfg.reviewOnly;
+  // The hold brake is independent of arming: on any public default-branch PR it disarms whoever armed it.
+  const publicHoldBrake = cfg.private === false && !cfg.reviewOnly;
   let action;
-  if (pr.auto_merge && ((publicAutoMerge && held && pr.base?.ref === cfg.defaultBranch) ||
+  if (pr.auto_merge && ((publicHoldBrake && held && pr.base?.ref === cfg.defaultBranch) ||
       ((!publicAutoMerge || !eligible(cfg, pr)) && armedByReviewer(cfg, pr)))) action = 'disable';
   else if (publicAutoMerge && !pr.auto_merge && !held && eligible(cfg, pr)) action = 'enable';
   else return null;
@@ -862,7 +864,7 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
 // auto-merge PR left behind by another merge is updated from the default branch. The new head
 // gets its own CI run and independent review; nothing is skipped.
 export async function keepUpToDate(cfg, token, pr, api = gh) {
-  if (cfg.private !== false || cfg.reviewOnly || !pr.auto_merge || !eligible(cfg, pr) || isHeld(pr)) return null;
+  if (cfg.private !== false || cfg.enforced !== true || cfg.reviewOnly || !pr.auto_merge || !eligible(cfg, pr) || isHeld(pr)) return null;
   const full = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
   if (full.mergeable_state !== 'behind' || full.head.sha !== pr.head.sha) return null;
   if (!full.auto_merge || !eligible(cfg, full) || isHeld(full) || full.base.repo?.private === true) return null;
@@ -915,7 +917,9 @@ async function noteNoCI(cfg, token, pr, api) {
 }
 
 export async function mergePrivate(cfg, token, pr, deps = {}) {
-  if (cfg.private !== true || !eligible(cfg, pr) || isHeld(pr) || !SHA.test(pr.head.sha) || !SHA.test(pr.base.sha)) return null;
+  // Self-merge is the path for every repo where GitHub does not enforce this check: private repos, and public
+  // repos whose default branch rules do not require `independent-review`.
+  if (selfMergeMode(cfg) !== true || !eligible(cfg, pr) || isHeld(pr) || !SHA.test(pr.head.sha) || !SHA.test(pr.base.sha)) return null;
   const api = deps.gh || gh;
   const approved = () => (deps.approved || hasFounderApproval)(pr.head.sha);
   const [latest] = (await listReviewRuns(cfg, token, pr.head.sha, api)).filter((run) => belongsToPR(cfg, pr, run));
@@ -931,7 +935,7 @@ export async function mergePrivate(cfg, token, pr, deps = {}) {
   const path = `/repos/${cfg.repo}/pulls/${pr.number}`;
   const live = await api(path, { token });
   if (live.state !== 'open' || !eligible(cfg, live) || isHeld(live) || live.mergeable !== true ||
-      live.base.repo?.private === false || armedByReviewer(cfg, live) ||
+      (cfg.private === true && live.base.repo?.private === false) || armedByReviewer(cfg, live) ||
       live.head.sha !== pr.head.sha || live.base.sha !== pr.base.sha || (isProtected && !approved())) return null;
   // GitHub can atomically pin the head SHA only. Read the live base immediately before the write.
   const result = await api(`${path}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
@@ -944,12 +948,31 @@ function reportFailure(operation, error, log) {
   log(`${operation}: ${error instanceof GitHubError ? error.message : 'operation failed'}`);
 }
 
+export const selfMergeMode = (cfg) => cfg.private === true || (cfg.private === false && cfg.enforced !== true);
+
+// Auto-merge is safe only where GitHub itself requires this check before merging. Without that rule an armed PR
+// would merge on the repo's other required checks alone, so such a public repo is handled like a private one.
+// The rule must pin the check to this App (any other source, e.g. an Actions job a PR can write, could
+// satisfy it) and require an up-to-date branch (else a head reviewed on an older base could merge).
+export async function requiresIndependentReview(repo, branch, token, api = gh, appId) {
+  try {
+    const rules = await api(`/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`, { token });
+    return Array.isArray(rules) && rules.some((rule) => rule?.type === 'required_status_checks' &&
+      rule.parameters?.strict_required_status_checks_policy === true &&
+      (rule.parameters?.required_status_checks || []).some((check) => check?.context === CHECK &&
+        appId != null && String(check?.integration_id) === String(appId)));
+  } catch {
+    return false;  // unknown is treated as not enforced: self-merge stays gated by this review and CI
+  }
+}
+
 export async function reviewRepository(cfg, token, repository, deps = {}) {
   const api = deps.gh || gh;
   const log = deps.log || console.error;
   const { full_name: repo, default_branch: defaultBranch, private: isPrivate } = repository;
   if (!defaultBranch || typeof isPrivate !== 'boolean') throw new Error('Incomplete repository metadata');
-  const repoCfg = { ...cfg, repo, defaultBranch, private: isPrivate, reviewOnly: cfg.reviewOnlyRepos?.has(repo.toLowerCase()) };
+  const enforced = isPrivate ? false : await requiresIndependentReview(repo, defaultBranch, token, api, cfg.appId);
+  const repoCfg = { ...cfg, repo, defaultBranch, private: isPrivate, enforced, reviewOnly: cfg.reviewOnlyRepos?.has(repo.toLowerCase()) };
   const prs = [];
   if (deps.number) {
     const pr = await api(`/repos/${repo}/pulls/${deps.number}`, { token });
@@ -972,7 +995,7 @@ export async function reviewRepository(cfg, token, repository, deps = {}) {
       if (!policies.has(base)) policies.set(base, loadRepoPolicy(repoCfg, token, base, api));
       const prCfg = { ...repoCfg, policy: await policies.get(base) };
       await reviewOne(prCfg, token, pr, { ...deps, scheduleRetry: (due) => deps.scheduleRetry?.(pr.number, due) });
-      if (isPrivate) await mergePrivate(prCfg, token, pr, deps);
+      if (selfMergeMode(prCfg)) await mergePrivate(prCfg, token, pr, deps);
     } catch (e) { reportFailure(`review ${key}`, e, log); }
   }
 }
