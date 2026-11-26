@@ -90,7 +90,7 @@ function fakeApi(state) {
 }
 const PR = { number: 5, title: 't', body: 'Builder: codex', draft: false, base: { ref: 'main', sha: 'c'.repeat(40) },
   head: { sha: 'd'.repeat(40), repo: { full_name: 'its-nix/os' } } };
-const CFG = { repo: 'its-nix/os', defaultBranch: 'main', private: false, appId: '1', pool: POOL, timeoutMs: 1000,
+const CFG = { repo: 'its-nix/os', defaultBranch: 'main', private: false, enforced: true, appId: '1', pool: POOL, timeoutMs: 1000,
   policy: parseProtectedPaths('/.github/ @o\n/deploy/reviewer/ @o\n') };
 const ordinaryId = `${CFG.policy.version}:ordinary:${PR.base.sha}`;
 const prBinding = `:repo:${CFG.repo}:ref:${CFG.defaultBranch}:pr:${PR.number}`;
@@ -984,7 +984,7 @@ test('repository polling ignores forks and non-default PRs, and applies default-
 
 test('public repository uses its non-main default branch for auto-merge and branch updating', async () => {
   const repo = { ...KIT, full_name: 'its-nix/dsio', private: false };
-  const cfg = { ...KIT_CFG, repo: repo.full_name, private: false };
+  const cfg = { ...KIT_CFG, repo: repo.full_name, private: false, enforced: true };
   const pr = { ...KIT_PR, base: { ...KIT_PR.base, repo }, head: { ...KIT_PR.head, repo } };
   const calls = [];
   const api = async (path, { method = 'GET', body } = {}) => {
@@ -998,6 +998,22 @@ test('public repository uses its non-main default branch for auto-merge and bran
   assert.equal(calls[1][2].variables.head, KIT_PR.head.sha);
   assert.equal(await keepUpToDate(cfg, 't', { ...pr, auto_merge: {} }, api), 'updated');
   assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/dsio/pulls/5/update-branch', { expected_head_sha: pr.head.sha }]);
+});
+
+test('a public repo whose rules do not require independent-review is never armed and is self-merge gated', async () => {
+  const { requiresIndependentReview } = await import('./reviewer.mjs');
+  const rules = (contexts) => async () => [{ type: 'required_status_checks', parameters: { required_status_checks: contexts.map((context) => ({ context })) } }];
+  assert.equal(await requiresIndependentReview('its-nix/meabeclick', 'main', 't', rules(['build'])), false);
+  assert.equal(await requiresIndependentReview('its-nix/os', 'main', 't', rules(['verify', 'independent-review'])), true);
+  assert.equal(await requiresIndependentReview('its-nix/x', 'main', 't', async () => { throw new Error('403'); }), false);
+  const repo = { ...KIT, full_name: 'its-nix/meabeclick', private: false };
+  const cfg = { ...KIT_CFG, repo: repo.full_name, private: false, enforced: false };
+  const pr = { ...KIT_PR, base: { ...KIT_PR.base, repo }, head: { ...KIT_PR.head, repo } };
+  const calls = [];
+  const api = async (...args) => { calls.push(args); return { ...pr, mergeable_state: 'behind' }; };
+  assert.equal(await ensureAutoMerge(cfg, 't', pr, api), null);
+  assert.equal(await keepUpToDate(cfg, 't', { ...pr, auto_merge: {} }, api), null);
+  assert.ok(!calls.some(([path, opts]) => opts?.method && opts.method !== 'GET'));
 });
 
 test('private repos never arm or update branches and disarm only the reviewer App’s auto-merge', async () => {
