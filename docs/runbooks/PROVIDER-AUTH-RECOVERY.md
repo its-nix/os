@@ -9,7 +9,7 @@ Operator runbook for expired or revoked logins. Per section: symptom, how to con
 | Extraction login (`openai-codex`) | `hindsight/codex` in Hindsight state | memory extraction |
 | Shared model login | Hermes native store | all Hermes profiles |
 | Hermes→T3 bearer (`MCP_T3_API_KEY`) | Hermes' private `.env` | venture leads delegating to T3 |
-| Drive vault (rclone) | `/srv/nix-clean/drive/` (root-only) | the host Drive bridge |
+| Google Drive (gws) | `/opt/data/.config/gws` in the Hermes home | Hermes, directly (D17) |
 
 Ground rules:
 
@@ -116,21 +116,12 @@ docker exec -u 10000 nixos-hermes hermes -p <profile> mcp test t3
 
 `Connected` with discovered tools confirms the credential end to end. Substitute the profile name; registered leads are the venture profiles.
 
-## Google Drive vault
+## Google Drive (gws, D17)
 
-There is no `skills/google-drive` in this repository; the only Google login this deployment implements is the Drive vault's rclone token, held root-only on the host ([KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md)). The Drive design is moving from this host bridge to the gws CLI inside Hermes ([PR #112](https://github.com/its-nix/os/pull/112), open at the time of writing); until it merges, this section tracks main and the rclone login below is the one to recover. Symptom: `nix-drive.service` fails or bisync refuses; the grant expired or was revoked. Confirm on the host:
-
-```bash
-systemctl status nix-drive.timer nix-drive.service
-journalctl -u nix-drive.service
-```
-
-For a revoked or expired grant, repeat the one-time login from a computer with a browser, and keep the terminal open:
+Hermes reaches the founder's Drive directly through the pinned `gws` CLI in the Hermes image; the OAuth grant lives in the Hermes home at `/opt/data/.config/gws` (`skills/google-drive`, [KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md)). Symptom: Drive calls from Hermes fail with an auth error. A Google Cloud app left in **Testing** gets a refresh token that expires after seven days, so a weekly failure means the consent screen is not published to In production. Confirm with a read-only call that returns no file names:
 
 ```bash
-ssh -t -o ExitOnForwardFailure=yes -L 53682:127.0.0.1:53682 -l nixos vps 'sudo -n /usr/local/sbin/nix-drive login'
+ssh -l nixos vps 'docker exec -u 10000 nixos-hermes gws drive files list --params "{\"pageSize\":1,\"fields\":\"kind\"}"'
 ```
 
-Paste the folder ID at the hidden prompt, open the loopback URL printed in the terminal on that same device, and authorize rclone with the founder's account; the callback reaches the VPS through the SSH tunnel.
-
-Verify: a successful login initializes bisync and enables the seven-minute timer — re-check `systemctl status nix-drive.timer nix-drive.service`, then round-trip a disposable Markdown note from a client. If the timer had been stopped, `sudo systemctl enable --now nix-drive.timer` after the login.
+To recover, repeat the founder sign-in in [KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md#founder-sign-in): run `gws auth login --scopes https://www.googleapis.com/auth/drive` inside `nixos-hermes`, read the port from the printed `redirect_uri`, open a tunnel `ssh -N -o ExitOnForwardFailure=yes -L PORT:127.0.0.1:PORT -l nixos vps`, and approve in the browser on the same device. Re-send the OAuth client JSON first only if it was removed. Verify with the read-only call above.
