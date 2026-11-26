@@ -1,6 +1,6 @@
 # Rotating independent reviewer
 
-`reviewer.mjs` refreshes the GitHub App installation's repository list each poll. It publishes the
+`reviewer.mjs` refreshes the GitHub App installation's repository list on each reconciliation sweep. It publishes the
 `independent-review` check for open, non-draft PRs whose head is in the same repository and whose base
 is that repository's default branch. New check runs are bound to the repository, PR and base.
 Existing decisions in `its-nix/os` with a matching policy and base remain valid.
@@ -9,7 +9,7 @@ Existing decisions in `its-nix/os` with a matching policy and base remain valid.
 - **Re-review.** A new head carries forward blocking findings from the App's earlier checks on the same PR. The next reviewer must explain how each finding was resolved or disproved before approving. The newest blocking verdict is always carried in full (the check fails closed if it alone exceeds 8,000 characters). Reviewers must restate every prior finding they did not see resolved, so older verdicts are added only while they fit. A failed review also pauses automatic branch updates.
 - **Isolation.** It runs in `nixos-reviewer`: the pinned T3 image, but its own container, network (`nixos-review`) and login home (`/srv/nix-clean/reviewer/home`). Builders in `nixos-t3` can't read its logins or its App key. No ports.
 - **Untrusted input.** It never checks out PR code. The diff comes from the compare API and goes to the CLI in an empty directory, with tools disabled or plan-only.
-- **Key isolation.** The orchestrator alone (root in the container, only SETUID/SETGID/CHOWN/KILL) reads the App key and the secret selection seed (`secrets/`, root 0400). Every reviewer CLI runs as uid 10010 and cannot read them. Published summaries are also redacted for anything token-shaped.
+- **Key isolation.** The orchestrator (root in the container, only SETUID/SETGID/CHOWN/KILL) reads the App key, selection seed and webhook secret (root-owned files with mode 0400 in the read-only secrets mount). Reviewer CLIs run as uid 10010. Published summaries are redacted for anything token-shaped.
 - **Protected paths.** `its-nix/os` uses its deployed [CODEOWNERS](../../.github/CODEOWNERS). In other repos, the reviewer reads the first available `.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS` from the default-branch commit being reviewed. If no file exists, there are no protected paths. Matching paths (including both names of a rename) require a founder approval file at `/run/reviewer-approvals/<sha>` in the container. The exact commit SHA is the shared key across repositories. The reviewer waits for the file before invoking a model. See the [approval command](../../docs/AUTHORITY.md#durable-changes-code-skills-workflows-deployment-config).
 - **Repository review policy.** An optional `.github/nix-review.md` adds repository-specific criteria to the prompt. The reviewer reads and escapes this trusted text from the exact default-branch commit. The core review and tool restrictions still apply. Files over 8 KiB are ignored.
 - **Known limits.** Reviewer CLIs can still read their own login home (Codex read-only, Antigravity plan mode) but never the App key or seed; published text is redacted. Don't configure MCP servers in the reviewer home. PRs above about 100 KB of diff are refused for review and must be split. The builder is self-declared: a PR declaring several builders excludes none, and a false declaration lets the builder's own provider review in a fresh, separate session. Model rejections need a new commit.
@@ -41,11 +41,70 @@ Existing decisions in `its-nix/os` with a matching policy and base remain valid.
    - leave CODEOWNERS approval and required approving reviews disabled
 
    Then enable repository auto-merge.
-5. After this change merges, install the App on all `its-nix` repos. In GitHub, go to **Settings → GitHub Apps → nix-reviewer → Configure** and set **Repository access** to **All repositories**.
+5. For organization-wide review, install the App on all `its-nix` repos. In GitHub, go to **Settings → GitHub Apps → nix-reviewer → Configure** and set **Repository access** to **All repositories**.
 
 ## Operate
 
 `docker logs nixos-reviewer` shows one line per failure (never PR contents). Each check run's summary names the reviewer, the excluded builder and any providers skipped. To take a provider out of rotation, edit `REVIEW_POOL` in `reviewer.env` and recreate the container with the same `docker compose … up -d reviewer` command as in step 2 (a plain restart keeps the old environment).
+
+### GitHub App webhooks
+
+GitHub sends HTTPS POST requests to Tailscale Funnel on port 10000. Host `tailscaled` proxies
+`/github` to the reviewer's Unix socket. The container publishes no host ports and keeps its
+separate network. Deploy creates a root-owned `reviewer/run` directory (0750) under
+`NIX_CLEAN_ROOT` and bind-mounts it at `/run/nix-reviewer`. The reviewer creates the socket with
+mode 0600. Set `REVIEW_WEBHOOK_SOCKET` in `reviewer.env` to change the in-container absolute
+socket path and adjust the host Funnel target to match. Tailscale 1.104 strips the mounted prefix
+when proxying, so the reviewer accepts `POST /github` and the forwarded `POST /`.
+[Tailscale 1.104.5 proxy implementation](https://github.com/tailscale/tailscale/blob/v1.104.5/ipn/ipnlocal/serve.go#L1279-L1284)
+
+The receiver limits the raw body to 1 MiB and verifies `X-Hub-Signature-256` with HMAC-SHA256 and a
+constant-time comparison before parsing JSON. Bodies, signatures and the secret stay out of logs.
+Verified deliveries queue a re-check only. The reviewer ignores uninstalled repositories and
+reads the current PR, review and merge state from the GitHub API. Completed check events without
+PR numbers trigger an exact head SHA lookup among the repository's open PRs. The queue coalesces
+duplicate hints, runs evaluations serially and returns 503 if the pending hint limit is reached.
+Replaying a signed delivery can only request another API re-check.
+
+An initial sweep and a sweep every 30 minutes (`REVIEW_RECONCILE_INTERVAL_MS`, default
+`1800000`) pick up missed deliveries and refresh the installation's repository list. GitHub
+does not automatically redeliver failed deliveries. When the secret is absent, invalid or the
+socket cannot start, the reviewer polls every 60 seconds (`REVIEW_INTERVAL_MS`, default
+`60000`). [GitHub failed delivery behavior](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries)
+
+**Enable after founder confirmation**
+
+1. Deploy this version so the socket directory and mount exist. On the VPS, create the secret as
+   root, then restart the reviewer to load it. The command uses the standard `NIX_CLEAN_ROOT`.
+   ```bash
+   sudo sh -c 'umask 377; set -C; openssl rand -hex 32 > /srv/nix-clean/reviewer/secrets/webhook-secret'
+   sudo docker restart nixos-reviewer
+   ```
+2. On the VPS, enable Funnel for port 10000 and verify the mapping. This uses a different port
+   from the existing tailnet-only Serve on 8443. [Tailscale Funnel CLI](https://tailscale.com/docs/reference/tailscale-cli/funnel)
+   ```bash
+   sudo tailscale funnel --bg --https=10000 --set-path=/github unix:/srv/nix-clean/reviewer/run/webhook.sock
+   sudo tailscale funnel status
+   ```
+3. In GitHub, open **Settings → Developer settings → GitHub Apps → nix-reviewer → General**.
+   Under **Webhook**, select **Active**, enter
+   `https://nix-os.tailee691f.ts.net:10000/github` and set **Secret** to the hex string from
+   `reviewer/secrets/webhook-secret`. Keep that value in GitHub and the root-only file. Under
+   **Permissions & events**, subscribe to **Pull request**, **Pull request review**, **Check run**
+   and **Check suite**.
+4. Trigger a subscribed event. In the App settings, open **Advanced → Recent Deliveries**, select
+   the delivery and click **Redeliver**. Check for a 204 response.
+   [GitHub App redelivery steps](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks#redelivering-github-app-webhooks)
+
+**Disable** the webhook under **General** in the GitHub App settings. Remove only its Funnel
+mapping, then remove the secret and restart the reviewer to resume short-interval polling.
+
+```bash
+sudo tailscale funnel --bg --https=10000 --set-path=/github off
+sudo tailscale funnel status
+sudo rm /srv/nix-clean/reviewer/secrets/webhook-secret
+sudo docker restart nixos-reviewer
+```
 
 ### Usage-limit cooldowns
 
@@ -53,10 +112,13 @@ When a provider CLI reports a usage limit, the reviewer skips that provider acro
 
 The deploy creates a private `reviewer/state` directory and mounts it at `/var/lib/reviewer`. The reviewer writes `cooldowns.json` there atomically, so cooldowns survive restarts and container recreation. `REVIEW_STATE_DIR` can point to another private, writable directory.
 
-If every eligible provider is cooling, `No reviewer available` is retried on the first poll at or after the earliest reset, with at least one minute between attempts. Other `No reviewer available` checks keep the 30-minute retry interval.
+If every eligible provider is cooling, the reviewer schedules a PR re-check at the earliest
+reset, with at least one minute between attempts. Other `No reviewer available` checks keep
+the 30-minute retry interval. These timers enqueue work even when no webhook arrives. After a
+restart the initial sweep reconstructs timers from the App's current check runs in GitHub.
 
 ## Merge behavior
 
-- **Public repositories** (`os`, `algua`, `meabeclick`, `dsio`). The App arms GitHub squash auto-merge on eligible PRs without a `hold` label. The ruleset requires `verify` and the App's `independent-review` on an up-to-date head. The App updates an armed branch that falls behind if its review passed or is still pending. A draft stays open. A `hold` label disarms auto-merge on the next poll, so a PR whose checks finish before that poll can still merge.
+- **Public repositories** (`os`, `algua`, `meabeclick`, `dsio`). The App arms GitHub squash auto-merge on eligible PRs without a `hold` label. The ruleset requires `verify` and the App's `independent-review` on an up-to-date head. The App updates an armed branch that falls behind if its review passed or is still pending. A draft stays open. A `hold` label disarms auto-merge when the reviewer processes the PR, so a PR whose checks finish before then can still merge.
 - **Private repositories** (`kit`, `nixvert`, `knowledgebase`, `gaitid`, `pulse`, `token-optimizer`, `stt`). GitHub Free does not enforce the reviewer check on private repos. This is a soft gate for the App's own merges. The founder or a token with sufficient permissions can still merge manually. The App disarms GitHub auto-merge it previously enabled and squash-merges directly only after its own check passes for the exact PR head and current base, any required founder approval is present, and CI is green. At least one non-reviewer app check run or bot commit status must exist on the head. Every app check run must be completed with `success`, `neutral` or `skipped`, and the latest commit status from each non-reviewer bot and context must be `success`. If a rerun leaves a failed check run on the head, the PR needs a new head. The App re-reads the live PR immediately before merging and requires unchanged head and base, an open and mergeable PR, no draft and no `hold` label. GitHub's merge endpoint pins the head SHA. A base change after that final read can still race the request.
 - **No CI.** Private PRs without CI (currently typical in `gaitid` and `stt`) are review-only by default. After a passing review, the App comments once on the PR that CI is required for automatic merging. Set `REVIEW_ONLY_REPOS` in `reviewer.env` to a comma-separated list of full repository names to keep those repos review-only even when CI is present. Recreate the container after an env change.

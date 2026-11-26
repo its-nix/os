@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, createVerify } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHmac, generateKeyPairSync, createVerify } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REREVIEW, acceptedRisk, ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
   hasFounderApproval, parseProtectedPaths, loadCooldowns, parseLimitReset, usageLimit, listInstallationRepositories, loadRepoPolicy,
-  isProtectedChange, mergePrivate, reviewRepository } from './reviewer.mjs';
+  isProtectedChange, mergePrivate, reviewRepository, listenWebhook, loadWebhookSecret, reconcileInterval, reviewerWork, webhookHints } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
 
@@ -1134,3 +1136,268 @@ test('no-CI PR is reviewed and gets one comment even across repeated polls, then
   await runPoll();
   assert.equal(deps.calls.at(-1)[1], '/repos/its-nix/kit/pulls/5/merge');
 });
+
+const WEBHOOK_SECRET = 'test-only webhook secret';
+const WEBHOOK_PR = { repository: KIT, action: 'opened', pull_request: { number: KIT_PR.number } };
+
+async function webhookSocket(t, enqueue) {
+  const dir = mkdtempSync(join(tmpdir(), 'hook-'));
+  const socket = join(dir, 'hook.sock');
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const server = await listenWebhook(socket, WEBHOOK_SECRET, enqueue);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return socket;
+}
+
+function deliver(socketPath, { event = 'pull_request', body = JSON.stringify(WEBHOOK_PR), signed = body,
+  path = '/github', method = 'POST', headers = {} } = {}) {
+  const signature = signed === null ? {} : { 'x-hub-signature-256': 'sha256=' +
+    createHmac('sha256', WEBHOOK_SECRET).update(signed).digest('hex') };
+  return new Promise((resolve, reject) => {
+    const req = request({ socketPath, path, method, headers: { 'x-github-event': event, ...signature, ...headers } },
+      (res) => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+test('Unix webhook verifies raw bytes before parsing and rejects invalid requests', async (t) => {
+  const hints = [];
+  const socket = await webhookSocket(t, (hint) => hints.push(hint));
+  const body = JSON.stringify(WEBHOOK_PR, null, 2) + '\n';
+  const tooLarge = 'x'.repeat(1024 * 1024 + 1);
+  assert.equal(statSync(socket).mode & 0o777, 0o600);
+  assert.equal(await deliver(socket, { body }), 204);
+  assert.equal(await deliver(socket, { path: '/' }), 204); // Funnel strips its mount path.
+  assert.equal(await deliver(socket, { body, signed: body.trim() }), 401);
+  assert.equal(await deliver(socket, { signed: null }), 401);
+  assert.equal(await deliver(socket, { headers: { 'x-hub-signature-256': 'sha256=1234' } }), 401);
+  assert.equal(await deliver(socket, { body: '{' }), 400);
+  assert.equal(await deliver(socket, { headers: { 'content-length': tooLarge.length }, body: '' }), 413);
+  assert.equal(await deliver(socket, { body: tooLarge, headers: { 'transfer-encoding': 'chunked' } }), 413);
+  assert.equal(await deliver(socket, { path: '/github/other' }), 404);
+  assert.equal(await deliver(socket, { method: 'GET', body: '' }), 405);
+  assert.equal(await deliver(socket, { event: 'ping' }), 204);
+  assert.deepEqual(hints, Array(2).fill({ repo: KIT.full_name, number: KIT_PR.number }));
+});
+
+test('webhook startup replaces a stale socket and preserves other files', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'hook-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'hook.sock');
+  writeFileSync(path, 'keep');
+  await assert.rejects(listenWebhook(path, WEBHOOK_SECRET, () => {}), /not a socket/);
+  assert.equal(readFileSync(path, 'utf8'), 'keep');
+  rmSync(path);
+  execFileSync(process.execPath, ['-e',
+    "require('node:net').createServer().listen(process.argv[1], () => process.exit(0))", path]);
+  assert.ok(statSync(path).isSocket());
+  const server = await listenWebhook(path, WEBHOOK_SECRET, () => {});
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  assert.equal(await deliver(path), 204);
+});
+
+test('webhook events yield only PR numbers or exact head SHA hints', () => {
+  const { full_name: repo } = KIT;
+  const { number } = KIT_PR;
+  const sha = KIT_PR.head.sha;
+  for (const action of ['opened', 'synchronize', 'reopened', 'ready_for_review', 'labeled', 'unlabeled', 'edited']) {
+    assert.deepEqual(webhookHints('pull_request', { ...WEBHOOK_PR, action }), [{ repo, number }], action);
+  }
+  assert.deepEqual(webhookHints('pull_request', { ...WEBHOOK_PR, action: 'closed' }), []);
+  assert.deepEqual(webhookHints('pull_request_review', { ...WEBHOOK_PR, action: 'submitted', review: { state: 'approved' } }),
+    [{ repo, number }]);
+  assert.deepEqual(webhookHints('pull_request_review', { ...WEBHOOK_PR, action: 'edited' }), []);
+  for (const event of ['check_run', 'check_suite']) {
+    const delivery = { repository: KIT, action: 'completed', [event]: { head_sha: sha, pull_requests: [{ number }, { number }] } };
+    assert.deepEqual(webhookHints(event, delivery), [{ repo, number }]);
+    assert.deepEqual(webhookHints(event, { ...delivery, action: 'requested' }), []);
+    delivery[event].pull_requests = [];
+    assert.deepEqual(webhookHints(event, delivery), [{ repo, sha }]);
+    delivery[event].head_sha = 'main';
+    assert.deepEqual(webhookHints(event, delivery), []);
+  }
+});
+
+test('only a root-owned non-empty mode 0400 secret enables the longer reconcile interval', (t) => {
+  const dir = cooldownDir(t);
+  const file = join(dir, 'webhook-secret');
+  const logs = [];
+  const read = () => loadWebhookSecret(file, (line) => logs.push(line), process.getuid());
+  assert.equal(read(), null);
+  assert.equal(logs.length, 1);
+  assert.equal(reconcileInterval(false, {}), MINUTE);
+  writeFileSync(file, WEBHOOK_SECRET + '\n', { mode: 0o400 });
+  assert.equal(read(), WEBHOOK_SECRET);
+  assert.equal(reconcileInterval(true, {}), 30 * MINUTE);
+  const env = { REVIEW_INTERVAL_MS: '500', REVIEW_RECONCILE_INTERVAL_MS: '2000' };
+  assert.equal(reconcileInterval(true, env), 2000);
+  assert.equal(reconcileInterval(false, env), 500);
+  assert.equal(reconcileInterval(true, { REVIEW_RECONCILE_INTERVAL_MS: '2147483648' }), 30 * MINUTE);
+  assert.equal(loadWebhookSecret(file, () => {}, process.getuid() + 1), null);
+  chmodSync(file, 0o444);
+  assert.equal(read(), null);
+  chmodSync(file, 0o400);
+  symlinkSync(file, join(dir, 'link'));
+  assert.equal(loadWebhookSecret(join(dir, 'link'), () => {}, process.getuid()), null);
+});
+
+function workClock() {
+  let time = LIMIT_NOW;
+  const timers = new Map();
+  return {
+    now: () => time,
+    later(fn, delay) {
+      const timer = Symbol();
+      timers.set(timer, { due: time + delay, fn });
+      return timer;
+    },
+    cancel: (timer) => timers.delete(timer),
+    async advance(ms = 250) {
+      const until = time + ms;
+      for (;;) {
+        const next = [...timers].sort((a, b) => a[1].due - b[1].due)[0];
+        if (!next || next[1].due > until) break;
+        const [timer, { due, fn }] = next;
+        timers.delete(timer);
+        time = due;
+        await fn();
+      }
+      time = until;
+    },
+  };
+}
+
+test('verified check_suite SHA hint reads open PRs and ignores repositories outside the installation', async (t) => {
+  const clock = workClock();
+  const draft = { ...KIT_PR, draft: true };
+  const calls = [];
+  let installed = [KIT];
+  let prs = [];
+  const work = reviewerWork(CFG, async (path) => {
+    calls.push(path);
+    if (path.startsWith('/installation/repositories?')) return { repositories: installed };
+    if (path.startsWith('/repos/its-nix/kit/pulls?')) return prs;
+    if (path.endsWith('/kit/pulls/5')) return draft;
+    assert.fail(path);
+  }, { ...clock, log: assert.fail });
+  work.sweep();
+  await clock.advance();
+  calls.length = 0;
+  prs = [{ ...draft, number: 7, head: { sha: '0'.repeat(40) } }, draft];
+  const socket = await webhookSocket(t, work.addHint);
+  const notification = { repository: KIT, action: 'completed', check_suite: { head_sha: draft.head.sha, pull_requests: [] } };
+  const send = (body) => deliver(socket, { event: 'check_suite', body: JSON.stringify(body) });
+  assert.equal(await send({ ...notification, repository: { full_name: 'unknown/repo' } }), 204);
+  await clock.advance();
+  assert.deepEqual(calls, []);
+  assert.equal(await send(notification), 204);
+  await clock.advance(500);
+  assert.deepEqual(calls, ['/repos/its-nix/kit/pulls?state=open&per_page=100&page=1', '/repos/its-nix/kit/pulls/5']);
+
+  installed = [];
+  work.sweep();
+  await clock.advance();
+  calls.length = 0;
+  assert.equal(await send(notification), 204);
+  await clock.advance();
+  assert.deepEqual(calls, []);
+});
+
+test('PR hints during an evaluation queue one trailing re-check', async () => {
+  const clock = workClock();
+  const { promise: started, resolve: start } = Promise.withResolvers();
+  const { promise: blocked, resolve: release } = Promise.withResolvers();
+  let visits = 0;
+  const work = reviewerWork(CFG, async (path) => {
+    if (path.startsWith('/installation/')) return { repositories: [KIT] };
+    if (path.includes('/pulls?')) return [];
+    assert.equal(path, '/repos/its-nix/kit/pulls/5');
+    if (++visits === 1) {
+      start();
+      await blocked;
+    }
+    return { ...KIT_PR, draft: true };
+  }, { ...clock, log: assert.fail });
+  work.sweep();
+  await clock.advance();
+  const hint = { repo: KIT.full_name, number: KIT_PR.number };
+  for (let i = 0; i < 10; i++) work.addHint(hint);
+  const inFlight = clock.advance();
+  await started;
+  for (let i = 0; i < 10; i++) work.addHint({ ...hint, repo: KIT.full_name.toUpperCase() });
+  assert.equal(visits, 1);
+  release();
+  await inFlight;
+  await clock.advance(1000);
+  assert.equal(visits, 2);
+});
+
+test('replayed delivery claiming approval and green CI still reads the PR and needs real founder approval', async (t) => {
+  const clock = workClock();
+  const verdicts = [];
+  const calls = [];
+  const work = reviewerWork(CFG, async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path]);
+    if (path.startsWith('/installation/')) return { repositories: [KIT] };
+    if (path.includes('/pulls?')) return [];
+    if (path.endsWith('/pulls/5')) return KIT_PR;
+    if (path.includes('/contents/')) return path.includes('CODEOWNERS') ? content('/infra/ @owner') : missing();
+    if (path.includes('/compare/')) return { files: [{ filename: 'infra/deploy.sh', patch: '+change' }], commits: [] };
+    if (path.includes('/check-runs?')) return { check_runs: verdicts };
+    if (path.endsWith('/check-runs') && method === 'POST') return { id: 7 };
+    if (path.endsWith('/check-runs/7') && method === 'PATCH') {
+      verdicts.push({ id: 7, app: { id: 1 }, ...body });
+      return {};
+    }
+    assert.fail(`${method} ${path}`);
+  }, { ...clock, approved: () => false, run: () => assert.fail('reviewer bypassed founder approval'), log: assert.fail });
+  work.sweep();
+  await clock.advance();
+  const socket = await webhookSocket(t, work.addHint);
+  const body = JSON.stringify({ ...WEBHOOK_PR, action: 'submitted',
+    pull_request: { ...KIT_PR, mergeable_state: 'clean' }, review: { state: 'approved' } });
+  for (let i = 0; i < 2; i++) {
+    assert.equal(await deliver(socket, { event: 'pull_request_review', body }), 204);
+    await clock.advance();
+  }
+  assert.equal(calls.filter(([, path]) => path.endsWith('/pulls/5')).length, 2);
+  assert.deepEqual(verdicts.map(({ conclusion, output }) => [conclusion, output.title]), [['failure', 'Founder approval required']]);
+  assert.ok(!calls.some(([method, path]) => method === 'PUT' || path === '/graphql'));
+});
+
+for (const resumed of [false, true]) {
+  test(`cooldown retry timer re-checks without a webhook (${resumed ? 'restored check' : 'new check'})`, async () => {
+    const clock = workClock();
+    const due = clock.now() + 4 * MINUTE;
+    const repo = { full_name: CFG.repo, default_branch: 'main', private: false };
+    const pr = { ...PR, state: 'open', labels: [{ name: 'hold' }] };
+    const verdicts = resumed ? [{ id: 7, app: { id: 1 }, status: 'completed', conclusion: 'failure',
+      completed_at: new Date(clock.now()).toISOString(),
+      external_id: `${ordinaryId}:retry-at:${due}${prBinding}`, output: { title: 'No reviewer available' } }] : [];
+    let attempts = 0;
+    const work = reviewerWork({ ...CFG, osPolicy: CFG.policy, pool: ['claude'],
+      cooldowns: { until: (_, now) => now < due ? due : null } }, async (path, { method = 'GET', body } = {}) => {
+      if (path.startsWith('/installation/')) return { repositories: [repo] };
+      if (path.includes('/pulls?')) return [pr];
+      if (path.endsWith('/pulls/5')) return pr;
+      if (path.includes('/contents/')) return missing();
+      if (path.includes('/check-runs?')) return { check_runs: verdicts };
+      if (path === '/graphql') return { data: { repository: { pullRequest: { timelineItems: { nodes: [], pageInfo: {} } } } } };
+      if (path.endsWith('/check-runs') && method === 'POST') return { id: verdicts.length + 7 };
+      if (method === 'PATCH') {
+        verdicts.push({ id: Number(path.split('/').at(-1)), app: { id: 1 }, ...body });
+        return {};
+      }
+      assert.fail(`${method} ${path}`);
+    }, { ...clock, log: assert.fail, collect: async () => ({ diff: '+change', commits: [] }),
+      run: () => { attempts++; return approve(); } });
+    work.sweep();
+    await clock.advance(4 * MINUTE);
+    assert.equal(attempts, 0);
+    assert.equal(verdicts[0].external_id, `${ordinaryId}:retry-at:${due}${prBinding}`);
+    await clock.advance();
+    assert.equal(attempts, 1);
+    assert.equal(verdicts.at(-1).conclusion, 'success');
+  });
+}

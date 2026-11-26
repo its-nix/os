@@ -101,26 +101,36 @@ def ensure_t3_state(state):
 
 
 ROOT_UID = ROOT_GID = 0
-REVIEWER_ENV_TEMPLATE = '''# Rotating independent reviewer (non-secret settings). Secrets: reviewer/secrets/app.pem.
+REVIEWER_ENV_TEMPLATE = '''# Rotating independent reviewer (non-secret settings). Credentials live in reviewer/secrets/.
 # REVIEW_APP_ID=<GitHub App id>
 REVIEW_POOL=claude,codex,opencode,grok,antigravity
 # OPENCODE_REVIEW_MODEL=opencode/<Go model id>  (default opencode/kimi-k3.1-pro, via the Go endpoint)
 # REVIEW_ONLY_REPOS=  (comma-separated owner/repo names to keep review-only even with CI)
+# REVIEW_WEBHOOK_SOCKET=/run/nix-reviewer/webhook.sock
+# REVIEW_RECONCILE_INTERVAL_MS=1800000  (with webhooks)
+# REVIEW_INTERVAL_MS=60000  (polling-only fallback)
 '''
 
 
 def ensure_reviewer_state(source, state):
     """Reviewer state dirs (new ones only), non-secret settings template, and the deployment-owned
-    reviewer script. The App private key is founder-provided in reviewer/secrets/app.pem."""
+    reviewer script. The App private key and optional webhook secret are operator-provided."""
     root = state / 'reviewer'
     for path, owner, mode in ((root, (ROOT_UID, ROOT_GID), 0o755), (root / 'home', (T3_UID, T3_GID), 0o700),
                               (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, ROOT_GID), 0o700),
-                              (root / 'approvals', (ROOT_UID, ROOT_GID), 0o700), (root / 'state', (ROOT_UID, ROOT_GID), 0o700)):
+                              (root / 'approvals', (ROOT_UID, ROOT_GID), 0o700), (root / 'state', (ROOT_UID, ROOT_GID), 0o700),
+                              (root / 'run', (ROOT_UID, ROOT_GID), 0o750)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ValueError('Reviewer state path is not a plain directory')
         if not path.exists():
             path.mkdir(mode=mode)
             os.chown(path, *owner)
+            if path == root / 'run':
+                path.chmod(mode)
+        if path == root / 'run':
+            info = path.stat()
+            if (info.st_uid, info.st_gid, info.st_mode & 0o7777) != (*owner, mode):
+                raise ValueError('Reviewer socket directory must be root-owned with mode 0750')
     if not (root / 'reviewer.env').exists():
         _root_write(root, 'reviewer.env', REVIEWER_ENV_TEMPLATE, 0o644)
     if not (root / 'secrets' / 'seed').exists():

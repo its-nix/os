@@ -876,18 +876,42 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(os.getuid(), (root / 'approvals').stat().st_uid)
             self.assertEqual(0o700, (root / 'state').stat().st_mode & 0o777)
             self.assertEqual(os.getuid(), (root / 'state').stat().st_uid)
+            run = (root / 'run').stat()
+            self.assertEqual((os.getuid(), os.getgid(), 0o750), (run.st_uid, run.st_gid, run.st_mode & 0o777))
+            secret = root / 'secrets/webhook-secret'
+            self.assertFalse(secret.exists())
+            secret.write_text('operator-provided test value\n')
+            secret.chmod(0o400)
             self.assertIn('REVIEW_POOL=', (root / 'reviewer.env').read_text())
             self.assertIn('# REVIEW_ONLY_REPOS=', (root / 'reviewer.env').read_text())
+            self.assertIn('# REVIEW_RECONCILE_INTERVAL_MS=', (root / 'reviewer.env').read_text())
             (root / 'reviewer.env').write_text('REVIEW_APP_ID=42\n')
             apply('9' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
             self.assertEqual('REVIEW_APP_ID=42\n', (root / 'reviewer.env').read_text())  # settings never overwritten
+            self.assertEqual('operator-provided test value\n', secret.read_text())
+            self.assertEqual(0o400, secret.stat().st_mode & 0o777)
         reviewer = (ROOT / 'deploy/compose.yaml').read_text().split('  reviewer:', 1)[1].split('\n  # Optional CRM', 1)[0]
         for required in ('networks: [review]', 'cap_drop: [ALL]',
                          '/reviewer/state\n        target: /var/lib/reviewer',
+                         '/reviewer/run\n        target: /run/nix-reviewer\n        bind: {create_host_path: false}',
+                         '/reviewer/secrets\n        target: /run/reviewer\n        read_only: true',
                          'target: /run/reviewer-approvals\n        read_only: true'):
             self.assertIn(required, reviewer)
-        for forbidden in ('ports:', 'docker.sock', '/t3/home', 'network_mode'):
+        for forbidden in ('ports:', 'docker.sock', '/t3/home', 'network_mode', 'webhook-secret'):
             self.assertNotIn(forbidden, reviewer)
+
+    def test_reviewer_rejects_insecure_socket_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            deployment.ensure_reviewer_state(ROOT, state)
+            path = state / 'reviewer/run'
+            path.chmod(0o777)
+            with self.assertRaisesRegex(ValueError, 'socket directory must be root-owned'):
+                deployment.ensure_reviewer_state(ROOT, state)
+            path.rmdir()
+            path.symlink_to(state, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'not a plain directory'):
+                deployment.ensure_reviewer_state(ROOT, state)
 
     def test_launcher_rejects_shell_commands_refs_and_malformed_hashes(self):
         for value in ('main', 'a' * 39, 'a' * 41, 'a' * 40 + '; id', '--help', '$(id)'):
