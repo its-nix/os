@@ -300,6 +300,7 @@ export function parsePool(value) {
 }
 
 const RETRYABLE = 'No reviewer available';
+export const REREVIEW = 'Re-review requested';
 const APPROVAL_REQUIRED = 'Founder approval required';
 const RETRY_AFTER_MS = 30 * 60 * 1000;
 
@@ -322,15 +323,17 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const externalId = (scope) => `${cfg.policy.version}:${scope}:${pr.base.sha}`;
   const completed = runs.find((c) => c.status === 'completed');
   const wasProtected = completed?.external_id === externalId('protected');
+  // A pending 'Re-review requested' run newer than every verdict asks for a full fresh review now.
+  const rereview = runs[0] && runs[0].status !== 'completed' && runs[0].output?.title === REREVIEW;
   // Legacy runs lack a trusted policy/base binding and get reviewed again.
-  if (wasProtected || completed?.external_id === externalId('ordinary')) {
+  if (!rereview && (wasProtected || completed?.external_id === externalId('ordinary'))) {
     const title = completed.output?.title;
     const retryAfterApproval = title === APPROVAL_REQUIRED && approved();
     const retryAfterRevocation = wasProtected && completed.conclusion === 'success' && !approved();
     const retryAfterCooldown = title === RETRYABLE && !(now - Date.parse(completed.completed_at) <= RETRY_AFTER_MS);
     if (!retryAfterApproval && !retryAfterRevocation && !retryAfterCooldown) return null;
   }
-  const active = runs.find((c) => c.status !== 'completed' && now - Date.parse(c.started_at) < staleMs);
+  const active = runs.find((c) => c.status !== 'completed' && c.output?.title !== REREVIEW && now - Date.parse(c.started_at) < staleMs);
   if (active) return null;  // under review
   // Reuse only a run that can supersede the latest completed run.
   const stale = runs.find((c) => c.status !== 'completed' && (!completed || c.id > completed.id));
@@ -374,12 +377,132 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     `Retried automatically after 30 minutes. ${attempts.join('; ')}`);
 }
 
+// Always-merge: every eligible PR gets squash auto-merge, so it merges as soon as the ruleset's
+// required checks (verify + independent-review, up to date) pass. The ruleset stays the gate:
+// enabling auto-merge never bypasses a check. Opt-outs: a draft PR is never merged (GitHub enforces
+// it, and converting to draft disables auto-merge); a `hold` label turns auto-merge off on the next
+// poll (about a minute), so an already-armed PR whose checks finish inside that window can merge.
+const HOLD_LABEL = 'hold';
+const RETRY_MS = 30 * 60 * 1000;
+const autoMergeBackoff = new Map();  // pr number -> {key, until}: only failed attempts back off
+
+const isHeld = (pr) => (pr.labels || []).some((l) => String(l.name || '').toLowerCase() === HOLD_LABEL);
+
+const eligible = (cfg, pr) => pr.head?.repo?.full_name === cfg.repo && pr.base?.ref === 'main' && !pr.draft;
+
+export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.error, now = Date.now()) {
+  if (!pr.node_id) return null;
+  const held = isHeld(pr);
+  // State comes from the live PR each poll, so successes need no cache: the next poll sees auto_merge.
+  // A held main PR is disarmed whoever armed it. A PR that stops being eligible (retargeted away from
+  // main, fork, draft) is disarmed only if this App armed it: auto-merge a maintainer set on another
+  // branch's PR is left alone.
+  const armedByUs = pr.auto_merge?.enabled_by?.login === (cfg.botLogin || 'nix-reviewer[bot]');
+  let action;
+  if (pr.auto_merge && ((held && pr.base?.ref === 'main') || (!eligible(cfg, pr) && armedByUs))) action = 'disable';
+  else if (!pr.auto_merge && !held && eligible(cfg, pr)) action = 'enable';
+  else return null;
+  const key = `${pr.head.sha}:${action}`;
+  const backoff = autoMergeBackoff.get(pr.number);
+  // Disabling is the hold safety brake: it is retried every poll and never backs off.
+  if (action === 'enable' && backoff && backoff.key === key && now < backoff.until) return null;
+  if (action === 'enable') {
+    // Re-validate on the live PR right before arming: the listing may be stale (retarget, draft, hold).
+    const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+    if (live.head?.sha !== pr.head.sha || live.state !== 'open' || !eligible(cfg, live) || isHeld(live) || live.auto_merge) return null;
+  }
+  for (const [number, entry] of autoMergeBackoff) if (now >= entry.until) autoMergeBackoff.delete(number);
+  const mutation = action === 'disable'
+    ? 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}'
+    : 'enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$head}){clientMutationId}';
+  const mutate = async () => {
+    try {
+      const query = action === 'enable' ? `mutation($id:ID!,$head:GitObjectID!){${mutation}}` : `mutation($id:ID!){${mutation}}`;
+      const variables = action === 'enable' ? { id: pr.node_id, head: pr.head.sha } : { id: pr.node_id };
+      return await api('/graphql', { method: 'POST', token, body: { query, variables } });
+    } catch (e) {
+      return { errors: [{ message: e.message }] };
+    }
+  };
+  let res = await mutate();
+  if (action === 'enable' && res?.errors?.length && /clean status/i.test(String(res.errors[0]?.message))) {
+    // Already green and up to date, so GitHub refuses to arm. Never merge directly (the merge call
+    // cannot pin the base) and never copy an old verdict. Instead request a full fresh review: a new
+    // pending independent-review run holds the merge gate, auto-merge is armed while it is pending, and
+    // reviewOne performs a complete new review on its next poll, rechecking head and base as always.
+    await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
+      name: CHECK, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date().toISOString(),
+      output: { title: REREVIEW, summary: 'A fresh independent review was requested so auto-merge could be armed.' } } });
+    res = await mutate();
+  }
+  if (!res?.errors?.length && action === 'enable') {
+    // GitHub cannot pin the base when arming, so re-read right after: if the PR was retargeted or held
+    // in between, disarm at once. Threat model: retargeting needs write access, and every branch other
+    // than main is unprotected, so whoever can retarget can already push to that branch directly;
+    // arming grants no merge right they lacked. The only gate worth protecting is main's ruleset,
+    // which still applies to any PR whose base is main.
+    const after = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+    if (after.auto_merge && (!eligible(cfg, after) || isHeld(after) || after.head?.sha !== pr.head.sha)) {
+      let off;
+      try {
+        off = await api('/graphql', { method: 'POST', token, body: {
+          query: 'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}', variables: { id: pr.node_id } } });
+      } catch (e) {
+        off = { errors: [{ message: e.message }] };
+      }
+      if (off?.errors?.length) {
+        // Not confirmed: the next poll sees the armed, ineligible PR and retries (disable never backs off).
+        log(`auto-merge #${pr.number}: post-arm disarm refused (${String(off.errors[0]?.message || 'refused').slice(0, 200)})`);
+        return false;
+      }
+      return 'disabled';
+    }
+  }
+  if (!res?.errors?.length) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
+  const error = String(res.errors[0]?.message || 'refused');
+  const repeated = backoff && backoff.key === key;
+  if (!repeated) log(`auto-merge #${pr.number}: ${action} refused (${error.slice(0, 200)})`);
+  autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });
+  return false;
+}
+
+// The ruleset requires branches to be up to date and auto-merge does not update them, so an
+// auto-merge PR left behind by another merge is updated (a merge commit from main). The new head
+// gets its own CI run and independent review; nothing is skipped.
+export async function keepUpToDate(cfg, token, pr, api = gh) {
+  if (!pr.auto_merge || pr.draft || pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main') return null;
+  if (isHeld(pr)) return null;
+  const full = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+  if (full.mergeable_state !== 'behind' || full.head.sha !== pr.head.sha) return null;
+  // Live state may have changed since the listing: only an armed, held-free main PR from this repo.
+  if (!full.auto_merge || !eligible(cfg, full) || isHeld(full)) return null;
+  // update-branch pins the head but not the base. A same-head retarget in the gap would merge another
+  // base into this same-repo branch; that needs write access, which can push to the branch anyway, and
+  // the result is a new head that gets its own CI and review before anything reaches main.
+  await api(`/repos/${cfg.repo}/pulls/${pr.number}/update-branch`, { method: 'PUT', token, body: { expected_head_sha: pr.head.sha } });
+  return 'updated';
+}
+
 async function loop(cfg) {
   for (;;) {
     try {
       const token = await installationToken(cfg);
-      const prs = await gh(`/repos/${cfg.repo}/pulls?state=open&base=main&per_page=50`, { token });
+      const prs = [];
+      for (let page = 1; ; page++) {  // follow pagination to the end: every open PR is handled
+        // All bases: a PR retargeted away from main must still be seen so its auto-merge is disarmed.
+        const batch = await gh(`/repos/${cfg.repo}/pulls?state=open&per_page=100&page=${page}`, { token });
+        prs.push(...batch);
+        if (batch.length < 100) break;
+      }
       for (const pr of prs) {
+        try { await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
+        // Only PRs into main are kept up to date or reviewed. Other bases are listed solely so an armed
+        // PR retargeted away from main can be disarmed: a check run is keyed by head SHA, so reviewing
+        // another base's diff could later satisfy main's required check for that same head.
+        if (pr.base?.ref !== 'main') continue;
+        let updated = null;
+        try { updated = await keepUpToDate(cfg, token, pr); } catch (e) { console.error(`update #${pr.number}: ${e.message}`); }
+        if (updated) continue;  // the new head is reviewed on the next poll, not this stale snapshot
         try { await reviewOne(cfg, token, pr); } catch (e) { console.error(`review #${pr.number}: ${e.message}`); }
       }
     } catch (e) { console.error(`cycle: ${e.message}`); }

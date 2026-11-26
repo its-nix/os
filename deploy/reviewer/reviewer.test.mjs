@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { acceptedRisk, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
+import { REREVIEW, acceptedRisk, ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
   hasFounderApproval, parseProtectedPaths } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
@@ -359,4 +359,205 @@ test('founder-accepted risk: only from an approved head, sanitized, shown to the
     run: async (cmd, args) => { seen = args.join(' '); return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }; } });
   assert.match(seen, /FOUNDER-ACCEPTED RISK/);
   assert.match(state.calls.find(([m]) => m === 'PATCH')[2].output.summary, /Founder-accepted risk .*Drive grant \(D17\)/);
+});
+
+test('always-merge: live state drives enable/disable; hold toggles on one head; failures back off, then retry', async () => {
+  const calls = [];
+  const sha = '1'.repeat(40);
+  const ok = async (path, { method = 'GET', body } = {}) => {
+    calls.push([path, body]);
+    if (method === 'GET') return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' },
+      head: { sha, repo: { full_name: 'its-nix/os' } } };
+    return { data: {} };
+  };
+  const base = { number: 9, node_id: 'PR_1', draft: false, base: { ref: 'main' },
+    head: { sha, repo: { full_name: 'its-nix/os' } }, labels: [], auto_merge: null };
+  const on = { merge_method: 'squash' };
+  assert.equal(await ensureAutoMerge(CFG, 't', base, ok), 'enabled');
+  assert.match(calls.find(([p]) => p === '/graphql')[1].query, /enablePullRequestAutoMerge\(input:\{pullRequestId:\$id,mergeMethod:SQUASH,expectedHeadOid:\$head\}\)/);
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, auto_merge: on }, ok), null);
+  // Same head: hold -> disabled, unhold -> enabled again, re-hold -> disabled again.
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'HOLD' }], auto_merge: on }, ok), 'disabled');
+  assert.match(calls.at(-1)[1].query, /disablePullRequestAutoMerge/);
+  assert.equal(await ensureAutoMerge(CFG, 't', base, ok), 'enabled');
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'hold' }], auto_merge: on }, ok), 'disabled');
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'hold' }] }, ok), null);
+  for (const pr of [{ ...base, draft: true }, { ...base, base: { ref: 'dev' } }, { ...base, head: { ...base.head, repo: { full_name: 'x/fork' } } }]) {
+    assert.equal(await ensureAutoMerge(CFG, 't', pr, ok), null);
+  }
+  // Permission refusal: logged once, suppressed for 30 minutes, retried after.
+  const logs = [];
+  let denials = 0;
+  const denied = async (path, { method = 'GET' } = {}) => {
+    if (method === 'GET') return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' },
+      head: { sha, repo: { full_name: 'its-nix/os' } } };
+    denials++; return { errors: [{ message: 'Resource not accessible by integration' }] };
+  };
+  const pr2 = { ...base, number: 10, node_id: 'PR_2' };
+  const t0 = 1_000_000;
+  assert.equal(await ensureAutoMerge(CFG, 't', pr2, denied, (m) => logs.push(m), t0), false);
+  assert.equal(await ensureAutoMerge(CFG, 't', pr2, denied, (m) => logs.push(m), t0 + 60_000), null);
+  assert.equal(logs.length, 1);
+  assert.equal(denials, 1);
+  assert.equal(await ensureAutoMerge(CFG, 't', pr2, ok, (m) => logs.push(m), t0 + 31 * 60_000), 'enabled');
+});
+
+test('always-merge: a failed disable (hold brake) is retried on the very next poll; logs are not repeated', async () => {
+  const logs = [];
+  let attempts = 0;
+  const flaky = async () => { attempts++; return attempts < 3 ? { errors: [{ message: 'timeout' }] } : { data: {} }; };
+  const held = { number: 12, node_id: 'PR_4', draft: false, base: { ref: 'main' }, labels: [{ name: 'hold' }],
+    auto_merge: { merge_method: 'squash' }, head: { sha: '8'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', held, flaky, (m) => logs.push(m), 1), false);
+  assert.equal(await ensureAutoMerge(CFG, 't', held, flaky, (m) => logs.push(m), 2), false);
+  assert.equal(await ensureAutoMerge(CFG, 't', held, flaky, (m) => logs.push(m), 3), 'disabled');
+  assert.equal(attempts, 3);
+  assert.equal(logs.length, 1);
+  const empty = async () => ({ errors: [{}] });  // an error without a message is still an error
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...held, number: 13 }, empty, () => {}, 4), false);
+});
+
+test('always-merge: a non-main PR armed by someone else is left alone; one armed by us is disarmed', async () => {
+  const calls = [];
+  const ok = async (path, { method = 'GET', body } = {}) => { calls.push([method, path, body]); return { data: {} }; };
+  const release = { number: 40, node_id: 'PR_40', draft: false, base: { ref: 'release' }, labels: [],
+    head: { sha: 'c'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...release, auto_merge: { enabled_by: { login: 'maintainer' } } }, ok), null);
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...release, auto_merge: { enabled_by: { login: 'nix-reviewer[bot]' } } }, ok), 'disabled');
+});
+
+test('auto-merge PRs left behind are updated with the exact head; others are left alone', async () => {
+  const pr = { number: 9, draft: false, base: { ref: 'main' }, labels: [], auto_merge: { merge_method: 'squash' },
+    head: { sha: '6'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  const calls = [];
+  const api = (state) => async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge, labels: [], base: { ref: 'main' } } : {};
+  };
+  assert.equal(await keepUpToDate(CFG, 't', pr, api('behind')), 'updated');
+  assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/9/update-branch', { expected_head_sha: pr.head.sha }]);
+  assert.equal(await keepUpToDate(CFG, 't', pr, api('blocked')), null);
+  assert.equal(await keepUpToDate(CFG, 't', { ...pr, auto_merge: null }, api('behind')), null);
+  assert.equal(await keepUpToDate(CFG, 't', { ...pr, labels: [{ name: 'hold' }] }, api('behind')), null);
+  const liveHeld = async (path, { method = 'GET' } = {}) => {
+    calls.push([method, path]);
+    return { mergeable_state: 'behind', head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge,
+      labels: [{ name: 'hold' }], base: { ref: 'main' } };
+  };
+  assert.equal(await keepUpToDate(CFG, 't', pr, liveHeld), null);  // labelled hold after the listing
+  const liveRetargeted = async (path, { method = 'GET' } = {}) => {
+    calls.push([method, path]);
+    return { mergeable_state: 'behind', head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge,
+      labels: [], base: { ref: 'release' } };
+  };
+  const before = calls.filter(([m]) => m === 'PUT').length;
+  assert.equal(await keepUpToDate(CFG, 't', pr, liveRetargeted), null);  // same head, retargeted: never updated
+  assert.equal(calls.filter(([m]) => m === 'PUT').length, before);
+});
+
+test('always-merge: base retargeting is re-validated live; an armed PR leaving main is disarmed', async () => {
+  const calls = [];
+  const sha = '9'.repeat(40);
+  const listed = { number: 20, node_id: 'PR_9', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  const retargeted = async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    if (method === 'GET') return { ...listed, state: 'open', base: { ref: 'release' } };
+    if (path === '/graphql') return { errors: [{ message: 'Pull request is in clean status' }] };
+    return { merged: true };
+  };
+  assert.equal(await ensureAutoMerge(CFG, 't', listed, retargeted), null);  // live base is not main: never armed
+  assert.ok(!calls.some(([m, p]) => p === '/graphql' || m === 'PUT'));
+  const armedElsewhere = { ...listed, base: { ref: 'release' }, auto_merge: { merge_method: 'squash', enabled_by: { login: 'nix-reviewer[bot]' } } };
+  const ok = async (path, { method = 'GET', body } = {}) => { calls.push([method, path, body]); return { data: {} }; };
+  assert.equal(await ensureAutoMerge(CFG, 't', armedElsewhere, ok), 'disabled');
+  assert.match(calls.at(-1)[2].query, /disablePullRequestAutoMerge/);
+});
+
+test('a PR into another base is never reviewed or given a check run', async () => {
+  const state = { calls: [], headAfter: PR.head.sha };
+  const result = await reviewOne(CFG, 't', { ...PR, base: { ...PR.base, ref: 'release' } }, {
+    gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
+  assert.equal(result, null);
+  assert.equal(state.calls.length, 0);
+});
+
+test('a backed-off enable makes no API call at all', async () => {
+  let gets = 0;
+  const sha = 'a'.repeat(40);
+  const api = async (path, { method = 'GET' } = {}) => {
+    if (method === 'GET') { gets++; return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' },
+      head: { sha, repo: { full_name: 'its-nix/os' } } }; }
+    return { errors: [{ message: 'Resource not accessible by integration' }] };
+  };
+  const pr = { number: 30, node_id: 'PR_30', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  await ensureAutoMerge(CFG, 't', pr, api, () => {}, 1);
+  const after = gets;
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}, 2), null);
+  assert.equal(gets, after);
+});
+
+test('always-merge: a retarget between the check and the arm is disarmed immediately after arming', async () => {
+  const sha = 'e'.repeat(40);
+  const calls = [];
+  let gets = 0;
+  const api = async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    if (path === '/graphql') return { data: {} };
+    gets++;
+    const live = { state: 'open', draft: false, labels: [], base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+    return gets === 1 ? { ...live, auto_merge: null } : { ...live, base: { ref: 'release' }, auto_merge: { merge_method: 'squash' } };
+  };
+  const pr = { number: 60, node_id: 'PR_60', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), 'disabled');
+  const mutations = calls.filter(([, p]) => p === '/graphql').map(([, , b]) => b.query);
+  assert.match(mutations[0], /enablePullRequestAutoMerge/);
+  assert.match(mutations[1], /disablePullRequestAutoMerge/);
+});
+
+test('always-merge: an already-green PR gets a fresh review requested and is armed while it is pending', async () => {
+  const calls = [];
+  const sha = '7'.repeat(40);
+  let graphql = 0;
+  const api = async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    if (path === '/graphql') { graphql++; return graphql === 1 ? { errors: [{ message: 'Pull request is in clean status' }] } : { data: {} }; }
+    if (method === 'POST') return { id: 7 };
+    return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+  };
+  const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), 'enabled');
+  const post = calls.find(([m, p]) => m === 'POST' && p.endsWith('/check-runs'))[2];
+  assert.equal(post.status, 'in_progress');
+  assert.equal(post.output.title, REREVIEW);
+  assert.ok(!calls.some(([m]) => m === 'PUT' || m === 'PATCH'));  // no merge call, no copied verdict
+});
+
+test('a requested re-review supersedes an earlier verdict and is reviewed in full', async () => {
+  const state = { calls: [], headAfter: PR.head.sha, existing: [
+    { id: 9, status: 'in_progress', output: { title: REREVIEW }, started_at: new Date().toISOString() },
+    { id: 8, status: 'completed', conclusion: 'success', output: { title: 'APPROVE by opencode' } }] };
+  let reviewed = false;
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => { reviewed = true; return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }; } });
+  assert.ok(reviewed);
+  assert.equal(state.calls.find(([m]) => m === 'PATCH' && state.calls.indexOf) && state.calls.filter(([m]) => m === 'PATCH').at(-1)[2].conclusion, 'success');
+});
+
+test('always-merge: an unconfirmed post-arm disarm is reported as failure, not success', async () => {
+  const sha = 'f'.repeat(40);
+  let gets = 0, mutations = 0;
+  const api = async (path, { method = 'GET' } = {}) => {
+    if (path === '/graphql') { mutations++; return mutations === 1 ? { data: {} } : { errors: [{ message: 'timeout' }] }; }
+    gets++;
+    const live = { state: 'open', draft: false, labels: [], base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+    return gets === 1 ? { ...live, auto_merge: null } : { ...live, base: { ref: 'release' }, auto_merge: { merge_method: 'squash' } };
+  };
+  const pr = { number: 61, node_id: 'PR_61', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), false);
 });
