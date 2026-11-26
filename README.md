@@ -2,17 +2,17 @@
 
 An always-on company operating system: one multi-profile Hermes runtime runs ventures through accountable leads, delegates coding to a Dockerized T3 Code, and improves itself through reviewed GitHub PRs. All self-hosted runtime services run under the `nixos` Docker Compose project on the VPS. The target design is [PRD v1.1](docs/REFACTOR.md#1-observed-baseline--2026-11-23); this page describes **what is actually running**.
 
-## Implementation status (observed 2026-11-23 to 2026-11-25)
+## Implementation status (observed 2026-11-23 to 2026-11-26)
 
 Each row is as of its evidence date. Founder items were requested on 2026-11-23 and are marked as not re-verified unless checked later.
 
 | Capability | Status | Evidence / where |
 | --- | --- | --- |
 | Hermes runtime (one container, multi-profile, native Kanban/Cron) | **Running** | `nixos-hermes`, official pinned 0.23.0; profiles hot-added without restart |
-| Venture Factory + dynamic venture leads | **Running** | `skills/venture-factory`; live `demo` venture: lead completed Mission 1 autonomously and delegated review to the `reviewer` profile; the Factory now requires an approved PRD/GTM (#79) |
+| Venture Factory + dynamic venture leads (C) | **Running**, board progress during LNX pause unproven | On 2026-11-26 the Factory created, paused, resumed and retired a disposable venture. The `demo` distillation loop completed while all LNX cron jobs were paused. Its two completed cards stayed in place. [Live evidence](docs/REFACTOR.md#4-evidence-ledger) |
 | T3 Code (Dockerized, 5 harnesses) | **Running** | `nixos-t3` (v0.1.11 + Claude Code, Codex, OpenCode, Antigravity CLI, Grok); isolated network, no Docker socket or Hermes state |
-| Hermes → T3 delegation (full access, worktree per task) | **Running** | T3 MCP registered in LNX (59 tools); credential renewed by deploy; `skills/t3-delegate` |
-| Harness logins inside T3 | Blocked: founder | Interactive provider logins (Todoist request, 2026-11-23; not re-verified) |
+| Hermes → T3 delegation (D) | **Verified** for concurrent worktrees | On 2026-11-26 the `demo` lead launched two full-access Codex tasks through its registered T3 MCP. Scratch work overlapped for 54 seconds across two worktrees. [Live evidence](docs/REFACTOR.md#4-evidence-ledger) |
+| Harness logins inside T3 | Codex verified on 2026-11-26 | The two delegated Codex tasks ran successfully. Other harness logins await verification. |
 | Daily private recovery (Hermes, T3, reviewer, Twenty; archived Paperclip) | **Running** | Daily 03:17 UTC; last verified publish 2026-11-24 03:26 UTC. The 2026-11-25 run failed at `docker inspect` (missing containers); fixed by #93, next run 2026-11-26 ([runbook](docs/DOCKERHUB-RECOVERY.md)) |
 | Main-branch CI → VPS deploy | **Running** | `ci.yml` → restricted `nixos` SSH forced command |
 | Independent AI review gate | **Running** | Reviewer GitHub App publishes the required `independent-review` check on `main`; passed on #105 (2026-11-25) ([policy](docs/AUTHORITY.md)) |
@@ -21,7 +21,7 @@ Each row is as of its evidence date. Founder items were requested on 2026-11-23 
 | Lead → CRM → approval-gated action procedure | Deployed, live proof pending | `skills/crm-lead-ops` (#77); requires a Twenty workspace key |
 | Founder approval queue (PRD §7.5 / H) | Host worker staged, live proof pending | Founder-owned Todoist, local Hermes spool, root-only token. [Setup and demo](docs/FOUNDER-APPROVAL-QUEUE.md) |
 | Company loops (health, digest, improvement) | **Running** | LNX cron: no-agent health check every 6 h (silent when healthy), daily digest, weekly improvement (#78) |
-| Hindsight memory | Open PR #102 (unmerged at 2026-11-25) | PR #102 configures a pinned loopback server, per-profile banks and local embeddings. The founder chose ChatGPT for extraction and must complete a [one-time device sign-in](deploy/hindsight/README.md) after deployment. |
+| Hindsight memory | **Running** for `demo` on 2026-11-26 | Hermes loaded the Hindsight plugin in `local_external` mode. Authenticated readback found `venture-demo` with one document and four observations. [Runtime setup](deploy/hindsight/README.md) |
 | Drive + Obsidian knowledge | Staged pending founder sign-in | [Vault setup and operations](docs/KNOWLEDGE-VAULT.md) · two-way Workspace, one-way reviewed KB |
 | Personal agent profile (`personal`) | Contract + idempotent deploy step ([contract](docs/PERSONAL-PROFILE.md)) | Logical separation only; email/calendar blocked on the founder |
 | Paperclip | **Retired from active Compose** (#80, merged 2026-11-23) | State archived and captured in recovery (2026-11-25). At the 2026-11-23 baseline: 0 issues/projects, 3 paused agents |
