@@ -388,7 +388,7 @@ function blockingItems(summary) {
   return blockers.length ? blockers : [reason.replace(/^Reviewer:[^\n]*\n\n/, '')];
 }
 
-async function priorBlockingFindings(cfg, token, pr, api) {
+async function priorBlockingChecks(cfg, token, pr, api) {
   const checks = [];
   for (const sha of await earlierCommits(cfg, token, pr, api)) {
     for (const check of await listReviewRuns(cfg, token, sha, api)) {
@@ -401,10 +401,14 @@ async function priorBlockingFindings(cfg, token, pr, api) {
       checks.push(check);
     }
   }
+  return checks.sort((a, b) => b.id - a.id);
+}
+
+async function priorBlockingFindings(cfg, token, pr, api) {
+  const checks = await priorBlockingChecks(cfg, token, pr, api);  // newest first
   // Newest verdict first. The prompt requires every reviewer to restate any prior finding it did not see resolved
   // as blocking, so the newest REQUEST_CHANGES carries all still-open findings: it is mandatory and the check fails
   // closed if it alone does not fit. Older verdicts are extra context, added while they fit.
-  checks.sort((a, b) => b.id - a.id);
   const findings = [];
   let size = 0;
   let omitted = false;
@@ -447,7 +451,11 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     const retryAfterApproval = title === APPROVAL_REQUIRED && approved();
     const retryAfterRevocation = wasProtected && completed.conclusion === 'success' && !approved();
     const retryAfterCooldown = title === RETRYABLE && !(now - Date.parse(completed.completed_at) <= RETRY_AFTER_MS);
-    if (!retryAfterApproval && !retryAfterRevocation && !retryAfterCooldown) return null;
+    // An approval is reused only if no blocking verdict on this PR is newer: approved A, rejected B, back to A
+    // must be reviewed again with B's findings rather than ride A's old success.
+    const supersededApproval = completed.conclusion === 'success' && !retryAfterRevocation &&
+      (await priorBlockingChecks(cfg, token, pr, api)).some((c) => c.id > completed.id);
+    if (!retryAfterApproval && !retryAfterRevocation && !retryAfterCooldown && !supersededApproval) return null;
   }
   const active = runs.find((c) => c.status !== 'completed' && c.output?.title !== REREVIEW && now - Date.parse(c.started_at) < staleMs);
   if (active) return null;  // under review

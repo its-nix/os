@@ -261,6 +261,22 @@ test('a force push the compare API cannot list in full fails closed', async () =
     run: async () => assert.fail('reviewed with incomplete history') }), /review history/);
 });
 
+test('approved A, rejected B, back to A: the old approval is not reused', async () => {
+  const b = 'b'.repeat(40);
+  const approvedA = { id: 5, app: { id: 1 }, status: 'completed', conclusion: 'success',
+    output: { title: 'APPROVE by grok' }, external_id: `${ordinaryId}:pr:${PR.number}` };
+  const state = { calls: [], headAfter: PR.head.sha, existing: [approvedA],
+    history: { null: { nodes: [{ commit: { oid: b } }], pageInfo: {} } },
+    priorRuns: { [b]: [{ ...priorRun(7, 'codex', 'B FOUND a defect also in A'), external_id: `${ordinaryId}:pr:${PR.number}` }] } };
+  let prompt;
+  await reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async (_cmd, args) => { [, prompt] = args; return { ok: true, out: '{"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}' }; } });
+  assert.match(prompt, /B FOUND a defect also in A/);
+  // Without a newer blocking verdict the approval is still reused.
+  const quiet = { calls: [], existing: [approvedA], history: { null: { nodes: [], pageInfo: {} } } };
+  assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(quiet) }), null);
+});
+
 test('review fails closed when the newest blocking verdict alone exceeds the budget', async () => {
   const old = 'a'.repeat(40);
   const state = { calls: [], headAfter: PR.head.sha,
