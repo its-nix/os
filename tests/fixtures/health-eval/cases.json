@@ -1,0 +1,337 @@
+{
+ "description": "Fixed fixtures for tests/health_eval.py. Changing this file changes the metric: protected path.",
+ "clock": "2026-11-24T08:00:00+00:00",
+ "cases": [
+  {
+   "id": "c01-healthy-is-silent",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}"
+   },
+   "silent": true
+  },
+  {
+   "id": "c02-stale-backup-and-t3-down",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-22T00:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}"
+   },
+   "t3_ok": false,
+   "expect": [
+    [
+     "backup stale"
+    ],
+    [
+     "T3 Code",
+     "unreachable"
+    ]
+   ]
+  },
+  {
+   "id": "c03-undelivered-approval-and-old-blocked-card",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}",
+    "ventures/acme/actions/a-1.json": "{\"action_id\": \"a-1\", \"status\": \"queued-local\"}"
+   },
+   "boards": {
+    "acme": [
+     {
+      "id": "t_1",
+      "status": "blocked",
+      "title": "waiting",
+      "blocked_since": 1795417200
+     }
+    ]
+   },
+   "expect": [
+    [
+     "acme",
+     "not delivered"
+    ],
+    [
+     "t_1",
+     "blocked"
+    ]
+   ]
+  },
+  {
+   "id": "c04-unreadable-board-keeps-other-findings",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-20T00:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}"
+   },
+   "boards": {
+    "acme": "error"
+   },
+   "expect": [
+    [
+     "board acme unreadable"
+    ],
+    [
+     "No healthy deployment"
+    ]
+   ]
+  },
+  {
+   "id": "c05-paused-venture-is-not-read",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/old/manifest.json": "{\"id\": \"old\", \"lifecycle\": \"paused\", \"board\": \"old\"}"
+   },
+   "boards": {
+    "old": "forbidden"
+   },
+   "silent": true
+  },
+  {
+   "id": "c06-garbage-timestamps-are-reported",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"garbage\", \"deployed_at\": null}"
+   },
+   "expect": [
+    [
+     "backup stale"
+    ],
+    [
+     "No healthy deployment"
+    ]
+   ]
+  },
+  {
+   "id": "m01-health-json-truncated",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "{\"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"note\": \"LEAKED-MARKER-7f3a"
+   },
+   "t3_ok": false,
+   "expect": [
+    [
+     "health.json",
+     "unreadable|invalid"
+    ],
+    [
+     "T3 Code",
+     "unreachable"
+    ]
+   ],
+   "forbid": [
+    "LEAKED-MARKER-7f3a"
+   ]
+  },
+  {
+   "id": "m02-health-json-empty",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": ""
+   },
+   "disk": 0.95,
+   "expect": [
+    [
+     "health.json",
+     "unreadable|invalid"
+    ],
+    [
+     "disk",
+     "95%"
+    ]
+   ]
+  },
+  {
+   "id": "m03-health-json-not-an-object",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "[\"LEAKED-MARKER-7f3a\"]"
+   },
+   "t3_ok": false,
+   "expect": [
+    [
+     "health.json",
+     "unreadable|invalid"
+    ],
+    [
+     "T3 Code",
+     "unreachable"
+    ]
+   ],
+   "forbid": [
+    "LEAKED-MARKER-7f3a"
+   ]
+  },
+  {
+   "id": "m04-health-json-not-utf8",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": {
+     "hex": "fffe00ff"
+    }
+   },
+   "t3_ok": false,
+   "expect": [
+    [
+     "health.json",
+     "unreadable|invalid"
+    ],
+    [
+     "T3 Code",
+     "unreachable"
+    ]
+   ]
+  },
+  {
+   "id": "m05-corrupt-manifest-other-venture-still-checked",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/broken/manifest.json": "{\"id\": \"broken\", \"mission\": \"LEAKED-MARKER-7f3a",
+    "ventures/good/manifest.json": "{\"id\": \"good\", \"lifecycle\": \"operating\", \"board\": \"good\"}",
+    "ventures/good/actions/g-1.json": "{\"action_id\": \"g-1\", \"status\": \"queued-local\"}"
+   },
+   "expect": [
+    [
+     "broken",
+     "manifest",
+     "unreadable|invalid"
+    ],
+    [
+     "good",
+     "not delivered"
+    ]
+   ],
+   "forbid": [
+    "LEAKED-MARKER-7f3a"
+   ]
+  },
+  {
+   "id": "m06-manifest-missing-required-keys",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/half/manifest.json": "{\"id\": \"half\"}",
+    "ventures/good/manifest.json": "{\"id\": \"good\", \"lifecycle\": \"operating\", \"board\": \"good\"}",
+    "ventures/good/actions/g-1.json": "{\"action_id\": \"g-1\", \"status\": \"queued-local\"}"
+   },
+   "expect": [
+    [
+     "half",
+     "manifest",
+     "unreadable|invalid"
+    ],
+    [
+     "good",
+     "not delivered"
+    ]
+   ]
+  },
+  {
+   "id": "m07-corrupt-action-record-does-not-hide-the-rest",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}",
+    "ventures/acme/actions/a-1.json": "{\"action_id\": \"a-1\", \"status\": \"queued-local\"}",
+    "ventures/acme/actions/a-2.json": "{\"action_id\": \"LEAKED-MARKER-7f3a"
+   },
+   "boards": {
+    "acme": [
+     {
+      "id": "t_9",
+      "status": "blocked",
+      "title": "waiting",
+      "blocked_since": 1795417200
+     }
+    ]
+   },
+   "expect": [
+    [
+     "acme",
+     "approval",
+     "unreadable|invalid"
+    ],
+    [
+     "acme",
+     "not delivered"
+    ],
+    [
+     "t_9",
+     "blocked"
+    ]
+   ],
+   "forbid": [
+    "LEAKED-MARKER-7f3a"
+   ]
+  },
+  {
+   "id": "m08-action-record-not-an-object-or-without-id",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}",
+    "ventures/acme/actions/a-1.json": "[]",
+    "ventures/acme/actions/a-2.json": "{\"status\": \"queued-local\"}",
+    "ventures/acme/actions/a-3.json": "{\"action_id\": \"a-3\", \"status\": \"queued-local\"}"
+   },
+   "expect": [
+    [
+     "acme",
+     "approval",
+     "a-1.json",
+     "unreadable|invalid"
+    ],
+    [
+     "acme",
+     "approval",
+     "a-2.json",
+     "unreadable|invalid"
+    ],
+    [
+     "acme",
+     "1 approval request(s)",
+     "not delivered"
+    ]
+   ]
+  },
+  {
+   "id": "m09-every-corruption-is-reported-together",
+   "kind": "malformed",
+   "files": {
+    "nix/health.json": "{LEAKED-MARKER-7f3a",
+    "ventures/broken/manifest.json": "",
+    "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}",
+    "ventures/acme/actions/a-1.json": "{\"action_id\": \"a-1\", \"status\": \"queued-local\"}"
+   },
+   "t3_ok": false,
+   "disk": 0.95,
+   "expect": [
+    [
+     "health.json",
+     "unreadable|invalid"
+    ],
+    [
+     "broken",
+     "manifest",
+     "unreadable|invalid"
+    ],
+    [
+     "acme",
+     "not delivered"
+    ],
+    [
+     "T3 Code",
+     "unreachable"
+    ],
+    [
+     "disk",
+     "95%"
+    ]
+   ],
+   "forbid": [
+    "LEAKED-MARKER-7f3a"
+   ]
+  }
+ ]
+}
