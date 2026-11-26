@@ -48,11 +48,15 @@ def valid_health(data):
 
 
 def parse(ts):
-    try:
-        value = datetime.fromisoformat(ts.replace('Z', '+00:00')) if ts else None
-    except (TypeError, ValueError):
+    if not isinstance(ts, str):
         return None
-    return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+    try:
+        value = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def check(home, now=None, kanban=None, t3_ok=None, disk=None):
