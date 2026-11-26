@@ -111,10 +111,10 @@ First the two things that would restart the stack on you, then the runtimes. App
 
 ```bash
 sudo systemctl disable --now nixos-recovery.timer   # pause now, stay off across reboot
-systemctl is-active nixos-recovery.service          # a capture the timer already triggered keeps running
+systemctl show nixos-recovery.service -p ActiveState -p SubState --value   # a capture the timer already triggered keeps running
 ```
 
-- Stopping the timer does not stop a capture already in flight. An in-flight capture cold-stops the stack and restarts every container when it ends — on success, on failure, and even if you `systemctl stop nixos-recovery.service`, because the unit's `ExecStopPost` unconditionally starts the four runtimes (and the Twenty containers when `ENABLED` exists). A refused run does the same. Wait for `inactive` — a capture can take up to an hour (`TimeoutStartSec=1h`) — accept its one-time restart, then continue.
+- Stopping the timer does not stop a capture already in flight. An in-flight capture cold-stops the stack and restarts every container when it ends — on success, on failure, and even if you `systemctl stop nixos-recovery.service`, because the unit's `ExecStopPost` unconditionally starts the four runtimes (and the Twenty containers when `ENABLED` exists). A refused run does the same. Wait until it has drained — a capture can take up to an hour (`TimeoutStartSec=1h`) — accept its one-time restart, then continue. A capture has drained when `systemctl show nixos-recovery.service -p ActiveState -p SubState --value` reads `inactive`/`dead` or `failed`/`failed` (a failed capture settles in `failed` after its `ExecStopPost` has run) — not `activating`, `deactivating` or `reloading`. Do not wait for `inactive` alone.
 
 **The GitHub deploy.** Do not disable the whole `ci` workflow: that also stops PR CI, including the `verify` check the merge ruleset requires, so every open PR stalls. Pause the deploy job itself. It runs only for `main` (push, schedule, manual dispatch) inside the `vps` GitHub environment (`.github/workflows/ci.yml`), which gives two levers:
 
@@ -159,9 +159,9 @@ Last resort: this breaks the stack until each credential is re-issued. Do it whe
 
 `MCP_T3_API_KEY` is a full-access credential and, once minted, stays valid on T3's side for up to 30 days — waiting out the expiry is not containment, and rotating it does not invalidate the stolen copy. Work in this order:
 
-1. **Record the old token's expiry first.** `sudo cat /srv/nix-clean/hermes/nix/t3-mcp.json` and write down `expires_at` somewhere off the host. Nothing below may delete that file before this.
-2. **Contain.** First pause everything that would start T3 again: the recovery timer (`sudo systemctl disable --now nixos-recovery.timer`, then wait for `systemctl is-active nixos-recovery.service` to read `inactive`) and the GitHub deploy (layer 6, deploy pause). Then `docker stop --time 90 nixos-t3`. With no listener the old bearer cannot be used from anywhere (T3 listens on host loopback only, `deploy/t3/README.md`).
-3. **Keep it contained** until the old token is revoked on T3's side (this repository's tooling has none — only the pairing flow is implemented; check T3's own auth commands in the cockpit, verify before use) or the recorded `expires_at` has passed. No manual deploys, no recovery timer and no lifted deploy pause in that window: each starts T3.
+1. **Record a conservative expiry bound first.** `sudo cat /srv/nix-clean/hermes/nix/t3-mcp.json` and note `expires_at` and `renewed_at` off the host before anything below can delete the file. The sidecar describes only the current token: an earlier bearer that was replaced early (for example after a rejection) can stay valid past it, and a missing sidecar gives no date. Use as the bound the latest of: the sidecar's `expires_at`, and 30 days after the earliest time any bearer could have been exposed (the token lifetime, REFACTOR D7). If that time is unknown, use 30 days from now.
+2. **Contain.** First pause everything that would start T3 again: the recovery timer (`sudo systemctl disable --now nixos-recovery.timer`, then wait until the capture has drained, `inactive` or `failed` as in layer 6) and the GitHub deploy (layer 6, deploy pause). Then `docker stop --time 90 nixos-t3`. With no listener the old bearer cannot be used from anywhere (T3 listens on host loopback only, `deploy/t3/README.md`).
+3. **Keep it contained** until the old token is revoked on T3's side (this repository's tooling has none — only the pairing flow is implemented; check T3's own auth commands in the cockpit, verify before use) or the conservative bound from step 1 has passed. No manual deploys, no recovery timer and no lifted deploy pause in that window: each starts T3.
 4. **Rotate when T3 comes back.** With T3 running again, force a fresh token so Hermes stops presenting the old one:
 
 ```bash
