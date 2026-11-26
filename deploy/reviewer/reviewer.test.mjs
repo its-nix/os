@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { acceptedRisk, ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
+import { REREVIEW, acceptedRisk, ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
   hasFounderApproval, parseProtectedPaths } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
@@ -518,18 +518,34 @@ test('always-merge: a retarget between the check and the arm is disarmed immedia
   assert.match(mutations[1], /disablePullRequestAutoMerge/);
 });
 
-test('always-merge: an already-green PR is left alone (no direct merge, no re-posted verdict)', async () => {
+test('always-merge: an already-green PR gets a fresh review requested and is armed while it is pending', async () => {
   const calls = [];
   const sha = '7'.repeat(40);
+  let graphql = 0;
   const api = async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
-    if (path === '/graphql') return { errors: [{ message: 'Pull request is in clean status' }] };
+    if (path === '/graphql') { graphql++; return graphql === 1 ? { errors: [{ message: 'Pull request is in clean status' }] } : { data: {} }; }
+    if (method === 'POST') return { id: 7 };
     return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
   };
   const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
     head: { sha, repo: { full_name: 'its-nix/os' } } };
-  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), false);
-  assert.ok(!calls.some(([m, p]) => m === 'PUT' || (m === 'POST' && p.includes('check-runs')) || m === 'PATCH'));
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), 'enabled');
+  const post = calls.find(([m, p]) => m === 'POST' && p.endsWith('/check-runs'))[2];
+  assert.equal(post.status, 'in_progress');
+  assert.equal(post.output.title, REREVIEW);
+  assert.ok(!calls.some(([m]) => m === 'PUT' || m === 'PATCH'));  // no merge call, no copied verdict
+});
+
+test('a requested re-review supersedes an earlier verdict and is reviewed in full', async () => {
+  const state = { calls: [], headAfter: PR.head.sha, existing: [
+    { id: 9, status: 'in_progress', output: { title: REREVIEW }, started_at: new Date().toISOString() },
+    { id: 8, status: 'completed', conclusion: 'success', output: { title: 'APPROVE by opencode' } }] };
+  let reviewed = false;
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => { reviewed = true; return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }; } });
+  assert.ok(reviewed);
+  assert.equal(state.calls.find(([m]) => m === 'PATCH' && state.calls.indexOf) && state.calls.filter(([m]) => m === 'PATCH').at(-1)[2].conclusion, 'success');
 });
 
 test('always-merge: an unconfirmed post-arm disarm is reported as failure, not success', async () => {

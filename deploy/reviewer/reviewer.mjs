@@ -300,6 +300,7 @@ export function parsePool(value) {
 }
 
 const RETRYABLE = 'No reviewer available';
+export const REREVIEW = 'Re-review requested';
 const APPROVAL_REQUIRED = 'Founder approval required';
 const RETRY_AFTER_MS = 30 * 60 * 1000;
 
@@ -322,15 +323,17 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const externalId = (scope) => `${cfg.policy.version}:${scope}:${pr.base.sha}`;
   const completed = runs.find((c) => c.status === 'completed');
   const wasProtected = completed?.external_id === externalId('protected');
+  // A pending 'Re-review requested' run newer than every verdict asks for a full fresh review now.
+  const rereview = runs[0] && runs[0].status !== 'completed' && runs[0].output?.title === REREVIEW;
   // Legacy runs lack a trusted policy/base binding and get reviewed again.
-  if (wasProtected || completed?.external_id === externalId('ordinary')) {
+  if (!rereview && (wasProtected || completed?.external_id === externalId('ordinary'))) {
     const title = completed.output?.title;
     const retryAfterApproval = title === APPROVAL_REQUIRED && approved();
     const retryAfterRevocation = wasProtected && completed.conclusion === 'success' && !approved();
     const retryAfterCooldown = title === RETRYABLE && !(now - Date.parse(completed.completed_at) <= RETRY_AFTER_MS);
     if (!retryAfterApproval && !retryAfterRevocation && !retryAfterCooldown) return null;
   }
-  const active = runs.find((c) => c.status !== 'completed' && now - Date.parse(c.started_at) < staleMs);
+  const active = runs.find((c) => c.status !== 'completed' && c.output?.title !== REREVIEW && now - Date.parse(c.started_at) < staleMs);
   if (active) return null;  // under review
   // Reuse only a run that can supersede the latest completed run.
   const stale = runs.find((c) => c.status !== 'completed' && (!completed || c.id > completed.id));
@@ -422,10 +425,16 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
     }
   };
   let res = await mutate();
-  // A PR already green and up to date before it could be armed (GitHub: "clean status") is left for a
-  // manual merge: no direct merge (it cannot pin the base) and no re-posting of a review verdict (it
-  // could race a newer review). The App arms PRs on its first poll, while checks are still running, so
-  // this only follows a removed hold label or a period without the App's permissions.
+  if (action === 'enable' && res?.errors?.length && /clean status/i.test(String(res.errors[0]?.message))) {
+    // Already green and up to date, so GitHub refuses to arm. Never merge directly (the merge call
+    // cannot pin the base) and never copy an old verdict. Instead request a full fresh review: a new
+    // pending independent-review run holds the merge gate, auto-merge is armed while it is pending, and
+    // reviewOne performs a complete new review on its next poll, rechecking head and base as always.
+    await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
+      name: CHECK, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date().toISOString(),
+      output: { title: REREVIEW, summary: 'A fresh independent review was requested so auto-merge could be armed.' } } });
+    res = await mutate();
+  }
   if (!res?.errors?.length && action === 'enable') {
     // GitHub cannot pin the base when arming, so re-read right after: if the PR was retargeted or held
     // in between, disarm at once. Threat model: retargeting needs write access, and every branch other
@@ -467,6 +476,9 @@ export async function keepUpToDate(cfg, token, pr, api = gh) {
   if (full.mergeable_state !== 'behind' || full.head.sha !== pr.head.sha) return null;
   // Live state may have changed since the listing: only an armed, held-free main PR from this repo.
   if (!full.auto_merge || !eligible(cfg, full) || isHeld(full)) return null;
+  // update-branch pins the head but not the base. A same-head retarget in the gap would merge another
+  // base into this same-repo branch; that needs write access, which can push to the branch anyway, and
+  // the result is a new head that gets its own CI and review before anything reaches main.
   await api(`/repos/${cfg.repo}/pulls/${pr.number}/update-branch`, { method: 'PUT', token, body: { expected_head_sha: pr.head.sha } });
   return 'updated';
 }
