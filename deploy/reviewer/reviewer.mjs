@@ -387,28 +387,6 @@ const isHeld = (pr) => (pr.labels || []).some((l) => String(l.name || '').toLowe
 
 const eligible = (cfg, pr) => pr.head?.repo?.full_name === cfg.repo && pr.base?.ref === 'main' && !pr.draft;
 
-async function rearmViaCheck(cfg, token, pr, api, mutate) {
-  const runs = (await api(`/repos/${cfg.repo}/commits/${pr.head.sha}/check-runs?check_name=${CHECK}&app_id=${cfg.appId}&per_page=100`, { token })).check_runs || [];
-  // The newest run decides: a newer queued/in-progress review is never pre-empted by an older verdict.
-  const latest = [...runs].sort((a, b) => b.id - a.id)[0];
-  if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success') return null;
-  const reopened = await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
-    name: CHECK, head_sha: pr.head.sha, status: 'in_progress', external_id: latest.external_id, started_at: new Date().toISOString() } });
-  let res = null;
-  try {
-    // Re-validate after the extra calls: a retarget, draft or hold on the same head must not be armed.
-    const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
-    if (live.head?.sha === pr.head.sha && live.state === 'open' && eligible(cfg, live) && !isHeld(live) && !live.auto_merge) {
-      res = await mutate();
-    }
-  } finally {
-    await api(`/repos/${cfg.repo}/check-runs/${reopened.id}`, { method: 'PATCH', token, body: {
-      status: 'completed', conclusion: latest.conclusion, completed_at: new Date().toISOString(), external_id: latest.external_id,
-      output: { title: latest.output?.title || 'APPROVE', summary: `${latest.output?.summary || ''}\n\n(Re-posted unchanged to arm auto-merge.)`.slice(0, 60000) } } });
-  }
-  return res;
-}
-
 export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.error, now = Date.now()) {
   if (!pr.node_id) return null;
   const held = isHeld(pr);
@@ -444,13 +422,10 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
     }
   };
   let res = await mutate();
-  if (action === 'enable' && res?.errors?.length && /clean status/i.test(String(res.errors[0]?.message))) {
-    // Already green and up to date, so GitHub refuses to arm. Never merge directly (the merge call
-    // pins the head but not the base). Instead re-open this App's own check for the head, arm while it
-    // is pending, then complete it again with the identical verdict; GitHub then performs the merge
-    // under main's ruleset.
-    res = await rearmViaCheck(cfg, token, pr, api, mutate) || res;
-  }
+  // A PR already green and up to date before it could be armed (GitHub: "clean status") is left for a
+  // manual merge: no direct merge (it cannot pin the base) and no re-posting of a review verdict (it
+  // could race a newer review). The App arms PRs on its first poll, while checks are still running, so
+  // this only follows a removed hold label or a period without the App's permissions.
   if (!res?.errors?.length && action === 'enable') {
     // GitHub cannot pin the base when arming, so re-read right after: if the PR was retargeted or held
     // in between, disarm at once. Threat model: retargeting needs write access, and every branch other
@@ -459,8 +434,18 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
     // which still applies to any PR whose base is main.
     const after = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
     if (after.auto_merge && (!eligible(cfg, after) || isHeld(after) || after.head?.sha !== pr.head.sha)) {
-      await api('/graphql', { method: 'POST', token, body: {
-        query: 'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}', variables: { id: pr.node_id } } });
+      let off;
+      try {
+        off = await api('/graphql', { method: 'POST', token, body: {
+          query: 'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}', variables: { id: pr.node_id } } });
+      } catch (e) {
+        off = { errors: [{ message: e.message }] };
+      }
+      if (off?.errors?.length) {
+        // Not confirmed: the next poll sees the armed, ineligible PR and retries (disable never backs off).
+        log(`auto-merge #${pr.number}: post-arm disarm refused (${String(off.errors[0]?.message || 'refused').slice(0, 200)})`);
+        return false;
+      }
       return 'disabled';
     }
   }

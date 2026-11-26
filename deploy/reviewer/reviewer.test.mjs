@@ -417,30 +417,6 @@ test('always-merge: a failed disable (hold brake) is retried on the very next po
   assert.equal(await ensureAutoMerge(CFG, 't', { ...held, number: 13 }, empty, () => {}, 4), false);
 });
 
-test('always-merge: an already-green PR is armed by re-opening our own check, never merged directly', async () => {
-  const calls = [];
-  const sha = '7'.repeat(40);
-  let graphql = 0;
-  const api = async (path, { method = 'GET', body } = {}) => {
-    calls.push([method, path, body]);
-    if (path === '/graphql') { graphql++; return graphql === 1 ? { errors: [{ message: 'Pull request is in clean status' }] } : { data: {} }; }
-    if (path.includes('/check-runs?')) return { check_runs: [{ id: 5, status: 'completed', conclusion: 'success', external_id: 'v1:ordinary:c', output: { title: 'APPROVE by opencode', summary: 'ok' } }] };
-    if (method === 'POST') return { id: 6 };
-    return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
-  };
-  const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
-    head: { sha, repo: { full_name: 'its-nix/os' } } };
-  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), 'enabled');
-  assert.ok(!calls.some(([m, p]) => m === 'PUT' || p.endsWith('/merge')));
-  const post = calls.find(([m, p]) => m === 'POST' && p.endsWith('/check-runs'))[2];
-  assert.equal(post.status, 'in_progress');
-  const patch = calls.find(([m]) => m === 'PATCH')[2];
-  assert.equal(patch.conclusion, 'success');
-  assert.equal(patch.external_id, 'v1:ordinary:c');
-  assert.match(patch.output.title, /APPROVE by opencode/);
-  assert.match(calls.filter(([, p]) => p === '/graphql').at(-1)[2].query, /expectedHeadOid:\$head/);
-});
-
 test('always-merge: a non-main PR armed by someone else is left alone; one armed by us is disarmed', async () => {
   const calls = [];
   const ok = async (path, { method = 'GET', body } = {}) => { calls.push([method, path, body]); return { data: {} }; };
@@ -523,38 +499,6 @@ test('a backed-off enable makes no API call at all', async () => {
   assert.equal(gets, after);
 });
 
-test('rearm fallback: a newer pending review is never pre-empted; a same-head retarget or hold is never armed', async () => {
-  const sha = 'd'.repeat(40);
-  const pr = { number: 50, node_id: 'PR_50', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
-    head: { sha, repo: { full_name: 'its-nix/os' } } };
-  const mk = (runs, liveAfter) => {
-    const calls = [];
-    let gets = 0;
-    const api = async (path, { method = 'GET', body } = {}) => {
-      calls.push([method, path, body]);
-      if (path === '/graphql') return calls.filter(([, p]) => p === '/graphql').length === 1
-        ? { errors: [{ message: 'Pull request is in clean status' }] } : { data: {} };
-      if (path.includes('/check-runs?')) return { check_runs: runs };
-      if (method === 'POST') return { id: 99 };
-      if (method === 'PATCH') return {};
-      gets++;
-      const live = { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
-      return gets === 1 ? live : { ...live, ...liveAfter };
-    };
-    return { api, calls };
-  };
-  const ok = { id: 5, status: 'completed', conclusion: 'success', external_id: 'v:o:c', output: { title: 'APPROVE by opencode' } };
-  let t = mk([ok, { id: 6, status: 'in_progress' }], {});
-  assert.equal(await ensureAutoMerge(CFG, 't', pr, t.api, () => {}), false);
-  assert.ok(!t.calls.some(([m, p]) => m === 'POST' && p.endsWith('/check-runs')));
-  for (const [i, change] of [{ base: { ref: 'release' } }, { labels: [{ name: 'hold' }] }, { draft: true }].entries()) {
-    t = mk([ok], change);
-    assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, number: pr.number + 1 + i }, t.api, () => {}), false);
-    assert.equal(t.calls.filter(([, p]) => p === '/graphql').length, 1);  // never re-armed
-    assert.equal(t.calls.find(([m]) => m === 'PATCH')[2].conclusion, 'success');  // verdict restored unchanged
-  }
-});
-
 test('always-merge: a retarget between the check and the arm is disarmed immediately after arming', async () => {
   const sha = 'e'.repeat(40);
   const calls = [];
@@ -572,4 +516,32 @@ test('always-merge: a retarget between the check and the arm is disarmed immedia
   const mutations = calls.filter(([, p]) => p === '/graphql').map(([, , b]) => b.query);
   assert.match(mutations[0], /enablePullRequestAutoMerge/);
   assert.match(mutations[1], /disablePullRequestAutoMerge/);
+});
+
+test('always-merge: an already-green PR is left alone (no direct merge, no re-posted verdict)', async () => {
+  const calls = [];
+  const sha = '7'.repeat(40);
+  const api = async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    if (path === '/graphql') return { errors: [{ message: 'Pull request is in clean status' }] };
+    return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+  };
+  const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), false);
+  assert.ok(!calls.some(([m, p]) => m === 'PUT' || (m === 'POST' && p.includes('check-runs')) || m === 'PATCH'));
+});
+
+test('always-merge: an unconfirmed post-arm disarm is reported as failure, not success', async () => {
+  const sha = 'f'.repeat(40);
+  let gets = 0, mutations = 0;
+  const api = async (path, { method = 'GET' } = {}) => {
+    if (path === '/graphql') { mutations++; return mutations === 1 ? { data: {} } : { errors: [{ message: 'timeout' }] }; }
+    gets++;
+    const live = { state: 'open', draft: false, labels: [], base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+    return gets === 1 ? { ...live, auto_merge: null } : { ...live, base: { ref: 'release' }, auto_merge: { merge_method: 'squash' } };
+  };
+  const pr = { number: 61, node_id: 'PR_61', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), false);
 });
