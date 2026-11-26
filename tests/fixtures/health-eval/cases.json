@@ -272,16 +272,25 @@
     "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
     "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}",
     "ventures/acme/actions/a-1.json": "[]",
-    "ventures/acme/actions/a-2.json": "{\"status\": \"queued-local\"}"
+    "ventures/acme/actions/a-2.json": "{\"status\": \"queued-local\"}",
+    "ventures/acme/actions/a-3.json": "{\"action_id\": \"a-3\", \"status\": \"queued-local\"}"
    },
    "expect": [
     [
      "acme",
      "approval",
+     "a-1.json",
      "unreadable|invalid"
     ],
     [
      "acme",
+     "approval",
+     "a-2.json",
+     "unreadable|invalid"
+    ],
+    [
+     "acme",
+     "1 approval request(s)",
      "not delivered"
     ]
    ]

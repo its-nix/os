@@ -8,31 +8,24 @@ or the bytes of the deployed copy. The scorer is a protected path: a change to i
 approval, so a PR that improves health.py cannot also change the metric that judges it.
 
 Metric: cases handled / total cases in tests/fixtures/health-eval/cases.json. A case is handled when
-check() does not raise, every expected finding is reported, no other finding appears, and no marker
-text from a malformed file is echoed. Python 3.11 compatible; standard library only.
+check() completes, findings match expectations one-to-one, and no malformed file marker appears in
+findings, stdout or stderr. Python 3.11 compatible; standard library only.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 import argparse
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
 import re
+import runpy
+import subprocess
 import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
 CASES = HERE / 'fixtures' / 'health-eval' / 'cases.json'
-NOW = datetime(2026, 11, 24, 8, tzinfo=timezone.utc)
-sys.dont_write_bytecode = True  # never leave bytecode beside a scored copy of health.py
-
-
-def load_target(path):
-    spec = importlib.util.spec_from_file_location('health_under_test', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+CASE_TIMEOUT = 5
 
 
 def materialise(home, files):
@@ -51,40 +44,101 @@ def matches(line, group):
     return all(any(option.lower() in lowered for option in token.split('|')) for token in group)
 
 
-def run_case(module, case):
-    boards = case.get('boards', {})
-    forbidden_reads = []
+def worker():
+    """Run one check with fixture inputs. Findings travel separately from stdout and stderr."""
+    inputs = json.load(sys.stdin)
+    home = Path.cwd()
+    forbidden_read = False
 
     def kanban(board):
-        state = boards.get(board, [])
+        nonlocal forbidden_read
+        state = inputs.get('boards', {}).get(board, [])
         if state == 'forbidden':
-            forbidden_reads.append(board)
+            forbidden_read = True
             return []
         if state == 'error':
             raise RuntimeError('timeout')
         return state
 
+    def block_external_calls(event, args):
+        # Prevent accidental live probes through Python networking or external commands.
+        if event.startswith('socket.') or event in ('subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn'):
+            raise PermissionError('network and external commands are disabled in the health evaluator')
+
+    sys.addaudithook(block_external_calls)
+    now = datetime.fromisoformat(inputs['clock'])
+    target = runpy.run_path(str(home.parent / 'health.py'))
+    problems = target['check'](home, now, kanban=kanban,
+                               t3_ok=inputs.get('t3_ok', True), disk=inputs.get('disk', 0.5))
+    result = {'problems': problems, 'forbidden_read': forbidden_read}
+    (home.parent / 'result.json').write_text(json.dumps(result), encoding='utf-8')
+
+
+def match_findings(problems, expected):
+    if len({line.strip().lower() for line in problems}) != len(problems):
+        return False, 'unexpected finding'
+    candidates = [[idx for idx, line in enumerate(problems) if matches(line, group)] for group in expected]
+    assigned = {}
+
+    def assign(group_idx, seen):
+        # Reassign a line if another group can use an alternative.
+        for line_idx in candidates[group_idx]:
+            if line_idx in seen:
+                continue
+            seen.add(line_idx)
+            if line_idx not in assigned or assign(assigned[line_idx], seen):
+                assigned[line_idx] = group_idx
+                return True
+        return False
+
+    for group_idx, group in enumerate(expected):
+        if not assign(group_idx, set()):
+            return False, 'missing finding: ' + ' + '.join(group)
+    if len(assigned) != len(problems):
+        return False, 'unexpected finding'
+    return True, ''
+
+
+def run_case(target, case, clock):
+    markers = [marker.encode() for marker in case.get('forbid', [])]
+    inputs = {key: case[key] for key in ('boards', 't3_ok', 'disk') if key in case}
+    inputs['clock'] = clock
     with tempfile.TemporaryDirectory(prefix='health-eval-') as directory:
-        home = Path(directory)
+        root = Path(directory).resolve()
+        home = root / 'state'
+        home.mkdir()
+        (root / 'health.py').write_bytes(target)
         materialise(home, case['files'])
         try:
-            problems = module.check(home, NOW, kanban=kanban, t3_ok=case.get('t3_ok', True), disk=case.get('disk', 0.5))
-        except Exception as error:  # a crash is exactly what this evaluation measures
-            return False, f'raised {type(error).__name__}'
-    if forbidden_reads:
+            child = subprocess.run(
+                [sys.executable, '-I', '-B', '-S', '-X', 'utf8', str(HERE / 'health_eval.py'), '--worker'],
+                cwd=home, env={key: str(home) for key in ('HOME', 'HERMES_HOME', 'TMPDIR')},
+                input=json.dumps(inputs).encode(), capture_output=True, timeout=CASE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as error:
+            if any(marker in stream for marker in markers for stream in (error.stdout or b'', error.stderr or b'')):
+                return False, 'echoed malformed file content'
+            return False, 'target timed out'
+        if any(marker in stream for marker in markers for stream in (child.stdout, child.stderr)):
+            return False, 'echoed malformed file content'
+        if child.returncode:
+            return False, 'target subprocess failed'
+        try:
+            result = json.loads((root / 'result.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return False, 'target did not produce a result'
+    if not isinstance(result, dict):
+        return False, 'invalid result'
+    if result.get('forbidden_read'):
         return False, 'read a board it must not read'
-    problems = [str(problem) for problem in problems]
-    if case.get('silent'):
-        return (problems == [], 'expected silence' if problems else '')
-    missing = [group for group in case['expect'] if not any(matches(line, group) for line in problems)]
-    if missing:
-        return False, 'missing finding: ' + ' + '.join(missing[0])
-    extra = [line for line in problems if not any(matches(line, group) for group in case['expect'])]
-    if extra:
-        return False, 'unexpected finding'
+    problems = result.get('problems')
+    if not isinstance(problems, list) or any(not isinstance(line, str) for line in problems):
+        return False, 'invalid findings'
     if any(marker in line for line in problems for marker in case.get('forbid', [])):
         return False, 'echoed malformed file content'
-    return True, ''
+    if case.get('silent'):
+        return (problems == [], 'expected silence' if problems else '')
+    return match_findings(problems, case['expect'])
 
 
 def version_of(target):
@@ -102,17 +156,18 @@ def version_of(target):
 
 
 def evaluate(target, cases_path=CASES):
-    cases = json.loads(Path(cases_path).read_text())['cases']
-    module = load_target(target)
+    fixture_bytes = Path(cases_path).read_bytes()
+    fixture = json.loads(fixture_bytes)
+    target_bytes = Path(target).read_bytes()
     results = {}
-    for case in cases:
-        ok, why = run_case(module, case)
+    for case in fixture['cases']:
+        ok, why = run_case(target_bytes, case, fixture['clock'])
         results[case['id']] = {'handled': ok, 'why': why, 'kind': case['kind']}
     handled = [i for i, r in results.items() if r['handled']]
     return {
-        'target_sha256': hashlib.sha256(Path(target).read_bytes()).hexdigest(),
+        'target_sha256': hashlib.sha256(target_bytes).hexdigest(),
         'target_version': version_of(target),
-        'cases_sha256': hashlib.sha256(Path(cases_path).read_bytes()).hexdigest(),
+        'cases_sha256': hashlib.sha256(fixture_bytes).hexdigest(),
         'handled': len(handled), 'total': len(results), 'score': f'{len(handled)}/{len(results)}',
         'by_kind': {kind: f'{sum(1 for r in results.values() if r["kind"] == kind and r["handled"])}/'
                           f'{sum(1 for r in results.values() if r["kind"] == kind)}'
@@ -123,6 +178,9 @@ def evaluate(target, cases_path=CASES):
 
 
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--worker']:
+        worker()
+        sys.exit(0)
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--target', required=True, help='path to a health.py to score')
     parser.add_argument('--json', action='store_true', help='print the full JSON report')
