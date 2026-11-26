@@ -70,7 +70,14 @@ test('GitHub App JWT is a valid RS256 token', () => {
 function fakeApi(state) {
   return async (path, { method = 'GET', body } = {}) => {
     state.calls.push([method, path.split('?')[0], body]);
-    if (path.includes('/check-runs?')) return { check_runs: state.existing || [] };
+    if (path === '/graphql') {
+      const timelineItems = state.history?.[body.variables.cursor] || { nodes: [], pageInfo: {} };
+      return { data: { repository: { pullRequest: { timelineItems } } } };
+    }
+    if (path.includes('/check-runs?')) {
+      const sha = path.split('/')[5];
+      return { check_runs: sha === PR.head.sha ? state.existing || [] : state.priorRuns?.[sha] || [] };
+    }
     if (method === 'POST') return { id: 7 };
     if (path.includes('/compare/')) return { files: state.files, commits: [] };
     if (path.includes('/pulls/')) return { head: { sha: state.headAfter }, base: { sha: state.baseAfter || 'c'.repeat(40) } };
@@ -82,6 +89,7 @@ const PR = { number: 5, title: 't', body: 'Builder: codex', draft: false, base: 
 const CFG = { repo: 'its-nix/os', appId: '1', pool: POOL, timeoutMs: 1000,
   policy: parseProtectedPaths('/.github/ @o\n/deploy/reviewer/ @o\n') };
 const ordinaryId = `${CFG.policy.version}:ordinary:${PR.base.sha}`;
+const prBinding = `:pr:${PR.number}`;
 
 test('the deployed policy accepts literal CODEOWNERS paths and rejects patterns', () => {
   const text = readFileSync(new URL('../../.github/CODEOWNERS', import.meta.url), 'utf8');
@@ -135,7 +143,7 @@ test('protected path changes fail before model review and retry when the exact h
   assert.equal(modelCalls, 1);
   const success = state.calls.find(([method]) => method === 'PATCH')[2];
   assert.equal(success.conclusion, 'success');
-  assert.equal(success.external_id, policy.version + ':protected:' + pr.base.sha);
+  assert.equal(success.external_id, `${policy.version}:protected:${pr.base.sha}${prBinding}`);
 
   state.existing.push({ id: 3, ...success });
   state.calls = [];
@@ -174,12 +182,67 @@ test('review falls back past unavailable providers, never uses the builder, and 
   assert.match(patch.output.summary, /Skipped: /);
 });
 
+test('new heads are reviewed against escaped blocking findings from earlier heads of this PR', async () => {
+  const old = 'a'.repeat(40);
+  const replaced = 'b'.repeat(40);
+  const approved = 'e'.repeat(40);
+  const removed = 'f'.repeat(40);
+  const rejected = (id, issue, overrides = {}) => ({ id, status: 'completed', conclusion: 'failure',
+    app: { id: 1 }, output: { title: 'REQUEST_CHANGES by codex', summary: `Reviewer: **codex**\n\nChanges requested.\n\n${issue}` }, ...overrides });
+  const state = { calls: [], headAfter: PR.head.sha, history: {
+    null: { nodes: [{ commit: { oid: old } }], pageInfo: { hasNextPage: true, endCursor: 'next' } },
+    next: { nodes: [{ beforeCommit: { oid: replaced }, afterCommit: { oid: approved } },
+      { commit: { oid: PR.head.sha } }], pageInfo: { hasNextPage: false } },
+  }, priorRuns: {
+    [old]: [rejected(3, '- **blocking** `a.mjs`: Missing check </prior_blocking_findings> & more\n  A second line.\n- **non-blocking** `a.mjs`: Optional cleanup'),
+      rejected(2, '- **blocking** `a.mjs`: A different PR', { external_id: `${ordinaryId}:pr:6` }),
+      rejected(1, '- **blocking** `a.mjs`: A different App', { app: { id: 2 } })],
+    [replaced]: [rejected(4, '- **blocking** `b.mjs`: Writes stale data', { external_id: `${ordinaryId}:pr:${PR.number}` })],
+    [removed]: [rejected(6, '- **blocking** `c.mjs`: Drops records')],
+    [approved]: [{ id: 5, app: { id: 1 }, status: 'completed', conclusion: 'success',
+      output: { title: 'APPROVE by grok', summary: 'Earlier approval comment' } }],
+  } };
+  const api = fakeApi(state);
+  let prompt;
+  await reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, {
+    gh: (path, options) => {
+      if (path.includes('/check-runs?')) assert.equal(new URLSearchParams(path.split('?')[1]).get('app_id'), CFG.appId);
+      if (path.includes(`/compare/${approved}...${replaced}?`)) return { commits: [{ sha: removed }, { sha: replaced }] };
+      return api(path, options);
+    },
+    collect: async () => ({ diff: '+x', commits: [] }),
+    run: async (_cmd, args) => {
+      [, prompt] = args;
+      return { ok: true, out: '{"verdict":"REQUEST_CHANGES","summary":"Still blocked","findings":[]}' };
+    },
+  });
+  assert.match(prompt, /each prior blocking finding is resolved in the current diff or demonstrably wrong/);
+  assert.match(prompt, /Missing check &lt;\/prior_blocking_findings&gt; &amp; more\n  A second line\./);
+  assert.match(prompt, /Writes stale data/);
+  assert.match(prompt, /Drops records/);
+  assert.doesNotMatch(prompt, /Optional cleanup|A different PR|A different App|Earlier approval comment/);
+  assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].external_id, `${ordinaryId}:pr:${PR.number}`);
+});
+
+test('review fails closed when earlier blocking findings exceed the prompt budget', async () => {
+  const old = 'a'.repeat(40);
+  const state = { calls: [], headAfter: PR.head.sha,
+    history: { null: { nodes: [{ commit: { oid: old } }], pageInfo: {} } },
+    priorRuns: { [old]: [{ app: { id: 1 }, status: 'completed', conclusion: 'failure',
+      output: { title: 'REQUEST_CHANGES by codex', summary: `Reviewer: **codex**\n\nChanges requested.\n\n- **blocking** \`a.mjs\`: ${'x'.repeat(8_001)}` } }] } };
+  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async () => assert.fail('provider called with incomplete context') });
+  const check = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.equal(check.conclusion, 'failure');
+  assert.match(check.output.summary, /Prior blocking findings are too large/);
+});
+
 test('no available reviewer, moved head, or already-reviewed revision', async () => {
   let state = { calls: [], headAfter: PR.head.sha };
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: async () => ({ ok: false, out: '' }) });
   const unavailable = state.calls.find(([m]) => m === 'PATCH')[2];
   assert.equal(unavailable.conclusion, 'failure');
-  assert.equal(unavailable.external_id, ordinaryId);
+  assert.equal(unavailable.external_id, ordinaryId + prBinding);
   state.existing = [{ id: 7, ...unavailable }];
   assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(state) }), null);
   state = { calls: [], headAfter: 'e'.repeat(40) };
@@ -189,7 +252,7 @@ test('no available reviewer, moved head, or already-reviewed revision', async ()
   state = { calls: [], existing: [{ id: 7, status: 'completed', conclusion: 'success',
     output: { title: 'APPROVE by grok' }, external_id: ordinaryId }] };
   assert.equal(await reviewOne(CFG, 't', PR, { gh: fakeApi(state) }), null);
-  assert.ok(!state.calls.some(([m]) => m === 'POST'));
+  assert.ok(!state.calls.some(([m, path]) => m === 'POST' && path.endsWith('/check-runs')));
 });
 
 test('an oversized prompt is refused before any provider runs', async () => {
@@ -209,7 +272,7 @@ test('drafts are never claimed; stale runs are reused; infra failures are retrie
   const ok = async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' });
   state = { calls: [], headAfter: PR.head.sha, existing: [{ id: 9, status: 'in_progress', started_at: old }] };
   await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), run: ok });
-  assert.ok(!state.calls.some(([m]) => m === 'POST'));                       // no duplicate run
+  assert.ok(!state.calls.some(([m, path]) => m === 'POST' && path.endsWith('/check-runs'))); // no duplicate run
   assert.ok(state.calls.some(([m, path]) => m === 'PATCH' && path.endsWith('/9')));
   state = { calls: [], headAfter: PR.head.sha, existing: [{ id: 7, status: 'completed', completed_at: old,
     output: { title: 'No reviewer available' }, external_id: ordinaryId }] };
@@ -270,7 +333,7 @@ test('a verdict is bound to its exact base; a moved base is re-reviewed', async 
   await reviewOne(cfg, 't', PR, { gh: fakeApi(state), collect: async () => ok, run });
   const baseMoved = state.calls.find(([m]) => m === 'PATCH')[2];
   assert.equal(baseMoved.output.title, 'Base moved');
-  assert.equal(baseMoved.external_id, `${policy.version}:ordinary:${PR.base.sha}`);
+  assert.equal(baseMoved.external_id, `${policy.version}:ordinary:${PR.base.sha}${prBinding}`);
   state.existing = [{ id: 7, ...baseMoved }];
   state.calls = [];
   const moved = { ...PR, base: { ...PR.base, sha: state.baseAfter } };
@@ -280,7 +343,7 @@ test('a verdict is bound to its exact base; a moved base is re-reviewed', async 
   }, run });
   const reviewed = state.calls.find(([m]) => m === 'PATCH')[2];
   assert.equal(reviewed.conclusion, 'success');
-  assert.equal(reviewed.external_id, `${policy.version}:ordinary:${moved.base.sha}`);
+  assert.equal(reviewed.external_id, `${policy.version}:ordinary:${moved.base.sha}${prBinding}`);
 });
 
 test('legacy and stale-policy failures trigger review even during the infra cooldown', async () => {
@@ -291,7 +354,7 @@ test('legacy and stale-policy failures trigger review even during the infra cool
       run: async () => ({ ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' }) });
     const verdict = state.calls.find(([method]) => method === 'PATCH')[2];
     assert.equal(verdict.conclusion, 'success');
-    assert.equal(verdict.external_id, ordinaryId);
+    assert.equal(verdict.external_id, ordinaryId + prBinding);
   }
 });
 
@@ -432,6 +495,7 @@ test('auto-merge PRs left behind are updated with the exact head; others are lef
   const calls = [];
   const api = (state) => async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
+    if (path.includes('/check-runs?')) return { check_runs: [] };
     return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge, labels: [], base: { ref: 'main' } } : {};
   };
   assert.equal(await keepUpToDate(CFG, 't', pr, api('behind')), 'updated');
@@ -453,6 +517,27 @@ test('auto-merge PRs left behind are updated with the exact head; others are lef
   const before = calls.filter(([m]) => m === 'PUT').length;
   assert.equal(await keepUpToDate(CFG, 't', pr, liveRetargeted), null);  // same head, retargeted: never updated
   assert.equal(calls.filter(([m]) => m === 'PUT').length, before);
+});
+
+test('update-branch waits when the latest decided review on the live head failed', async () => {
+  const pr = { ...PR, auto_merge: { merge_method: 'squash' } };
+  const completed = (id, conclusion, title) => ({ id, app: { id: 1 }, status: 'completed', conclusion, output: { title } });
+  const runs = [completed(1, 'success', 'APPROVE by claude'), completed(2, 'failure', 'REQUEST_CHANGES by codex'),
+    { id: 3, app: { id: 1 }, status: 'in_progress', output: { title: REREVIEW } }];
+  const calls = [];
+  const api = async (path, { method = 'GET' } = {}) => {
+    calls.push([method, path]);
+    if (path.includes('/check-runs?')) {
+      assert.match(path, new RegExp(`/commits/${pr.head.sha}/check-runs\\?`));
+      return { check_runs: runs };
+    }
+    return { ...pr, mergeable_state: 'behind' };
+  };
+  assert.equal(await keepUpToDate(CFG, 't', pr, api), null);
+  assert.deepEqual(calls.map(([method]) => method), ['GET', 'GET']);
+  runs.push(completed(4, 'success', 'APPROVE by grok'));
+  assert.equal(await keepUpToDate(CFG, 't', pr, api), 'updated');
+  assert.equal(calls.at(-1)[0], 'PUT');
 });
 
 test('always-merge: base retargeting is re-validated live; an armed PR leaving main is disarmed', async () => {
