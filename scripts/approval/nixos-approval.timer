@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll the Nix founder approval spool
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=90s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

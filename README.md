@@ -18,7 +18,8 @@ Each row is as of its evidence date. Founder items were requested on 2026-11-23 
 | Independent AI review gate | **Running** | Reviewer GitHub App publishes the required `independent-review` check on `main`; passed on #105 (2026-11-25) ([policy](docs/AUTHORITY.md)) |
 | `main` ruleset + auto-merge | **Active** (checked 2026-11-25) | Ruleset `main-protection` active; repository auto-merge enabled. Agents still open PRs with the founder's GitHub identity ([policy](docs/AUTHORITY.md)) |
 | Twenty CRM (optional profile) | Ready, off | Merged (#76); starts when `twenty/ENABLED` exists; first admin + workspace key are founder-created |
-| Lead → CRM → approval-gated action procedure | Deployed, not live-proven | `skills/crm-lead-ops` (#77); needs a Twenty workspace key and a Todoist queue token (founder request, 2026-11-23) |
+| Lead → CRM → approval-gated action procedure | Deployed, live proof pending | `skills/crm-lead-ops` (#77); requires a Twenty workspace key |
+| Founder approval queue (PRD §7.5 / H) | Host worker staged, live proof pending | Founder-owned Todoist, local Hermes spool, root-only token. [Setup and demo](docs/FOUNDER-APPROVAL-QUEUE.md) |
 | Company loops (health, digest, improvement) | **Running** | LNX cron: no-agent health check every 6 h (silent when healthy), daily digest, weekly improvement (#78) |
 | Hindsight memory | Open PR #102 (unmerged at 2026-11-25) | PR #102 configures a pinned loopback server, per-profile banks and local embeddings. The founder chose ChatGPT for extraction and must complete a [one-time device sign-in](deploy/hindsight/README.md) after deployment. |
 | Drive + Obsidian knowledge | Staged pending founder sign-in | [Vault setup and operations](docs/KNOWLEDGE-VAULT.md) · two-way Workspace, one-way reviewed KB |

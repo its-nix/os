@@ -1,0 +1,19 @@
+[Unit]
+Description=Deliver Nix founder approval requests to Todoist
+ConditionPathExists=/srv/nix-clean/todoist/token
+ConditionPathExists=/srv/nix-clean/todoist/project-id
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/flock -n -E 0 /run/lock/nix-os-deploy.lock /usr/bin/python3 -IB /opt/nix-clean-source/scripts/approval/worker.py
+TimeoutStartSec=75s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/lock /srv/nix-clean/approvals/outbox /srv/nix-clean/approvals/status /srv/nix-clean/approvals/state
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
