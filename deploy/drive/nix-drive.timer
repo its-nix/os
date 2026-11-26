@@ -1,0 +1,9 @@
+[Unit]
+Description=Synchronize Nix Drive every seven minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=7min
+
+[Install]
+WantedBy=timers.target

@@ -21,7 +21,7 @@ Each row is as of its evidence date. Founder items were requested on 2026-11-23 
 | Lead → CRM → approval-gated action procedure | Deployed, not live-proven | `skills/crm-lead-ops` (#77); needs a Twenty workspace key and a Todoist queue token (founder request, 2026-11-23) |
 | Company loops (health, digest, improvement) | **Running** | LNX cron: no-agent health check every 6 h (silent when healthy), daily digest, weekly improvement (#78) |
 | Hindsight memory | Open PR #102 (unmerged at 2026-11-25) | PR #102 configures a pinned loopback server, per-profile banks and local embeddings. The founder chose ChatGPT for extraction and must complete a [one-time device sign-in](deploy/hindsight/README.md) after deployment. |
-| Drive + Obsidian knowledge | Not started | Needs the vault folder and scoped access; the KB snapshot stays authoritative meanwhile |
+| Drive + Obsidian knowledge | Staged pending founder sign-in | [Vault setup and operations](docs/KNOWLEDGE-VAULT.md) · two-way Workspace, one-way reviewed KB |
 | Personal agent profile (`personal`) | Contract + idempotent deploy step ([contract](docs/PERSONAL-PROFILE.md)) | Logical separation only; email/calendar blocked on the founder |
 | Paperclip | **Retired from active Compose** (#80, merged 2026-11-23) | State archived and captured in recovery (2026-11-25). At the 2026-11-23 baseline: 0 issues/projects, 3 paused agents |
 | LNX Discord bot | **Running** | Default profile; unchanged |
