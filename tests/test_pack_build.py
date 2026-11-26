@@ -32,6 +32,11 @@ class PackTests(unittest.TestCase):
                 self.assertEqual(len(skills), len(set(selected) - core))
                 self.assertEqual(selected, sorted(core | set(skills)))
 
+    def test_operations_pack_has_no_direct_todoist_skill(self):
+        manifest = json.loads((pack.HERE / 'packs.json').read_text())
+        self.assertEqual(manifest['packs']['operations'], ['technical-project-management', 'retro'])
+        self.assertNotIn('todoist-cli', manifest['kit_lock']['skills'])
+
     def test_cli_exposes_domain_packs_for_builds_and_worktrees(self):
         for filename, option in [('build.py', '--role'), ('worktree.py', '--role'),
                                  ('worktree.py', '--task-pack')]:
