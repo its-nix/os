@@ -388,16 +388,27 @@ test('always-merge: a failed disable (hold brake) is retried on the very next po
   assert.equal(await ensureAutoMerge(CFG, 't', { ...held, number: 13 }, empty, () => {}, 4), false);
 });
 
-test('always-merge: an already-green PR is merged directly, pinned to its head', async () => {
+test('always-merge: an already-green PR is merged directly, pinned to its head, only if live state allows and GitHub confirms', async () => {
   const calls = [];
+  let live, merged = true;
   const api = async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
-    return path === '/graphql' ? { errors: [{ message: 'Pull request is in clean status' }] } : { merged: true };
+    if (path === '/graphql') return { errors: [{ message: 'Pull request is in clean status' }] };
+    if (method === 'GET') return live;
+    return { merged };
   };
   const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
     head: { sha: '7'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  live = { state: 'open', draft: false, labels: [], head: { sha: pr.head.sha } };
   assert.equal(await ensureAutoMerge(CFG, 't', pr, api), 'merged');
   assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/11/merge', { merge_method: 'squash', sha: pr.head.sha }]);
+  calls.length = 0;
+  live = { ...live, labels: [{ name: 'hold' }] };  // held since the listing: never merged
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, number: 14 }, api), null);
+  assert.ok(!calls.some(([m]) => m === 'PUT'));
+  live = { ...live, labels: [] };
+  merged = false;  // GitHub did not merge: not reported as merged
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, number: 15 }, api, () => {}), false);
 });
 
 test('auto-merge PRs left behind are updated with the exact head; others are left alone', async () => {

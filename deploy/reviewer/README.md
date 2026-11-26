@@ -43,4 +43,4 @@
 
 ## Always-merge
 
-Each poll, the App enables squash auto-merge on every eligible PR (same repository, base `main`, not a draft, no `hold` label) and updates auto-merge PRs that are behind `main`. It needs the App's Contents and Pull requests permissions set to read and write. The ruleset remains the only gate: auto-merge waits for `verify` and `independent-review` on an up-to-date head. Add the `hold` label to keep a PR open; the App then turns its auto-merge off.
+Each poll, the App enables squash auto-merge on every eligible PR (same repository, base `main`, not a draft, no `hold` label) and updates auto-merge PRs that are behind `main`. It needs the App's Contents and Pull requests permissions set to read and write. The ruleset remains the only gate: auto-merge waits for `verify` and `independent-review` on an up-to-date head. To guarantee a PR stays open, convert it to a draft: GitHub never merges drafts. The `hold` label turns auto-merge off on the next poll (about a minute), so an already-armed PR whose checks finish within that window can still merge.

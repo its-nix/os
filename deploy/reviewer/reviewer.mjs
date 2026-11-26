@@ -354,7 +354,9 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
 
 // Always-merge: every eligible PR gets squash auto-merge, so it merges as soon as the ruleset's
 // required checks (verify + independent-review, up to date) pass. The ruleset stays the gate:
-// enabling auto-merge never bypasses a check. A `hold` label opts a PR out (and turns it off).
+// enabling auto-merge never bypasses a check. Opt-outs: a draft PR is never merged (GitHub enforces
+// it, and converting to draft disables auto-merge); a `hold` label turns auto-merge off on the next
+// poll (about a minute), so an already-armed PR whose checks finish inside that window can merge.
 const HOLD_LABEL = 'hold';
 const RETRY_MS = 30 * 60 * 1000;
 const autoMergeBackoff = new Map();  // pr number -> {key, until}: only failed attempts back off
@@ -389,7 +391,11 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
     // Already green and up to date: GitHub refuses auto-merge, so merge now, pinned to this head.
     // The ruleset still gates the merge; a stale or red head is refused by GitHub.
     try {
-      await api(`/repos/${cfg.repo}/pulls/${pr.number}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
+      // Re-read the live PR right before merging: a hold label or draft added since the listing wins.
+      const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+      if (live.head?.sha !== pr.head.sha || live.draft || isHeld(live) || live.state !== 'open') return null;
+      const result = await api(`/repos/${cfg.repo}/pulls/${pr.number}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
+      if (result?.merged !== true) throw new Error('merge not confirmed');
       autoMergeBackoff.delete(pr.number);
       return 'merged';
     } catch (e) {
@@ -421,7 +427,12 @@ async function loop(cfg) {
   for (;;) {
     try {
       const token = await installationToken(cfg);
-      const prs = await gh(`/repos/${cfg.repo}/pulls?state=open&base=main&per_page=50`, { token });
+      const prs = [];
+      for (let page = 1; page <= 10; page++) {  // up to 1000 open PRs; every eligible PR is handled
+        const batch = await gh(`/repos/${cfg.repo}/pulls?state=open&base=main&per_page=100&page=${page}`, { token });
+        prs.push(...batch);
+        if (batch.length < 100) break;
+      }
       for (const pr of prs) {
         let merged = null;
         try { merged = await ensureAutoMerge(cfg, token, pr); } catch (e) { console.error(`auto-merge #${pr.number}: ${e.message}`); }
