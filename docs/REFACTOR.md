@@ -93,7 +93,7 @@ One consolidated Todoist request (project `Nix`, label `nix-approval`), raised 2
 2. Builder GitHub identity for T3 (contents + PR write; no workflows/admin/bypass). **Open:** agents still open PRs with the founder's identity ([AUTHORITY](AUTHORITY.md)).
 3. Coding-harness logins inside T3. Open; not re-verified.
 4. The founder chose ChatGPT for Hindsight extraction (D14). After #102 deploys, complete the [one-time device sign-in](../deploy/hindsight/README.md).
-5. Direct Hermes Drive access awaits the founder’s one-time sign-in after deployment (D15).
+5. Direct Hermes Drive access awaits the founder’s one-time sign-in after deployment (D17).
 6. Todoist API token for the agents' approval queue (`TODOIST_API_TOKEN` in Hermes). Open; not re-verified.
 7. Twenty first admin + per-venture workspace and role-scoped API key, when a venture needs CRM. Open (CRM is off).
 8. Personal profile email and calendar connectors. Open.
@@ -106,7 +106,7 @@ Removed as obsolete on 2026-11-25: the request to allow `pull_request_target` fo
 - **After harness logins and the builder identity:** a venture lead launches a T3 task through `t3-delegate`; two concurrent tasks on separate worktrees; a red CI proves merge blocking (acceptance D).
 - **After a Twenty key and a Todoist token:** run `crm-lead-ops` live for the `demo` venture with a fictitious lead; the approval appears in Todoist; nothing is sent (acceptance E/H).
 - **Hindsight:** After #102 deploys and the founder signs in, verify extraction and recall with synthetic text in a test bank on the pinned server (D14).
-- **Drive:** after founder sign-in, verify a Markdown round trip inside Nix and open a native Google document from an index note (D15).
+- **Drive (D17):** after founder sign-in, verify a Markdown round trip inside Nix and open a native Google document from an index note (D15).
 - **NixKit packs and Skillshare:** core and engineering packs are deployed through Skillshare (#100, merged 2026-11-25). Remaining: a native discovery readback on production after a healthy `main` deployment (see the pack migration evidence below).
 
 ## Pack migration evidence — 2026-11-25

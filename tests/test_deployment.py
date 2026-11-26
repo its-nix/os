@@ -891,3 +891,22 @@ class DeploymentTests(unittest.TestCase):
                 result = subprocess.run(['sh', str(ROOT / 'scripts/deploy-os.sh'), value],
                                         capture_output=True, text=True)
                 self.assertNotEqual(0, result.returncode)
+
+
+class DriveCredentialIsolationTests(unittest.TestCase):
+    def test_only_hermes_can_reach_the_drive_credential(self):
+        import re
+        compose = (ROOT / 'deploy/compose.yaml').read_text()
+        for service in ('t3', 'reviewer', 'hindsight'):
+            section = re.search(rf'^  {service}:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
+            mounts = re.findall(r'^        source: (.+)$', section, re.M)
+            self.assertTrue(mounts, service)
+            for source in mounts:
+                self.assertRegex(source, r'^\$\{NIX_CLEAN_ROOT:[^}]+\}/[\w(]')
+                path = Path(source.split('}/', 1)[1])
+                self.assertNotIn('..', path.parts)
+                self.assertNotEqual(path.parts[0], 'hermes', service + ' must not mount Hermes state (Drive credential)')
+            for forbidden in ('docker.sock', '.config/gws', 'GOOGLE_WORKSPACE_CLI'):
+                self.assertNotIn(forbidden, section, service)
+        dockerfile = (ROOT / 'deploy/hermes/Dockerfile').read_text()
+        self.assertIn('GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/opt/data/.config/gws', dockerfile)  # inside the Hermes home only
