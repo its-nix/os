@@ -298,12 +298,15 @@ def check_hindsight_config(config, bank, api_key):
         raise ValueError('A profile memory config reaches other banks; reconcile it by hand')
 
 
-def _profile_secret_names(home):
-    env = home / '.env'
-    if not env.is_file():
-        return set()
-    return {line.split('=', 1)[0].strip() for line in env.read_text(errors='replace').splitlines()
-            if '=' in line and not line.lstrip().startswith('#')}
+def _has_hindsight_override(home, hermes, run):
+    if not os.path.lexists(home / '.env'):
+        return False
+    env = Path('/opt/data') / home.relative_to(hermes) / '.env'
+    probe = ("import json, sys; from dotenv import dotenv_values; "
+             "print(json.dumps(any(k.startswith('HINDSIGHT_') for k in dotenv_values(sys.argv[1]))))")
+    result = run(['docker', 'exec', '-u', '10000', 'nixos-hermes', '/opt/hermes/.venv/bin/python',
+                  '-I', '-B', '-c', probe, str(env)])
+    return json.loads(result)
 
 
 def _config_value(run, cli, key):
@@ -372,7 +375,7 @@ def preflight_memory(source, state, image, run):
         result = run(['docker', 'run', '--rm', '--network', 'none', '--user', '10000', '--cap-drop', 'ALL',
                       '--security-opt', 'no-new-privileges', '--env', f'HERMES_HOME={container_home}',
                       '--mount', f'type=bind,source={hermes},target=/opt/data,readonly',
-                      '--entrypoint', '/opt/hermes/.venv/bin/python', image, '-P', '-s', '-c', probe])
+                      '--entrypoint', '/opt/hermes/.venv/bin/python', image, '-B', '-P', '-s', '-c', probe])
         provider, overrides = json.loads(result)
         if overrides and (home in banks or provider == 'hindsight'):
             raise ValueError('A profile .env sets HINDSIGHT_* values')
@@ -447,7 +450,7 @@ def configure_memory(state, run):
     owner = hermes.stat()
     catalog_checked = False
     for profile, home, bank in memory_banks(state):
-        if any(name.startswith('HINDSIGHT_') for name in _profile_secret_names(home)):
+        if _has_hindsight_override(home, hermes, run):
             raise ValueError('A profile .env sets HINDSIGHT_* values, which override its bank or server')
         cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes', '-p', profile]
         provider = _config_value(run, cli, 'memory.provider')
@@ -892,13 +895,13 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         installed = json.loads((state / 'hermes/nix/versions.json').read_text())
         if {k: v for k, v in installed.items() if k not in RUNTIMES} != desired['dependencies']:
             raise ValueError('Installed native dependency pins do not match the reviewed source')
-        for name, repository in [('hermes', 'nousresearch/hermes-agent')]:
-            if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
-                raise ValueError('Only digest-pinned official images may deploy')
-        hermes_image = versions['hermes']['runtime_image']
+        base_image = versions['hermes']['base_image']
+        if not re.fullmatch(r'nousresearch/hermes-agent@sha256:[0-9a-f]{64}', base_image):
+            raise ValueError('Only digest-pinned official images may deploy')
+        hermes_image = versions['hermes']['image']
         recipe = (source / 'deploy/hermes/Dockerfile').read_bytes()
         if hermes_image != 'nixos-hermes:' + hashlib.sha256(recipe).hexdigest()[:16] or \
-                recipe.decode().splitlines()[0] != 'FROM ' + versions['hermes']['image']:
+                recipe.decode().splitlines()[0] != 'FROM ' + base_image:
             raise ValueError('Hermes runtime recipe differs from its declared image pins')
         if not run(['docker', 'image', 'ls', '--quiet', hermes_image]).strip():
             run(['docker', 'build', '--tag', hermes_image, str(source / 'deploy/hermes')])

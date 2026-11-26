@@ -37,14 +37,16 @@ class CleanPreparationTests(unittest.TestCase):
         import json
         from unittest.mock import patch
         versions = json.loads((ROOT / 'deploy/versions.json').read_text())
-        versions['hermes']['image'] = 'untrusted/runtime@sha256:' + 'a' * 64
         with tempfile.TemporaryDirectory() as td:
             fixture = Path(td)
-            (fixture / 'deploy').mkdir()
-            (fixture / 'deploy/versions.json').write_text(json.dumps(versions))
+            (fixture / 'deploy/hermes').mkdir(parents=True)
+            (fixture / 'deploy/hermes/Dockerfile').write_bytes((ROOT / 'deploy/hermes/Dockerfile').read_bytes())
             (fixture / 'deploy/pilot.json').write_text((ROOT / 'deploy/pilot.json').read_text())
-            with patch.object(clean_os, 'REPO', fixture), self.assertRaises(clean_os.Refusal):
-                clean_os.inputs()
+            for field in ('image', 'base_image'):
+                pins = dict(versions['hermes'], **{field: 'untrusted/runtime@sha256:' + 'a' * 64})
+                (fixture / 'deploy/versions.json').write_text(json.dumps(dict(versions, hermes=pins)))
+                with self.subTest(field=field), patch.object(clean_os, 'REPO', fixture), self.assertRaises(clean_os.Refusal):
+                    clean_os.inputs()
 
     def test_every_worker_can_discover_the_pinned_knowledge_tools(self):
         import json

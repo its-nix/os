@@ -27,7 +27,7 @@ assert provider is not None and provider.is_available()
 @unittest.skipUnless(os.getenv('HINDSIGHT_RUNTIME_TEST') == '1', 'requires Docker and catalog access')
 class HindsightRuntimeTests(unittest.TestCase):
     def test_enabled_provider_survives_second_deployment_and_container_replacement(self):
-        image = json.loads((ROOT / 'deploy/versions.json').read_text())['hermes']['runtime_image']
+        image = json.loads((ROOT / 'deploy/versions.json').read_text())['hermes']['image']
         with tempfile.TemporaryDirectory() as td:
             state = Path(td)
             home = state / 'hermes'

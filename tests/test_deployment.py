@@ -66,7 +66,7 @@ class DeploymentTests(unittest.TestCase):
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' running'
                 if name == 'hindsight':
                     return deployment.HINDSIGHT_IMAGE + ' healthy'
-                return images[name]['runtime_image'] + ' healthy'
+                return images[name]['image'] + ' healthy'
             if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
                 return '{"url": "http://127.0.0.1:3773/mcp", "enabled": true}'
             if argv == ['ss', '-lntH']:
@@ -103,13 +103,15 @@ class DeploymentTests(unittest.TestCase):
             receipt = json.loads((state / 'deployment.json').read_text())
             self.assertEqual('b' * 40, receipt['revision'])
             self.assertEqual('healthy', receipt['status'])
+            versions = json.loads((state / 'versions.json').read_text())
+            self.assertEqual(receipt['images']['hermes'], versions['hermes']['image'])
             self.assertEqual(ROOT, current.resolve())
             self.assertEqual('Learning must survive failed deployment', (state / 'hermes/memory.md').read_text())
             self.assertTrue(any('unittest' in call for call in calls))
             self.assertFalse(any('down' in call or '--volumes' in call for call in calls))
 
     def test_memory_redaction_probe_runs_on_the_new_hermes_image_before_anything_starts(self):
-        image = json.loads((ROOT / 'deploy/versions.json').read_text())['hermes']['runtime_image']
+        image = json.loads((ROOT / 'deploy/versions.json').read_text())['hermes']['image']
         for verdict in ('redaction-probe: ok', 'redaction-probe: failed: leaks: jwt', ''):
             with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as td:
                 state = self.prepare_state(td)
