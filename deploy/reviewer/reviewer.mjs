@@ -9,9 +9,9 @@
 // App, so a builder's token cannot forge it. The PR head is never checked out or executed: the
 // diff is read through the API and handed to a reviewer CLI with tools disabled.
 
-import { createHash, createHmac, createSign } from 'node:crypto';
+import { createHash, createHmac, createSign, randomUUID } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, chownSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, chownSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,6 +25,11 @@ const MAX_FILES = 250;
 const STALE_MS = 45 * 60 * 1000;
 const SHA = /^[0-9a-f]{40}$/;
 const APPROVALS = '/run/reviewer-approvals';
+const MIN_RETRY_MS = 60_000;
+const DEFAULT_COOLDOWN_MS = 60 * MIN_RETRY_MS;
+const DAY_MS = 24 * DEFAULT_COOLDOWN_MS;
+const MAX_COOLDOWN_MS = 7 * DAY_MS;
+const USAGE_LIMIT = 'usage-limit';
 // Any change under a protected path needs approval, additions included: a new test module can
 // still alter discovery or patch the runner.
 export function isProtectedChange(policy, f) {
@@ -101,6 +106,123 @@ export const PROVIDERS = {
   // (enforced in every mode) block shell, URL and MCP tools. Session-only settings, never saved.
   antigravity: (prompt) => ['agy', ['-p', prompt, '--mode', 'plan', '--disable-slash-commands', '--settings', AGY_SETTINGS]],
 };
+
+const SHARED_LIMIT_SIGNALS = [
+  /\btoo many requests\b/i,
+  /(?:^\s*|\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s?code)?|error(?: code)?)\s*["']?\s*[:=]?\s*)429\b/i,
+  /\b(?:usage|rate)[ -]limit (?:has been )?(?:reached|exceeded|hit)\b|\brate[ -]limited\b/i,
+  /\b(?:quota\s+(?:has been\s+)?(?:exceeded|exhausted)|(?:exceeded|exhausted)\s+(?:your |the |current )?quota|insufficient[ _]quota)\b/i,
+  /^(?:error:\s*)?(?:usage|rate)[ -]limit[.!]?$/i,
+];
+const CLI_LIMIT_SIGNALS = {
+  claude: [/\byou['’]ve hit your (?:(?:session|weekly|\d+-hour) )?limit\b/i, /\brate_limit_error\b/i],
+  codex: [/\byou['’]ve hit your usage limit\b/i, /\b(?:usage_limit_reached|rate_limit_exceeded)\b/i],
+  opencode: [/\b(?:GoUsageLimitError|FreeUsageLimitError|RateLimitError|free usage exceeded)\b/i],
+  grok: [/\b(?:usage_pool_exhausted|usage_limit_reached|global_rate_limit|rate_limit_exceeded|rate_limited)\b/i],
+  antigravity: [/\b(?:RESOURCE_EXHAUSTED|QUOTA_EXHAUSTED|MODEL_QUOTA_EXHAUSTED)\b/i],
+};
+
+function clockReset(hour, minute, meridiem, zone, now) {
+  if (minute > 59 || (meridiem ? hour < 1 || hour > 12 : hour > 23)) return NaN;
+  const hours = meridiem ? hour % 12 + (meridiem.toLowerCase() === 'pm' ? 12 : 0) : hour;
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat('en-CA', { timeZone: zone || 'UTC', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  } catch { return NaN; }
+  const wallTime = (time) => {
+    const parts = Object.fromEntries(formatter.formatToParts(time).map(({ type, value }) => [type, Number(value)]));
+    return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  };
+  const localNow = wallTime(now);
+  const midnight = Math.floor(localNow / DAY_MS) * DAY_MS;
+  const today = midnight + hours * DEFAULT_COOLDOWN_MS + minute * MIN_RETRY_MS;
+  const target = today < localNow ? today + DAY_MS : today;
+  let reset = target;
+  for (let i = 0; i < 3; i++) {
+    const difference = target - wallTime(reset);
+    if (!difference) return reset;
+    reset += difference;
+  }
+  return NaN;  // the stated local time may not exist when clocks move forward
+}
+
+export function parseLimitReset(text, now = Date.now()) {
+  const epoch = text.match(/["'](?:resets_at|reset_time)["']\s*:\s*(\d{10}|\d{13})\b/)?.[1];
+  const seconds = text.match(/["'](?:resets?_in_seconds|retry_after_secs|retry-after)["']\s*:\s*["']?(\d+)\b/i)?.[1] ||
+    text.match(/^retry-after:\s*(\d+)\s*$/im)?.[1];
+  let reset = epoch ? Number(epoch) * (epoch.length === 10 ? 1000 : 1) : NaN;
+  const absolute = text.match(/\b(?:resets?(?: at| time)?|try again at|retry at)\b[ \t]*:?[ \t]*(?=\d|[a-z]{3} \d)([^\n]+)|["'](?:resets_at|reset_time)["']\s*:\s*["']([^"']+)/i);
+  const time = absolute?.[1] || absolute?.[2] || '';
+  const iso = time.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\d:])/i)?.[0];
+  const datedClock = time.match(/^[a-z]{3} \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [ap]m\b/i)?.[0];
+  const clock = time.match(/^(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<meridiem>am|pm)?\b(?:\s*\((?<zone>[\w/+.-]+)\))?/i)?.groups;
+  if (!Number.isFinite(reset)) {
+    if (iso) reset = Date.parse(/[z+-]/i.test(iso.slice(10)) ? iso : `${iso}Z`);
+    else if (datedClock) reset = Date.parse(`${datedClock.replace(/(\d)(?:st|nd|rd|th)\b/i, '$1')} UTC`);
+    else if (clock?.minute || clock?.meridiem) reset = clockReset(Number(clock.hour), Number(clock.minute || 0), clock.meridiem, clock.zone, now);
+  }
+  const relative = text.match(/\bin[ \t]+((?:\d+[ \t]*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?=\b|\d)(?:[ \t,]+(?:and[ \t]+)?)?)+)/i)?.[1];
+  if (!Number.isFinite(reset) && (seconds || relative)) {
+    const unitSeconds = { d: 86400, h: 3600, m: 60, s: 1 };
+    const duration = seconds ? Number(seconds) : [...relative.matchAll(/(\d+)\s*([dhms])[a-z]*/gi)]
+      .reduce((sum, [, count, unit]) => sum + Number(count) * unitSeconds[unit.toLowerCase()], 0);
+    reset = now + duration * 1000;
+  }
+  if (Number.isNaN(reset)) reset = now + DEFAULT_COOLDOWN_MS;
+  return Math.min(now + MAX_COOLDOWN_MS, Math.max(now + MIN_RETRY_MS, reset));
+}
+
+export function usageLimit(provider, output, now = Date.now()) {
+  if (!Object.hasOwn(CLI_LIMIT_SIGNALS, provider)) return null;
+  const text = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  const lines = text.split(/\r?\n/);
+  const signals = [...CLI_LIMIT_SIGNALS[provider], ...SHARED_LIMIT_SIGNALS];
+  const matched = lines.findIndex((line) => signals.some((signal) => signal.test(line)));
+  if (matched < 0) return null;
+  return { untilEpochMs: parseLimitReset(lines.slice(matched).join('\n'), now), reason: USAGE_LIMIT };
+}
+
+export function loadCooldowns(stateDir, now = Date.now(), log = console.error) {
+  const file = join(stateDir, 'cooldowns.json');
+  let entries = new Map();
+  try {
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error();
+    for (const [provider, entry] of Object.entries(state)) {
+      if (!Object.hasOwn(PROVIDERS, provider) || entry?.reason !== USAGE_LIMIT || !Number.isSafeInteger(entry.untilEpochMs) ||
+          entry.untilEpochMs < 0 || entry.untilEpochMs > now + MAX_COOLDOWN_MS) {
+        throw new Error();
+      }
+      if (entry.untilEpochMs > now) entries.set(provider, entry);
+    }
+  } catch (error) {
+    log(error.code === 'ENOENT' ? 'Reviewer cooldown state missing' : 'Could not read reviewer cooldown state');
+    entries = new Map();
+  }
+  let writeFailed = false;
+  return {
+    until(provider, time) {
+      const until = entries.get(provider)?.untilEpochMs;
+      if (until > time) return until;
+      entries.delete(provider);
+      return null;
+    },
+    record(provider, entry) {
+      entries.set(provider, entry);
+      const temp = `${file}.${randomUUID()}.tmp`;
+      try {
+        writeFileSync(temp, JSON.stringify(Object.fromEntries(entries)), { mode: 0o600, flag: 'wx' });
+        renameSync(temp, file);
+        writeFailed = false;
+      } catch {
+        if (!writeFailed) log('Could not write reviewer cooldown state');
+        writeFailed = true;
+        try { rmSync(temp, { force: true }); } catch {}
+      }
+    },
+  };
+}
 
 // Words in a builder line or co-author trailer that identify the authoring provider.
 const AUTHOR_ALIASES = {
@@ -262,13 +384,19 @@ function run(cmd, args, timeoutMs, extraEnv = {}) {
     // without the search bit for others, every spawn fails with EACCES.
     chmodSync(cwd, 0o711);
     chownSync(cwd, CLI_UID, CLI_UID);
-    const env = { PATH: process.env.PATH, HOME: '/var/lib/t3', LANG: 'C.UTF-8', NO_COLOR: '1', ...extraEnv };
+    const env = { PATH: process.env.PATH, HOME: '/var/lib/t3', LANG: 'C.UTF-8', TZ: 'UTC', NO_COLOR: '1', ...extraEnv };
     // The orchestrator holds the App key (root-only); reviewer CLIs run as the login user, which
     // cannot read it or the selection seed.
-    const child = execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env,
-      ...(process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : {}) },
-    (err, stdout) => { cleanup(cwd); resolve({ ok: !err, out: stdout || '' }); });
-    child.stdin?.end();  // codex exec (and others) read stdin until EOF when it is not a TTY
+    try {
+      const child = execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env,
+        ...(process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : {}) },
+      (err, stdout, stderr) => { cleanup(cwd); resolve({ ok: !err, out: stdout || '', stderr: stderr || '' }); });
+      child.stdin?.end();  // codex exec (and others) read stdin until EOF when it is not a TTY
+    } catch {
+      // A synchronous spawn error can include argv, which contains the review prompt.
+      cleanup(cwd);
+      resolve({ ok: false });
+    }
   });
 }
 
@@ -328,6 +456,7 @@ async function listReviewRuns(cfg, token, sha, api) {
 }
 
 const PR_BINDING = /:pr:(\d+)$/;
+const RETRY_BINDING = /:retry-at:(\d+)$/;
 
 // Runs bound to another PR (same head SHA) never stand in for this PR's state. Legacy runs carry no binding.
 const ownRuns = (runs, number) => runs.filter((run) => {
@@ -382,6 +511,7 @@ async function earlierCommits(cfg, token, pr, api) {
 
 function blockingItems(summary) {
   const report = summary.replace(/\n\nFounder-accepted risk \(from the VPS approval for this head\): [^\n]*$/, '')
+    .replace(/\n\nSkipped \(usage limit until [^\n]+\): [^\n]+(?:\nSkipped \(usage limit until [^\n]+\): [^\n]+)*$/, '')
     .replace(/\n\nSkipped: [^\n]*: unavailable or no valid verdict$/, '');
   const [reason, ...items] = report.split(/\n(?=- \*\*(?:non-)?blocking\*\* )/);
   const blockers = items.filter((item) => item.startsWith('- **blocking** '));
@@ -432,16 +562,19 @@ async function priorBlockingFindings(cfg, token, pr, api) {
 export async function reviewOne(cfg, token, pr, deps = {}) {
   const exec = deps.run || run;
   const api = deps.gh || gh;
+  const clock = deps.now || Date.now;
+  const cooldowns = cfg.cooldowns;
   const approved = () => (deps.approved || hasFounderApproval)(pr.head.sha);
   if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft || !SHA.test(pr.head.sha)) return null;
   const staleMs = cfg.timeoutMs * cfg.pool.length + 10 * 60 * 1000;
   const runs = ownRuns(await listReviewRuns(cfg, token, pr.head.sha, api), pr.number);
-  const now = Date.now();
+  const now = clock();
   const externalId = (scope) => `${cfg.policy.version}:${scope}:${pr.base.sha}`;
   const completed = runs.find((c) => c.status === 'completed');
   const completedPr = completed?.external_id?.match(PR_BINDING)?.[1];
   // A verdict bound to another PR (same head and base) must not stand in for this PR's review and history.
-  const completedBinding = completedPr && completedPr !== String(pr.number) ? null : completed?.external_id?.replace(PR_BINDING, '');
+  const binding = completedPr && completedPr !== String(pr.number) ? null : completed?.external_id?.replace(PR_BINDING, '');
+  const completedBinding = binding?.replace(RETRY_BINDING, '');
   const wasProtected = completedBinding === externalId('protected');
   // A pending 'Re-review requested' run newer than every verdict asks for a full fresh review now.
   const rereview = runs[0] && runs[0].status !== 'completed' && runs[0].output?.title === REREVIEW;
@@ -450,7 +583,11 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     const title = completed.output?.title;
     const retryAfterApproval = title === APPROVAL_REQUIRED && approved();
     const retryAfterRevocation = wasProtected && completed.conclusion === 'success' && !approved();
-    const retryAfterCooldown = title === RETRYABLE && !(now - Date.parse(completed.completed_at) <= RETRY_AFTER_MS);
+    const retryAt = Number(binding.match(RETRY_BINDING)?.[1]);
+    const completedAt = Date.parse(completed.completed_at);
+    const retryAfterCooldown = title === RETRYABLE && (Number.isSafeInteger(retryAt) && retryAt > 0
+      ? now >= Math.max(retryAt, (completedAt || 0) + MIN_RETRY_MS)
+      : !(now - completedAt <= RETRY_AFTER_MS));
     // An approval is reused only if no blocking verdict on this PR is newer: approved A, rejected B, back to A
     // must be reviewed again with B's findings rather than ride A's old success.
     const supersededApproval = completed.conclusion === 'success' && !retryAfterRevocation &&
@@ -462,13 +599,14 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   // Reuse only a run that can supersede the latest completed run.
   const stale = runs.find((c) => c.status !== 'completed' && (!completed || c.id > completed.id));
   const check = stale || await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
-    name: CHECK, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date().toISOString() } });
-  if (stale) await api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: { started_at: new Date().toISOString() } });
+    name: CHECK, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date(now).toISOString() } });
+  if (stale) await api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: { started_at: new Date(now).toISOString() } });
   let protectedPaths = [];
-  const finish = (conclusion, title, summary) => api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: {
-    status: 'completed', conclusion, completed_at: new Date().toISOString(),
-    external_id: `${externalId(protectedPaths.length ? 'protected' : 'ordinary')}:pr:${pr.number}`,
-    output: { title, summary: redact(summary).slice(0, 60000) } } });
+  const finish = (conclusion, title, summary, retryAt, completedAt = clock()) =>
+    api(`/repos/${cfg.repo}/check-runs/${check.id}`, { method: 'PATCH', token, body: {
+      status: 'completed', conclusion, completed_at: new Date(completedAt).toISOString(),
+      external_id: `${externalId(protectedPaths.length ? 'protected' : 'ordinary')}${retryAt ? `:retry-at:${retryAt}` : ''}:pr:${pr.number}`,
+      output: { title, summary: redact(summary).slice(0, 60000) } } });
   const data = await (deps.collect || collect)(cfg.repo, token, pr, cfg.policy, api);
   if (!data || data.refuse) return finish('failure', 'Not reviewable', data?.refuse || 'Not reviewable.');
   protectedPaths = data.protectedPaths || [];
@@ -478,16 +616,31 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const excluded = authorsOf(pr.body, data.commits);
   const order = reviewerOrder(pr.head.sha, cfg.pool, excluded, cfg.seed || '');
   const attempts = [];
+  const limits = [];
+  const resetTime = (until) => new Date(until).toISOString().replace('T', ' ').replace(/(?:\.000)?Z$/, ' UTC');
+  const reportLimit = (provider, until) => limits.push(`Skipped (usage limit until ${resetTime(until)}): ${provider}`);
+  const skipped = () => (attempts.length ? `\n\nSkipped: ${attempts.join('; ')}` : '') +
+    (limits.length ? `\n\n${limits.join('\n')}` : '');
   const accepted = (deps.accepted || acceptedRisk)(pr.head.sha);
   const priorFindings = await priorBlockingFindings(cfg, token, pr, api);
   if (priorFindings === null) return finish('failure', 'Not reviewable', 'The latest blocking review is too large to carry into the next review; split the PR.');
   const prompt = buildPrompt(pr, data.diff, accepted, priorFindings);
   if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) return finish('failure', 'Not reviewable', 'PR text plus diff too large to review in one pass; split the PR.');
   for (const provider of order) {
+    const until = cooldowns?.until(provider, clock());
+    if (until) { reportLimit(provider, until); continue; }
     const [cmd, args, env] = PROVIDERS[provider](prompt);
     const result = await exec(cmd, args, cfg.timeoutMs, env);
     const verdict = result.ok ? parseVerdict(result.out) : null;
-    if (!verdict) { attempts.push(`${provider}: unavailable or no valid verdict`); continue; }
+    if (!verdict) {
+      // Codex echoes the prompt even when the request fails. Its contents are not diagnostics.
+      const limit = result.ok ? null : usageLimit(provider, `${result.stderr || ''}\n${result.out || ''}`.replaceAll(prompt, ''), clock());
+      if (limit) {
+        cooldowns?.record(provider, limit);
+        reportLimit(provider, limit.untilEpochMs);
+      } else attempts.push(`${provider}: unavailable or no valid verdict`);
+      continue;
+    }
     const latest = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
     if (latest.base.sha !== pr.base.sha) return finish('failure', 'Base moved', 'The base moved during review; the new base...head diff gets its own review.');
     if (latest.head.sha !== pr.head.sha) return finish('failure', 'Head moved', 'The PR head moved during review; the new head gets its own review.');
@@ -496,11 +649,15 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
     const lines = verdict.findings.map((f) => `- **${f.severity}** \`${f.file}\`: ${f.issue}`).join('\n');
     return finish(conclusion, `${verdict.verdict} by ${provider}`,
       `Reviewer: **${provider}** (excluded builder: ${excluded.join(', ') || 'none declared'})\n\n${reason}\n\n${lines}` +
-      (attempts.length ? `\n\nSkipped: ${attempts.join('; ')}` : '') +
+      skipped() +
       (accepted ? `\n\nFounder-accepted risk (from the VPS approval for this head): ${accepted}` : ''));
   }
+  const completedAt = clock();
+  const resets = order.map((provider) => cooldowns?.until(provider, completedAt));
+  const retryAt = resets.length && resets.every(Boolean) ? Math.max(Math.min(...resets), completedAt + MIN_RETRY_MS) : null;
+  const retry = retryAt ? `Retried automatically at or after ${resetTime(retryAt)}.` : 'Retried automatically after 30 minutes.';
   return finish('failure', RETRYABLE, `No eligible provider produced a verdict (excluded builder: ${excluded.join(', ') || 'none declared'}). ` +
-    `Retried automatically after 30 minutes. ${attempts.join('; ')}`);
+    retry + skipped(), retryAt, completedAt);
 }
 
 // Always-merge: every eligible PR gets squash auto-merge, so it merges as soon as the ruleset's
@@ -655,6 +812,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (!cfg.appId) { console.error('REVIEW_APP_ID is not configured; reviewer idle (gate fails closed: no check is posted).'); setInterval(() => {}, 1 << 30); }
   else {
     cfg.policy = parseProtectedPaths(readFileSync(new URL('./CODEOWNERS', import.meta.url), 'utf8'));
+    cfg.cooldowns = loadCooldowns(process.env.REVIEW_STATE_DIR || '/var/lib/reviewer');
     loop(cfg);
   }
 }

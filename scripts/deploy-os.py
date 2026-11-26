@@ -114,7 +114,7 @@ def ensure_reviewer_state(source, state):
     root = state / 'reviewer'
     for path, owner, mode in ((root, (ROOT_UID, ROOT_GID), 0o755), (root / 'home', (T3_UID, T3_GID), 0o700),
                               (root / 'app', (ROOT_UID, ROOT_GID), 0o755), (root / 'secrets', (ROOT_UID, ROOT_GID), 0o700),
-                              (root / 'approvals', (ROOT_UID, ROOT_GID), 0o700)):
+                              (root / 'approvals', (ROOT_UID, ROOT_GID), 0o700), (root / 'state', (ROOT_UID, ROOT_GID), 0o700)):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ValueError('Reviewer state path is not a plain directory')
         if not path.exists():
