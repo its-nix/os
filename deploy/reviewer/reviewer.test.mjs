@@ -1000,20 +1000,36 @@ test('public repository uses its non-main default branch for auto-merge and bran
   assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/dsio/pulls/5/update-branch', { expected_head_sha: pr.head.sha }]);
 });
 
-test('a public repo whose rules do not require independent-review is never armed and is self-merge gated', async () => {
-  const { requiresIndependentReview } = await import('./reviewer.mjs');
-  const rules = (contexts) => async () => [{ type: 'required_status_checks', parameters: { required_status_checks: contexts.map((context) => ({ context })) } }];
-  assert.equal(await requiresIndependentReview('its-nix/meabeclick', 'main', 't', rules(['build'])), false);
-  assert.equal(await requiresIndependentReview('its-nix/os', 'main', 't', rules(['verify', 'independent-review'])), true);
-  assert.equal(await requiresIndependentReview('its-nix/x', 'main', 't', async () => { throw new Error('403'); }), false);
-  const repo = { ...KIT, full_name: 'its-nix/meabeclick', private: false };
-  const cfg = { ...KIT_CFG, repo: repo.full_name, private: false, enforced: false };
-  const pr = { ...KIT_PR, base: { ...KIT_PR.base, repo }, head: { ...KIT_PR.head, repo } };
+test('auto-merge is enforced only by a strict rule pinned to this App', async () => {
+  const { requiresIndependentReview, selfMergeMode } = await import('./reviewer.mjs');
+  const rules = (checks, strict = true) => async () => [{ type: 'required_status_checks',
+    parameters: { strict_required_status_checks_policy: strict, required_status_checks: checks } }];
+  const ours = { context: 'independent-review', integration_id: 1 };
+  assert.equal(await requiresIndependentReview('its-nix/meabeclick', 'main', 't', rules([{ context: 'build' }]), 1), false);
+  assert.equal(await requiresIndependentReview('its-nix/os', 'main', 't', rules([{ context: 'verify' }, ours]), 1), true);
+  assert.equal(await requiresIndependentReview('its-nix/x', 'main', 't', rules([{ context: 'independent-review' }]), 1), false);  // any source
+  assert.equal(await requiresIndependentReview('its-nix/x', 'main', 't', rules([{ ...ours, integration_id: 15368 }]), 1), false);  // Actions
+  assert.equal(await requiresIndependentReview('its-nix/x', 'main', 't', rules([ours], false), 1), false);  // not up to date
+  assert.equal(await requiresIndependentReview('its-nix/x', 'main', 't', async () => { throw new Error('403'); }, 1), false);
+  assert.equal(selfMergeMode({ private: true }), true);
+  assert.equal(selfMergeMode({ private: false, enforced: false }), true);
+  assert.equal(selfMergeMode({ private: false, enforced: true }), false);
+});
+
+test('an unenforced public repo is never armed, disarms its own auto-merge, and self-merges after review and CI', async () => {
+  const pub = { ...KIT, private: false };
+  const cfg = { ...KIT_CFG, private: false, enforced: false };
+  const pr = { ...KIT_PR, base: { ...KIT_PR.base, repo: pub }, head: { ...KIT_PR.head, repo: { ...KIT_PR.head.repo, full_name: pub.full_name } } };
   const calls = [];
-  const api = async (...args) => { calls.push(args); return { ...pr, mergeable_state: 'behind' }; };
+  const api = async (...args) => { calls.push(args); return { ...pr, mergeable_state: 'behind', data: {} }; };
   assert.equal(await ensureAutoMerge(cfg, 't', pr, api), null);
   assert.equal(await keepUpToDate(cfg, 't', { ...pr, auto_merge: {} }, api), null);
-  assert.ok(!calls.some(([path, opts]) => opts?.method && opts.method !== 'GET'));
+  assert.ok(!calls.some(([, opts]) => opts?.method && opts.method !== 'GET'));
+  assert.equal(await ensureAutoMerge(cfg, 't', { ...pr, auto_merge: { enabled_by: { login: 'nix-reviewer[bot]' } } }, api), 'disabled');
+  assert.equal(await mergePrivate(cfg, 't', pr, mergeFixture({ live: pr })), 'merged');
+  assert.equal(await mergePrivate({ ...cfg, enforced: true }, 't', pr, mergeFixture({ live: pr })), null);
+  // A private repo flipped to public mid-poll does not self-merge on that pass.
+  assert.equal(await mergePrivate(KIT_CFG, 't', KIT_PR, mergeFixture({ live: pr })), null);
 });
 
 test('private repos never arm or update branches and disarm only the reviewer App’s auto-merge', async () => {

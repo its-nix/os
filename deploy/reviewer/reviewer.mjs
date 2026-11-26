@@ -922,7 +922,7 @@ export async function mergePrivate(cfg, token, pr, deps = {}) {
   const path = `/repos/${cfg.repo}/pulls/${pr.number}`;
   const live = await api(path, { token });
   if (live.state !== 'open' || !eligible(cfg, live) || isHeld(live) || live.mergeable !== true ||
-      (live.base.repo?.private === false && cfg.enforced === true) || armedByReviewer(cfg, live) ||
+      (cfg.private === true && live.base.repo?.private === false) || armedByReviewer(cfg, live) ||
       live.head.sha !== pr.head.sha || live.base.sha !== pr.base.sha || (isProtected && !approved())) return null;
   // GitHub can atomically pin the head SHA only. Read the live base immediately before the write.
   const result = await api(`${path}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
@@ -935,15 +935,19 @@ function reportFailure(operation, error, log) {
   log(`${operation}: ${error instanceof GitHubError ? error.message : 'operation failed'}`);
 }
 
-const selfMergeMode = (cfg) => cfg.private === true || (cfg.private === false && cfg.enforced !== true);
+export const selfMergeMode = (cfg) => cfg.private === true || (cfg.private === false && cfg.enforced !== true);
 
 // Auto-merge is safe only where GitHub itself requires this check before merging. Without that rule an armed PR
 // would merge on the repo's other required checks alone, so such a public repo is handled like a private one.
-export async function requiresIndependentReview(repo, branch, token, api = gh) {
+// The rule must pin the check to this App (any other source, e.g. an Actions job a PR can write, could
+// satisfy it) and require an up-to-date branch (else a head reviewed on an older base could merge).
+export async function requiresIndependentReview(repo, branch, token, api = gh, appId) {
   try {
     const rules = await api(`/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`, { token });
     return Array.isArray(rules) && rules.some((rule) => rule?.type === 'required_status_checks' &&
-      (rule.parameters?.required_status_checks || []).some((check) => check?.context === CHECK));
+      rule.parameters?.strict_required_status_checks_policy === true &&
+      (rule.parameters?.required_status_checks || []).some((check) => check?.context === CHECK &&
+        appId != null && String(check?.integration_id) === String(appId)));
   } catch {
     return false;  // unknown is treated as not enforced: self-merge stays gated by this review and CI
   }
@@ -954,7 +958,7 @@ export async function reviewRepository(cfg, token, repository, deps = {}) {
   const log = deps.log || console.error;
   const { full_name: repo, default_branch: defaultBranch, private: isPrivate } = repository;
   if (!defaultBranch || typeof isPrivate !== 'boolean') throw new Error('Incomplete repository metadata');
-  const enforced = isPrivate ? false : await requiresIndependentReview(repo, defaultBranch, token, api);
+  const enforced = isPrivate ? false : await requiresIndependentReview(repo, defaultBranch, token, api, cfg.appId);
   const repoCfg = { ...cfg, repo, defaultBranch, private: isPrivate, enforced, reviewOnly: cfg.reviewOnlyRepos?.has(repo.toLowerCase()) };
   const prs = [];
   // All bases are listed so the App sees and disarms PRs retargeted away from the default branch.
