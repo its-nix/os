@@ -53,7 +53,7 @@ def tree(root):
 
 def build(checkout, destination, packs, runtime=False):
     manifest = json.loads((HERE / 'packs.json').read_text())
-    names = selection(manifest, packs)
+    names = selection(manifest, manifest['packs'] if runtime else packs)
     revision = json.loads((HERE.parent / 'versions.json').read_text())['kit']['revision']
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(destination)
@@ -65,7 +65,8 @@ def build(checkout, destination, packs, runtime=False):
                'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_COUNT': '1',
                'GIT_CONFIG_KEY_0': 'safe.directory', 'GIT_CONFIG_VALUE_0': str(checkout)}
         def run(*args):
-            subprocess.run(args, env=env, cwd=work, check=True)
+            # Kit's tree digest includes modes set by checkout and installation.
+            subprocess.run(args, env=env, cwd=work, check=True, umask=0o022)
 
         kit = work / 'kit'
         if checkout.is_file():
@@ -108,7 +109,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('checkout', type=Path)
     parser.add_argument('destination', type=Path)
-    parser.add_argument('--role', choices=['engineering'])
-    parser.add_argument('--runtime', action='store_true', help='Include the pinned pre-launch worktree installer')
+    roles = sorted(json.loads((HERE / 'packs.json').read_text())['packs'].keys() - {'core'})
+    parser.add_argument('--role', choices=roles)
+    parser.add_argument('--runtime', action='store_true', help='Bundle all packs and the pinned pre-launch worktree installer')
     args = parser.parse_args()
     build(args.checkout.resolve(), args.destination.absolute(), ['core'] + ([args.role] if args.role else []), args.runtime)

@@ -13,6 +13,46 @@
     "engineering": [
       "using-git-worktrees",
       "finishing-a-development-branch"
+    ],
+    "product": [
+      "write-product-spec",
+      "prototype",
+      "to-tickets"
+    ],
+    "growth": [
+      "analytics",
+      "cro",
+      "onboarding",
+      "launch"
+    ],
+    "sales": [
+      "pricing",
+      "copywriting"
+    ],
+    "content": [
+      "content-strategy",
+      "copywriting",
+      "social-media-content-calendar"
+    ],
+    "design": [
+      "frontend-design",
+      "web-design-guidelines",
+      "web-accessibility"
+    ],
+    "research": [
+      "research",
+      "customer-research",
+      "find-docs"
+    ],
+    "operations": [
+      "technical-project-management",
+      "todoist-cli",
+      "retro"
+    ],
+    "data-ai": [
+      "analytics",
+      "qmd",
+      "writing-for-agents"
     ]
   },
   "kit_lock": {
@@ -62,6 +102,118 @@
         "repo": "obra/superpowers",
         "ref": "bb92a77741419a4ab5f06e711a283343f1ada0c3",
         "sha256": "c19140295060235e72f78792d24b95f6566ef8a53f5617d572ac465b543272b3"
+      },
+      "analytics": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "17a7c41800d959b5f7fadc5857dd249b8fa902dfc1b7caf944e975bc12956931"
+      },
+      "content-strategy": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "e3f70a7e000ffc3e56648d212216a06ca82c5315b33bff7c287da81e0209aa63"
+      },
+      "copywriting": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "0d9e999e373e85ef2b9470e126a4df2f4e434410a20611f30497d048c7f641ef"
+      },
+      "cro": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "9d2562f6d51a15b5c9c81bbc5da8be1ef5a08762846e7057375648f188395ad5"
+      },
+      "customer-research": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "24acb474d2184c2c1c5928f85064d6c351de3164c87e66cebb6abc5471d6c552"
+      },
+      "find-docs": {
+        "repo": "upstash/context7",
+        "ref": "c7f80ce5af1ff1403d167579b76784482cf7f3e2",
+        "sha256": "dca8df9702922a0a3016369ed368f0727ada58be960edd8aa8f5bdb9e88b859f"
+      },
+      "frontend-design": {
+        "repo": "anthropics/skills",
+        "ref": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+        "sha256": "2a742bc13afd5e3933cb4f4ef5d37771fd0821bf05988eb65eeb4b54e86b5163"
+      },
+      "launch": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "66225594115837837f1ec078a471a9c69010d383bb1757cbaf0e5a91c02e61e3"
+      },
+      "onboarding": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "d273d251568e66be39f58378048372d968ef313aded35385b8d233d42e3c576b"
+      },
+      "pricing": {
+        "repo": "coreyhaines31/marketingskills",
+        "ref": "e85f3cbc2e4a79bf33b2a12e9bdd9087d414735b",
+        "sha256": "0a7f8ca93f6bc755136f31b4747fd11583e07167c566281d6ee74aa50ade81ad"
+      },
+      "prototype": {
+        "repo": "mattpocock/skills",
+        "ref": "49dd158d1076134a641b33efb035946536778336",
+        "sha256": "c0f60bb4e90b68d72daeb38a446bc1d150e96d10ff72d00ac7bbb7e48a980c28"
+      },
+      "qmd": {
+        "repo": "tobi/qmd",
+        "ref": "86d2365d17fc682e491c2c53d1e4a884aee8682a",
+        "sha256": "4b4bd01f25d2d191d7bd26d57bac15adb131db097a344294b63c0c6ce1131669"
+      },
+      "research": {
+        "repo": "mattpocock/skills",
+        "ref": "49dd158d1076134a641b33efb035946536778336",
+        "sha256": "b000c9e00ba6c542ceae818977bcf4f9e3787ce696d1d8f784225ac15ea56722"
+      },
+      "retro": {
+        "repo": "mattpocock/skills",
+        "ref": "49dd158d1076134a641b33efb035946536778336",
+        "sha256": "ffc996b0af08c3a51970e7a8e511913b0ce11efe3eb403e068da4a5e01a0dabe"
+      },
+      "social-media-content-calendar": {
+        "repo": "NousResearch/hermes-agent",
+        "ref": "0319e113c9602b86ffda350e931cb4b035e1d5d8",
+        "path": "optional-skills/creative/social-media-content-calendar",
+        "sha256": "f7af0e4c8f295af24864f7bc43b2d3ab2dcf0a189e1818677ca8083a71056437"
+      },
+      "technical-project-management": {
+        "repo": "magnus919/agent-skills",
+        "ref": "7f446e60055b335dd26831371a027fa6b59da3e2",
+        "sha256": "cf1d2bff38c1008e0f0758ee2490ed1f4a972df924792fa36307482943187474"
+      },
+      "to-tickets": {
+        "repo": "mattpocock/skills",
+        "ref": "49dd158d1076134a641b33efb035946536778336",
+        "sha256": "14bc5712b9eb4f177dd58c1604fbbdc770d3953ed2905af4a6b60ffe7d7778b1"
+      },
+      "todoist-cli": {
+        "repo": "Doist/todoist-cli",
+        "ref": "340d7b21b89d329d8cae4a6325450911998bdf70",
+        "sha256": "b3e1edfa65d2366db5d4015d9ccbaa8122aae387c280c5cf68a1b0e8a211234b"
+      },
+      "web-accessibility": {
+        "repo": "magnus919/agent-skills",
+        "ref": "7f446e60055b335dd26831371a027fa6b59da3e2",
+        "sha256": "bed454b3adc19abad87bb37afe105086d231f80b4a8f0a7e5c1c29731d78bb6b"
+      },
+      "web-design-guidelines": {
+        "repo": "vercel-labs/agent-skills",
+        "ref": "063bee94c3f4df8453406c830b0a7df0f2860278",
+        "sha256": "dce5cef318ca73fa9971bd6a18e0b59fc7a4c453601c8e42786349eb246a9677"
+      },
+      "write-product-spec": {
+        "repo": "warpdotdev/common-skills",
+        "ref": "8792394ff1b655e0af451b8fabb68ef0cfcbd208",
+        "path": ".agents/skills",
+        "sha256": "5ea53a6465416edfbcd60a0de5cb1dcd3edb1c9e4ec9723cea988736eaf649b2"
+      },
+      "writing-for-agents": {
+        "repo": "its-nix/kit",
+        "ref": "a24db53de681fd3bfe8e5ab8a13ef2cf01c6ae2e",
+        "sha256": "ef59860663b06d318fee28ceb0b7b79507a8a5f154b93e2696817bfcdfd54913"
       }
     }
   }

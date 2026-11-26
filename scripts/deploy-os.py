@@ -1068,7 +1068,7 @@ def prepare_packs(release, state, image):
             os.chown(output, 65534, 65534)
             subprocess.run([*runner, '--user', '65534:65534', '-v', f'{archive}:/kit.tar:ro',
                             '-v', f'{output}:/out', image, '/release/deploy/packs/build.py',
-                            '/kit.tar', '/out/core', '--role', 'engineering', '--runtime'], check=True)
+                            '/kit.tar', '/out/core', '--runtime'], check=True)
             built = output / 'core'
             for entry in [built, *built.rglob('*')]:
                 if entry.is_symlink() or not (entry.is_file() or entry.is_dir()):
