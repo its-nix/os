@@ -141,7 +141,7 @@ services:
   reviewer:
     # Rotating independent PR reviewer (deploy/reviewer/reviewer.mjs). Same pinned image as T3 but a
     # separate container, network and login home: builders running in T3 cannot reach its logins
-    # or its GitHub App key. No ports; outbound only.
+    # or its GitHub App key. Webhooks arrive over a Unix socket. No published ports.
     container_name: nixos-reviewer
     image: nixos-t3:${T3_BUILD_TAG:?Prepare the pinned deployment environment first}
     pull_policy: never
@@ -150,8 +150,8 @@ services:
     stop_grace_period: 30s
     mem_limit: 1g
     pids_limit: 1024
-    # The orchestrator runs as root ONLY to hold the root-only App key and selection seed; it spawns
-    # every reviewer CLI as uid 10010 (the login user), which cannot read them.
+    # The root orchestrator owns the App key, selection seed, webhook secret and socket.
+    # Reviewer CLIs run as uid 10010 (the login user).
     user: '0:0'
     cap_drop: [ALL]
     cap_add: [SETUID, SETGID, CHOWN, KILL]  # KILL: stop a timed-out CLI running as another uid
@@ -176,6 +176,10 @@ services:
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/secrets
         target: /run/reviewer
         read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/run
+        target: /run/nix-reviewer
         bind: {create_host_path: false}
       - type: bind
         source: ${NIX_CLEAN_ROOT:?Prepare a fresh root first}/reviewer/approvals
