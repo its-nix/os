@@ -7,17 +7,14 @@
   approval.py record  --venture ID --action-id ID --outcome executed|declined|expired --evidence TEXT
 
 Each action has one receipt file: $HERMES_HOME/ventures/<id>/actions/<action-id>.json. A request
-is idempotent by action id (re-queuing returns the existing receipt). With TODOIST_API_TOKEN set,
-one Todoist task is created via the Sync API with a command UUID derived from the action id
-(label nix-approval), so retries never duplicate it. Without it, the
-request stays `queued-local` and is reported as blocked. A completed Todoist task is NOT approval:
-only `record`, written after the founder executed (or explicitly approved a bounded method), changes
-the outcome, and it requires evidence.
+is idempotent by action id. The local receipt stays `queued-local` until the host queue
+reports delivery. Todoist completion is queue status only. `record` still requires evidence
+of the founder's independently authenticated decision or execution.
 """
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import fcntl
 import json
 import os
@@ -26,14 +23,14 @@ import re
 import stat
 import sys
 import tempfile
-import urllib.parse
-import urllib.request
 import uuid
 
 ID_RE = re.compile(r'[a-z0-9][a-z0-9-]{2,63}')
-TODOIST_SYNC = 'https://api.todoist.com/api/v1/sync'
 MAX_PREVIEW = 3000
-NAMESPACE = uuid.UUID('6f1c8e2a-6f3b-4d1e-9a52-2d6c3b1f0a77')
+OUTBOX = Path('/run/nix-approvals-outbox')
+INBOX = Path('/run/nix-approvals-status')
+STATUS_KEY = re.compile(r'[0-9a-f]{32}')
+REQUEST_FIELDS = ('action_id', 'venture', 'target', 'effect', 'preview', 'cost', 'expires', 'executor', 'status_key')
 
 
 def now():
@@ -79,7 +76,7 @@ def read_preview(venture, name):
         fd = os.open(drafts / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise SystemExit('Preview must be a regular, non-symlink file inside the venture drafts/ folder') from None
-    with os.fdopen(fd) as handle:
+    with os.fdopen(fd, encoding='utf-8', newline='') as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise SystemExit('Preview must be a regular file')
         text = handle.read(MAX_PREVIEW + 1)
@@ -90,73 +87,82 @@ def read_preview(venture, name):
     return text
 
 
-def write(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name)
-    with os.fdopen(fd, 'w') as handle:
-        json.dump(data, handle, indent=2)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+def write(path, data, *, receipt=False):
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.')
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        if receipt:
+            fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
-def todoist_task(receipt, token, post=None):
-    """Create the founder task via the Sync API. The command UUID is derived from the action id,
-    and Todoist ignores a repeated command UUID, so a retry after a timeout or crash never creates
-    a second task."""
-    command_uuid = str(uuid.uuid5(NAMESPACE, f'{receipt["venture"]}/{receipt["action_id"]}'))
-    content = f'[approval] {receipt["venture"]}: {receipt["effect"][:120]}'
-    description = '\n'.join([
-        f'Action id: {receipt["action_id"]}', f'Venture: {receipt["venture"]}', f'Target: {receipt["target"]}',
-        f'Exact effect: {receipt["effect"]}', f'Estimated cost: {receipt["cost"]}', f'Expires: {receipt["expires"]}',
-        f'Executor: {receipt["executor"]}', '', 'Preview:', receipt['preview'], '',
-        'Completing this task does not authorize anything. Execute it yourself or reply with an explicitly bounded method.'])
-    command = {'type': 'item_add', 'uuid': command_uuid, 'temp_id': command_uuid,
-               'args': {'content': content, 'description': description, 'labels': ['nix-approval'], 'priority': 3}}
-    if post:
-        return post(command)
-    data = urllib.parse.urlencode({'commands': json.dumps([command])}).encode()
-    request = urllib.request.Request(TODOIST_SYNC, data=data, method='POST', headers={
-        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/x-www-form-urlencoded'})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        reply = json.load(response)
-    if reply.get('sync_status', {}).get(command_uuid) != 'ok':
-        raise SystemExit('Todoist did not confirm the approval task; the request stays pending and is safe to retry')
-    task_id = reply.get('temp_id_mapping', {}).get(command_uuid) or find_task(receipt['action_id'], token)
-    if not task_id:
-        raise SystemExit('Todoist accepted the command but the task cannot be found; reconcile manually before retrying')
-    return task_id
+def refresh(path, receipt):
+    key = receipt.get('status_key', '')
+    if receipt.get('outcome') or not STATUS_KEY.fullmatch(key):
+        return receipt
+    try:
+        status = json.loads((INBOX / f'{key}.json').read_text())
+    except FileNotFoundError:
+        return receipt
+    queue_status = status.get('status')
+    if status.get('reason') != 'invalid-request' and (
+            status.get('action_id'), status.get('venture')) != (receipt['action_id'], receipt['venture']):
+        raise SystemExit('Queue status does not match the receipt')
+    if queue_status not in ('pending', 'completed-by-founder', 'expired', 'closed'):
+        raise SystemExit('Unrecognized approval queue status')
+    task_id = status.get('todoist_task')
+    if queue_status in ('expired', 'closed'):
+        receipt['status'] = queue_status
+    elif task_id:
+        receipt['status'] = 'awaiting-founder'
+    if task_id:
+        receipt['todoist_task'] = task_id
+    receipt['queue_status'] = queue_status
+    if 'reason' in status:
+        receipt['queue_reason'] = status['reason']
+    write(path, receipt)
+    return receipt
 
 
-def find_task(action_id, token):
-    """A replayed command returns no id mapping: locate the original task by its action id."""
-    request = urllib.request.Request('https://api.todoist.com/api/v1/tasks?label=nix-approval&limit=200',
-                                     headers={'Authorization': 'Bearer ' + token})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        results = json.load(response).get('results', [])
-    return next((t['id'] for t in results if f'Action id: {action_id}\n' in (t.get('description') or '') + '\n'), None)
-
-
-def request(args, post=None):
+def request(args):
     path = receipt_path(args.venture, args.action_id)
     with action_lock(path):
         if path.exists():
-            receipt = json.loads(path.read_text())
-            if receipt['status'] not in ('queued-local', 'submitting') or receipt.get('outcome'):
-                return receipt  # idempotent: never queue the same action twice
+            receipt = refresh(path, json.loads(path.read_text()))
+            if receipt['status'] != 'queued-local' or receipt.get('outcome') or receipt.get('queue_status'):
+                return receipt
         else:
             receipt = {'action_id': args.action_id, 'venture': args.venture, 'target': args.target,
                        'effect': args.effect, 'preview': read_preview(args.venture, args.preview),
                        'cost': args.cost or 'none stated', 'expires': args.expires or 'none stated',
                        'executor': args.executor, 'requested_at': now(), 'status': 'queued-local', 'outcome': None}
-            write(path, receipt)  # durable before any external call
-        token = os.environ.get('TODOIST_API_TOKEN')
-        if token or post:
-            receipt['status'] = 'submitting'  # an uncertain submission is retried with the same command UUID
-            write(path, receipt)
-            receipt['todoist_task'] = todoist_task(receipt, token, post)
-            receipt['status'] = 'awaiting-founder'
-            write(path, receipt)
+        if 'status_key' not in receipt:
+            if receipt['expires'] == 'none stated':
+                receipt['expires'] = (date.fromisoformat(receipt['requested_at'][:10]) + timedelta(days=7)).isoformat()
+            receipt['status_key'] = uuid.uuid4().hex
+            write(path, receipt, receipt=True)
+        try:
+            write(OUTBOX / (receipt['status_key'] + '.json'), {k: receipt[k] for k in REQUEST_FIELDS})
+        except FileNotFoundError:
+            pass  # An undeployed spool leaves a durable local blocker.
         return receipt
+
+
+def status(args):
+    path = receipt_path(args.venture, args.action_id)
+    if not path.exists():
+        return {'status': 'unknown'}
+    with action_lock(path):
+        return refresh(path, json.loads(path.read_text()))
 
 
 def record(args):
@@ -166,18 +172,21 @@ def record(args):
             raise SystemExit('Unknown action id')
         if not (args.evidence or '').strip():
             raise SystemExit('Evidence is required (execution receipt link, founder decision link)')
-        receipt = json.loads(path.read_text())
+        receipt = refresh(path, json.loads(path.read_text()))
         if receipt.get('outcome'):
             raise SystemExit('Outcome already recorded; actions are never re-run')
-        if args.outcome != 'expired' and receipt['status'] != 'awaiting-founder':
+        # Delivery (a Todoist task id) is what matters: a later queue status of closed/expired (task
+        # moved, deleted, or past expiry) never blocks recording what actually happened.
+        if args.outcome != 'expired' and not receipt.get('todoist_task'):
             raise SystemExit('Only an action the founder actually received can be executed or declined; '
                              'an undelivered request can only expire')
         receipt.update(outcome=args.outcome, evidence=args.evidence, recorded_at=now(), status='closed')
-        write(path, receipt)
+        write(path, receipt, receipt=True)
         return receipt
 
 
-SAFE_FIELDS = ('action_id', 'venture', 'status', 'outcome', 'todoist_task', 'requested_at', 'recorded_at')
+SAFE_FIELDS = ('action_id', 'venture', 'status', 'queue_status', 'queue_reason', 'outcome',
+               'todoist_task', 'requested_at', 'recorded_at')
 
 
 def main(argv=None):
@@ -202,8 +211,7 @@ def main(argv=None):
     if args.command == 'request':
         result = request(args)
     elif args.command == 'status':
-        path = receipt_path(args.venture, args.action_id)
-        result = json.loads(path.read_text()) if path.exists() else {'status': 'unknown'}
+        result = status(args)
     else:
         result = record(args)
     print(json.dumps({k: result.get(k) for k in SAFE_FIELDS if k in result}, indent=2))  # no recipient/content PII

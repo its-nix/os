@@ -64,18 +64,20 @@ REBUILDABLE = ('t3/work/', 't3/home/.t3/worktrees/', 't3/home/.t3/caches/', 't3/
 
 
 def durable_paths(root):
-    """Every path under root except rebuildable content, without descending into it."""
+    """Keep durable state, excluding rebuildable content and the account-wide Todoist token."""
     found = []
     for directory, dirnames, filenames in os.walk(root, followlinks=False):
         base = Path(directory)
         keep = []
         for name in dirnames:
             rel = (base / name).relative_to(root).as_posix() + '/'
+            if rel == 'todoist/token/':
+                continue
             found.append(base / name)
             if not rel.startswith(REBUILDABLE) and not (base / name).is_symlink():
                 keep.append(name)
         dirnames[:] = keep
-        found.extend(base / name for name in filenames)
+        found.extend(base / name for name in filenames if (base / name).relative_to(root).as_posix() != 'todoist/token')
     return sorted(p for p in found if not p.relative_to(root).as_posix().startswith(REBUILDABLE))
 
 

@@ -114,8 +114,10 @@ class ApprovalTests(unittest.TestCase):
         self.td = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {'HERMES_HOME': self.td.name}, clear=False)
         self.env.start()
-        os.environ.pop('TODOIST_API_TOKEN', None)
         self.m = load('approval')
+        self.m.OUTBOX = Path(self.td.name) / 'outbox'
+        self.m.INBOX = Path(self.td.name) / 'status'
+        self.m.INBOX.mkdir()
         drafts = Path(self.td.name) / 'ventures/demo/drafts'
         drafts.mkdir(parents=True)
         self.preview = drafts / 'demo-dana-1.md'
@@ -132,34 +134,41 @@ class ApprovalTests(unittest.TestCase):
         base.update(kw)
         return types.SimpleNamespace(**base)
 
-    def test_request_never_executes_and_is_idempotent(self):
-        posted = []
-        receipt = self.m.request(self.args(), post=lambda body: posted.append(body) or 'task-1')
-        self.assertEqual('awaiting-founder', receipt['status'])
-        self.assertIsNone(receipt['outcome'])
-        self.assertIn('does not authorize', posted[0]['args']['description'])
-        self.assertEqual('item_add', posted[0]['type'])
-        again = self.m.request(self.args(), post=lambda body: posted.append(body) or 'task-2')
-        self.assertEqual('task-1', again['todoist_task'])
-        self.assertEqual(1, len(posted))  # never queued twice
+    def deliver(self, receipt, status='pending'):
+        (self.m.INBOX / (receipt['status_key'] + '.json')).write_text(json.dumps({
+            'action_id': receipt['action_id'], 'venture': receipt['venture'],
+            'status': status, 'todoist_task': 'example-task',
+        }))
 
-    def test_without_queue_credential_it_stays_local_and_blocked(self):
+    def test_request_never_executes_and_is_idempotent(self):
+        self.m.OUTBOX.mkdir()
         receipt = self.m.request(self.args())
         self.assertEqual('queued-local', receipt['status'])
+        self.assertIsNone(receipt['outcome'])
+        [spooled] = self.m.OUTBOX.glob('*.json')
+        body = json.loads(spooled.read_text())
+        self.assertEqual(self.preview.read_text(), body['preview'])
+        self.assertEqual(set(self.m.REQUEST_FIELDS), set(body))
+        # A local retry must keep the original action and exact preview, even if the draft changed.
+        self.preview.write_text('A different draft')
+        retry = self.m.request(self.args(effect='Different effect'))
+        self.assertEqual(receipt['status_key'], retry['status_key'])
+        self.assertEqual(body, json.loads(spooled.read_text()))
+        self.deliver(receipt, 'completed-by-founder')
+        self.assertEqual('example-task', self.m.request(self.args())['todoist_task'])
+        completed = self.m.status(self.args())
+        self.assertEqual('awaiting-founder', completed['status'])
+        self.assertEqual('completed-by-founder', completed['queue_status'])
+        self.assertIsNone(completed['outcome'])
 
-    def test_retry_after_uncertain_submission_reuses_the_command_uuid(self):
-        uuids = []
-        def flaky(command):
-            uuids.append(command['uuid'])
-            if len(uuids) == 1:
-                raise SystemExit('timeout')
-            return 'task-1'
-        with self.assertRaises(SystemExit):
-            self.m.request(self.args(), post=flaky)
-        self.assertEqual('submitting', json.loads((Path(self.td.name) / 'ventures/demo/actions/demo-dana-1.json').read_text())['status'])
-        self.m.request(self.args(), post=flaky)
-        self.assertEqual(2, len(uuids))
-        self.assertEqual(uuids[0], uuids[1])  # Todoist ignores the repeated command
+    def test_without_queue_mount_it_stays_local_and_can_resume(self):
+        with patch.dict(os.environ, {'TODOIST_API_TOKEN': 'unused-test-value'}):
+            receipt = self.m.request(self.args())
+        self.assertEqual('queued-local', receipt['status'])
+        self.assertFalse(self.m.OUTBOX.exists())
+        self.m.OUTBOX.mkdir()
+        self.m.request(self.args())
+        self.assertTrue((self.m.OUTBOX / (receipt['status_key'] + '.json')).is_file())
 
     def test_undelivered_request_can_only_expire(self):
         self.m.request(self.args())  # queued-local: the founder never saw it
@@ -178,7 +187,7 @@ class ApprovalTests(unittest.TestCase):
                 self.m.request(self.args(preview=name))
 
     def test_outcome_needs_evidence_and_is_recorded_once(self):
-        self.m.request(self.args(), post=lambda c: 'task-1')
+        self.deliver(self.m.request(self.args()))
         with self.assertRaises(SystemExit):
             self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence=' '))
         done = self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='declined',
@@ -186,6 +195,18 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual('closed', done['status'])
         with self.assertRaises(SystemExit):
             self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence='x'))
+
+    def test_delivered_action_outcome_recordable_after_queue_closes_or_expires(self):
+        for n, queue in enumerate(('closed', 'expired')):
+            with self.subTest(queue=queue):
+                action = f'demo-dana-q{n}'
+                self.deliver(self.m.request(self.args(action_id=action)), status=queue)
+                done = self.m.record(types.SimpleNamespace(venture='demo', action_id=action, outcome='executed',
+                                                           evidence='founder executed, receipt link'))
+                self.assertEqual('executed', done['outcome'])
+        undelivered = self.m.request(self.args(action_id='demo-dana-u'))
+        with self.assertRaises(SystemExit):  # never delivered: can only expire
+            self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-u', outcome='executed', evidence='x'))
 
     def test_unsafe_previews_and_ids_refused(self):
         outside = Path(self.td.name) / 'secret.txt'
