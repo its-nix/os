@@ -522,3 +522,35 @@ test('a backed-off enable makes no API call at all', async () => {
   assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}, 2), null);
   assert.equal(gets, after);
 });
+
+test('rearm fallback: a newer pending review is never pre-empted; a same-head retarget or hold is never armed', async () => {
+  const sha = 'd'.repeat(40);
+  const pr = { number: 50, node_id: 'PR_50', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  const mk = (runs, liveAfter) => {
+    const calls = [];
+    let gets = 0;
+    const api = async (path, { method = 'GET', body } = {}) => {
+      calls.push([method, path, body]);
+      if (path === '/graphql') return calls.filter(([, p]) => p === '/graphql').length === 1
+        ? { errors: [{ message: 'Pull request is in clean status' }] } : { data: {} };
+      if (path.includes('/check-runs?')) return { check_runs: runs };
+      if (method === 'POST') return { id: 99 };
+      if (method === 'PATCH') return {};
+      gets++;
+      const live = { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+      return gets === 1 ? live : { ...live, ...liveAfter };
+    };
+    return { api, calls };
+  };
+  const ok = { id: 5, status: 'completed', conclusion: 'success', external_id: 'v:o:c', output: { title: 'APPROVE by opencode' } };
+  let t = mk([ok, { id: 6, status: 'in_progress' }], {});
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, t.api, () => {}), false);
+  assert.ok(!t.calls.some(([m, p]) => m === 'POST' && p.endsWith('/check-runs')));
+  for (const [i, change] of [{ base: { ref: 'release' } }, { labels: [{ name: 'hold' }] }, { draft: true }].entries()) {
+    t = mk([ok], change);
+    assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, number: pr.number + 1 + i }, t.api, () => {}), false);
+    assert.equal(t.calls.filter(([, p]) => p === '/graphql').length, 1);  // never re-armed
+    assert.equal(t.calls.find(([m]) => m === 'PATCH')[2].conclusion, 'success');  // verdict restored unchanged
+  }
+});

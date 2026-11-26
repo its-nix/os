@@ -389,13 +389,18 @@ const eligible = (cfg, pr) => pr.head?.repo?.full_name === cfg.repo && pr.base?.
 
 async function rearmViaCheck(cfg, token, pr, api, mutate) {
   const runs = (await api(`/repos/${cfg.repo}/commits/${pr.head.sha}/check-runs?check_name=${CHECK}&app_id=${cfg.appId}&per_page=100`, { token })).check_runs || [];
-  const latest = runs.filter((c) => c.status === 'completed').sort((a, b) => b.id - a.id)[0];
-  if (!latest || latest.conclusion !== 'success') return null;  // only a passing verdict is re-posted
+  // The newest run decides: a newer queued/in-progress review is never pre-empted by an older verdict.
+  const latest = [...runs].sort((a, b) => b.id - a.id)[0];
+  if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success') return null;
   const reopened = await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
     name: CHECK, head_sha: pr.head.sha, status: 'in_progress', external_id: latest.external_id, started_at: new Date().toISOString() } });
-  let res;
+  let res = null;
   try {
-    res = await mutate();
+    // Re-validate after the extra calls: a retarget, draft or hold on the same head must not be armed.
+    const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+    if (live.head?.sha === pr.head.sha && live.state === 'open' && eligible(cfg, live) && !isHeld(live) && !live.auto_merge) {
+      res = await mutate();
+    }
   } finally {
     await api(`/repos/${cfg.repo}/check-runs/${reopened.id}`, { method: 'PATCH', token, body: {
       status: 'completed', conclusion: latest.conclusion, completed_at: new Date().toISOString(), external_id: latest.external_id,
