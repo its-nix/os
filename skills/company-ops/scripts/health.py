@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,31 @@ BACKUP_MAX_AGE = timedelta(hours=36)
 DEPLOY_MAX_AGE = timedelta(hours=36)
 DISK_MAX_USED = 0.90
 BLOCKED_MAX_AGE = timedelta(hours=24)
+VERSION = '1.1.0'
+MISSING = object()
+LIFECYCLES = ('approved', 'incubating', 'operating', 'scaling', 'pivoting', 'paused', 'retired')
+SLUG = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
+LOCAL_APPROVAL = ('queued-local', 'submitting')
+APPROVAL_STATES = LOCAL_APPROVAL + ('awaiting-founder', 'expired', 'closed')
+BACKUP_STATES = ('running', 'published', 'verified_local', 'failed')
+
+
+def read_state(path, *, missing=None):
+    """Read one JSON object without exposing the input or parser errors."""
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return missing
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def valid_health(data):
+    timestamps = ('backup_last_success', 'deployed_at')
+    optional = ('backup_last_attempt_status', 'deploy_attempt_status', 'deploy_attempt_revision')
+    return (data is not None and all(key in data for key in timestamps)
+            and all(data.get(key) is None or isinstance(data[key], str) for key in (*timestamps, *optional)))
 
 
 def parse(ts):
@@ -33,19 +59,25 @@ def check(home, now=None, kanban=None, t3_ok=None, disk=None):
     now = now or datetime.now(timezone.utc)
     problems = []
     status = home / 'nix' / 'health.json'
-    if not status.exists():
+    data = read_state(status, missing=MISSING)
+    if data is MISSING:
         problems.append('No deployment health status published (nix/health.json missing)')
+    elif not valid_health(data):
+        problems.append('Deployment health status unreadable or invalid (nix/health.json)')
     else:
-        data = json.loads(status.read_text())
-        backup = parse(data.get('backup_last_success'))
+        backup = parse(data['backup_last_success'])
         if not backup or now - backup > BACKUP_MAX_AGE:
-            problems.append(f'Recovery backup stale: last success {data.get("backup_last_success") or "never"}'
-                            f' (last attempt: {data.get("backup_last_attempt_status")})')
-        deployed = parse(data.get('deployed_at'))
+            last_attempt = data.get('backup_last_attempt_status')
+            attempt = last_attempt if last_attempt in BACKUP_STATES else 'unknown'
+            problems.append(f'Recovery backup stale: last success {backup.isoformat() if backup else "unknown"}'
+                            f' (last attempt: {attempt})')
+        deployed = parse(data['deployed_at'])
         if not deployed or now - deployed > DEPLOY_MAX_AGE:
-            problems.append(f'No healthy deployment since {data.get("deployed_at") or "never"}')
+            problems.append(f'No healthy deployment since {deployed.isoformat() if deployed else "unknown"}')
         if data.get('deploy_attempt_status') == 'failed':
-            problems.append(f'Latest deployment attempt failed ({str(data.get("deploy_attempt_revision"))[:8]})')
+            revision = data.get('deploy_attempt_revision') or ''
+            attempt = f' ({revision[:8]})' if re.fullmatch(r'[a-f0-9]{40}', revision) else ''
+            problems.append(f'Latest deployment attempt failed{attempt}')
     used = disk if disk is not None else (lambda u: u.used / u.total)(shutil.disk_usage(home))
     if used > DISK_MAX_USED:
         problems.append(f'Host disk {used:.0%} used')
@@ -53,13 +85,28 @@ def check(home, now=None, kanban=None, t3_ok=None, disk=None):
         problems.append('T3 Code is unreachable on 127.0.0.1:3773')
     registry = home / 'ventures'
     for manifest in sorted(registry.glob('*/manifest.json')) if registry.is_dir() else []:
-        venture = json.loads(manifest.read_text())
-        if venture['lifecycle'] in ('paused', 'retired'):
+        venture = read_state(manifest) or {}
+        lifecycle = venture.get('lifecycle')
+        usable = lifecycle in LIFECYCLES and all(
+            isinstance(venture.get(key), str) and SLUG.fullmatch(venture[key]) for key in ('id', 'board')
+        )
+        vid = venture['id'] if usable else repr(manifest.parent.name[:64])
+        if not usable:
+            problems.append(f'{vid}: venture manifest unreadable or invalid')
+        if lifecycle in ('paused', 'retired'):
             continue
-        waiting = [json.loads(p.read_text()) for p in sorted((manifest.parent / 'actions').glob('*.json'))]
-        local = [w['action_id'] for w in waiting if w.get('status') in ('queued-local', 'submitting')]
+        local = 0
+        for path in sorted((manifest.parent / 'actions').glob('*.json')):
+            record = read_state(path) or {}
+            action_id, state = record.get('action_id'), record.get('status')
+            if not isinstance(action_id, str) or not SLUG.fullmatch(action_id) or state not in APPROVAL_STATES:
+                problems.append(f'{vid}: approval record {path.name[:69]!r} unreadable or invalid')
+            elif state in LOCAL_APPROVAL:
+                local += 1
         if local:
-            problems.append(f'{venture["id"]}: {len(local)} approval request(s) not delivered to the founder queue')
+            problems.append(f'{vid}: {local} approval request(s) not delivered to the founder queue')
+        if not usable:
+            continue
         try:
             tasks = (kanban or board_tasks)(venture['board'])
         except Exception:  # one unreadable board never hides the other findings
