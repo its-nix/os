@@ -554,3 +554,22 @@ test('rearm fallback: a newer pending review is never pre-empted; a same-head re
     assert.equal(t.calls.find(([m]) => m === 'PATCH')[2].conclusion, 'success');  // verdict restored unchanged
   }
 });
+
+test('always-merge: a retarget between the check and the arm is disarmed immediately after arming', async () => {
+  const sha = 'e'.repeat(40);
+  const calls = [];
+  let gets = 0;
+  const api = async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    if (path === '/graphql') return { data: {} };
+    gets++;
+    const live = { state: 'open', draft: false, labels: [], base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
+    return gets === 1 ? { ...live, auto_merge: null } : { ...live, base: { ref: 'release' }, auto_merge: { merge_method: 'squash' } };
+  };
+  const pr = { number: 60, node_id: 'PR_60', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), 'disabled');
+  const mutations = calls.filter(([, p]) => p === '/graphql').map(([, , b]) => b.query);
+  assert.match(mutations[0], /enablePullRequestAutoMerge/);
+  assert.match(mutations[1], /disablePullRequestAutoMerge/);
+});

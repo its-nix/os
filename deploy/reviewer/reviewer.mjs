@@ -451,6 +451,19 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
     // under main's ruleset.
     res = await rearmViaCheck(cfg, token, pr, api, mutate) || res;
   }
+  if (!res?.errors?.length && action === 'enable') {
+    // GitHub cannot pin the base when arming, so re-read right after: if the PR was retargeted or held
+    // in between, disarm at once. Threat model: retargeting needs write access, and every branch other
+    // than main is unprotected, so whoever can retarget can already push to that branch directly;
+    // arming grants no merge right they lacked. The only gate worth protecting is main's ruleset,
+    // which still applies to any PR whose base is main.
+    const after = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+    if (after.auto_merge && (!eligible(cfg, after) || isHeld(after) || after.head?.sha !== pr.head.sha)) {
+      await api('/graphql', { method: 'POST', token, body: {
+        query: 'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}', variables: { id: pr.node_id } } });
+      return 'disabled';
+    }
+  }
   if (!res?.errors?.length) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
   const error = String(res.errors[0]?.message || 'refused');
   const repeated = backoff && backoff.key === key;
