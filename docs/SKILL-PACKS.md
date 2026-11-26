@@ -4,8 +4,9 @@ The deployment Kit revision comes from `deploy/versions.json`. Pack names in
 `deploy/packs/packs.json` map to canonical Kit skill names. The lock records
 Kit's upstream repository, full revision and tree digest for each selected
 skill. A selection is the set union of core, role and task membership.
-The first two packs are core and engineering. A pack addition or a lock
-change goes through the OS pull request gate.
+Core is shared. The selectable packs are engineering, product, growth,
+sales, content, design, research, operations, and data-ai. A pack addition
+or a lock change goes through the OS pull request gate.
 
 The pack builder starts from a fresh checkout of the installed Kit revision.
 Kit fetches selected sources, validates its snapshots and copies to a private
@@ -46,23 +47,24 @@ pack requires review of the selected material. This deployment runs only
 Skillshare's skills sync. Harness credentials stay in native stores.
 
 The main deploy exports the pinned Kit tree from the installed input and runs
-the builder as an unprivileged user in a disposable T3 image container. It
-publishes the verified generation in a root-owned store. The generated
-`packs.compose.json` is the second Compose file for this deployment. It binds
+the builder with `--runtime` as an unprivileged user in a disposable T3 image
+container. It publishes all packs and the worktree installer in a verified,
+root-owned store. The generated `packs.compose.json` is the second Compose
+file for this deployment. It binds
 only missing skill directories, read-only, at container creation. Reconcile
 uses the same generation until the compiler, Kit revision, worktree installer
 or pack lock changes. Existing native copies must match. Any divergence
 blocks deployment before Compose starts or recreates the runtime services.
 The first T3 target is the shared Codex/OpenCode global discovery directory.
 
-For engineering work, prepare a **new** detached worktree inside T3 before
-starting the harness there:
+Prepare a **new** detached worktree inside T3 before starting the harness.
+For example, combine the product role with a research task:
 
 ```sh
-python3 /opt/nixkit/.nixkit/worktree.py /work/repo /work/new-task HEAD --role engineering
+python3 /opt/nixkit/.nixkit/worktree.py /work/repo /work/new-task HEAD --role product --task-pack research
 ```
 
-The helper accepts repeated `--task-pack engineering` and deduplicates role
-and task membership. The pinned Skillshare binary copies only the additions
+The helper accepts repeated `--task-pack` options and deduplicates role and
+task membership. The pinned Skillshare binary copies only the additions
 beyond global core into the new worktree's `.agents/skills`. An existing
 worktree path or checked-in skills destination causes refusal.

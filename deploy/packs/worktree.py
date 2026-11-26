@@ -40,8 +40,9 @@ if __name__ == '__main__':
     parser.add_argument('repository', type=Path)
     parser.add_argument('path', type=Path)
     parser.add_argument('revision')
-    parser.add_argument('--role', choices=['engineering'])
-    parser.add_argument('--task-pack', choices=['engineering'], action='append', default=[])
+    roles = sorted(json.loads((TOOLS / 'packs.json').read_text())['packs'].keys() - {'core'})
+    parser.add_argument('--role', choices=roles)
+    parser.add_argument('--task-pack', choices=roles, action='append', default=[])
     args = parser.parse_args()
     create(args.repository.resolve(), args.path.absolute(), args.revision,
            ([args.role] if args.role else []) + args.task_pack)
