@@ -175,7 +175,9 @@ def record(args):
         receipt = refresh(path, json.loads(path.read_text()))
         if receipt.get('outcome'):
             raise SystemExit('Outcome already recorded; actions are never re-run')
-        if args.outcome != 'expired' and receipt['status'] != 'awaiting-founder':
+        # Delivery (a Todoist task id) is what matters: a later queue status of closed/expired (task
+        # moved, deleted, or past expiry) never blocks recording what actually happened.
+        if args.outcome != 'expired' and not receipt.get('todoist_task'):
             raise SystemExit('Only an action the founder actually received can be executed or declined; '
                              'an undelivered request can only expire')
         receipt.update(outcome=args.outcome, evidence=args.evidence, recorded_at=now(), status='closed')

@@ -196,6 +196,18 @@ class ApprovalTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-1', outcome='executed', evidence='x'))
 
+    def test_delivered_action_outcome_recordable_after_queue_closes_or_expires(self):
+        for n, queue in enumerate(('closed', 'expired')):
+            with self.subTest(queue=queue):
+                action = f'demo-dana-q{n}'
+                self.deliver(self.m.request(self.args(action_id=action)), status=queue)
+                done = self.m.record(types.SimpleNamespace(venture='demo', action_id=action, outcome='executed',
+                                                           evidence='founder executed, receipt link'))
+                self.assertEqual('executed', done['outcome'])
+        undelivered = self.m.request(self.args(action_id='demo-dana-u'))
+        with self.assertRaises(SystemExit):  # never delivered: can only expire
+            self.m.record(types.SimpleNamespace(venture='demo', action_id='demo-dana-u', outcome='executed', evidence='x'))
+
     def test_unsafe_previews_and_ids_refused(self):
         outside = Path(self.td.name) / 'secret.txt'
         outside.write_text('private')

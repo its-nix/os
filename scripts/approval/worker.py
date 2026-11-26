@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 import unicodedata
+from http.client import HTTPException
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import build_opener, HTTPRedirectHandler, ProxyHandler, Request
@@ -222,11 +223,12 @@ def admit(db, outbox, directory, today):
             try:
                 path.unlink(missing_ok=True)
             except IsADirectoryError:
-                # Never descend into an agent-supplied directory.
+                # Never descend into an agent-supplied directory, and never let one use an admission slot.
                 try:
                     path.rmdir()
                 except OSError:
                     pass
+                continue
             yield
 
 
@@ -339,7 +341,7 @@ def main():
     except HTTPError as error:
         print(f'Todoist queue deferred (HTTP {error.code}).', file=sys.stderr)
         return 1
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, sqlite3.Error):
+    except (OSError, HTTPException, ValueError, KeyError, TypeError, AttributeError, RecursionError, sqlite3.Error):
         print('Todoist queue deferred. Check root configuration, project access and queue state.', file=sys.stderr)
         return 1
     return 0
