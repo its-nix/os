@@ -363,14 +363,22 @@ const autoMergeBackoff = new Map();  // pr number -> {key, until}: only failed a
 
 const isHeld = (pr) => (pr.labels || []).some((l) => String(l.name || '').toLowerCase() === HOLD_LABEL);
 
+const eligible = (cfg, pr) => pr.head?.repo?.full_name === cfg.repo && pr.base?.ref === 'main' && !pr.draft;
+
 export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.error, now = Date.now()) {
-  if (pr.head.repo?.full_name !== cfg.repo || pr.base.ref !== 'main' || pr.draft || !pr.node_id) return null;
+  if (!pr.node_id) return null;
   const held = isHeld(pr);
   // State comes from the live PR each poll, so successes need no cache: the next poll sees auto_merge.
+  // An armed PR that stops being eligible (retargeted away from main, fork, draft) is disarmed.
   let action;
-  if (held && pr.auto_merge) action = 'disable';
-  else if (!held && !pr.auto_merge) action = 'enable';
+  if (pr.auto_merge && (held || !eligible(cfg, pr))) action = 'disable';
+  else if (!pr.auto_merge && !held && eligible(cfg, pr)) action = 'enable';
   else return null;
+  if (action === 'enable') {
+    // Re-validate on the live PR right before arming: the listing may be stale (retarget, draft, hold).
+    const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
+    if (live.head?.sha !== pr.head.sha || live.state !== 'open' || !eligible(cfg, live) || isHeld(live) || live.auto_merge) return null;
+  }
   const key = `${pr.head.sha}:${action}`;
   const backoff = autoMergeBackoff.get(pr.number);
   // Disabling is the hold safety brake: it is retried every poll and never backs off.
@@ -393,7 +401,7 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
     try {
       // Re-read the live PR right before merging: a hold label or draft added since the listing wins.
       const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
-      if (live.head?.sha !== pr.head.sha || live.draft || isHeld(live) || live.state !== 'open') return null;
+      if (live.head?.sha !== pr.head.sha || !eligible(cfg, live) || isHeld(live) || live.state !== 'open') return null;
       const result = await api(`/repos/${cfg.repo}/pulls/${pr.number}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
       if (result?.merged !== true) throw new Error('merge not confirmed');
       autoMergeBackoff.delete(pr.number);
@@ -429,7 +437,8 @@ async function loop(cfg) {
       const token = await installationToken(cfg);
       const prs = [];
       for (let page = 1; page <= 10; page++) {  // up to 1000 open PRs; every eligible PR is handled
-        const batch = await gh(`/repos/${cfg.repo}/pulls?state=open&base=main&per_page=100&page=${page}`, { token });
+        // All bases: a PR retargeted away from main must still be seen so its auto-merge is disarmed.
+        const batch = await gh(`/repos/${cfg.repo}/pulls?state=open&per_page=100&page=${page}`, { token });
         prs.push(...batch);
         if (batch.length < 100) break;
       }
