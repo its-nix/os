@@ -984,6 +984,41 @@ test('repository polling ignores forks and non-default PRs, and applies default-
   assert.ok(calls.every(([, path]) => path.startsWith('/repos/its-nix/kit/')));
 });
 
+test('reviewRepository wires the branch rules into arming and self-merge for a public repo', async () => {
+  const pub = { ...KIT, private: false };
+  const pr = { ...KIT_PR, base: { ...KIT_PR.base, repo: pub }, head: { ...KIT_PR.head, repo: pub } };
+  const pass = async (rulesIntegration) => {
+    const calls = [];
+    const api = async (path, { method = 'GET', body } = {}) => {
+      calls.push([method, path.split('?')[0], path, body]);
+      if (path.includes('/rules/branches/')) {
+        assert.ok(path.endsWith('/rules/branches/release%2Ftrunk'));
+        return [{ type: 'required_status_checks', parameters: { strict_required_status_checks_policy: true,
+          required_status_checks: [{ context: 'independent-review', integration_id: rulesIntegration }] } }];
+      }
+      if (path.includes('/pulls?')) return [pr];
+      if (path.includes('/check-runs?')) {
+        // An in-flight review keeps reviewOne inert; mergePrivate then sees no passing verdict.
+        return { check_runs: [{ id: 3, app: { id: 1 }, head_sha: pr.head.sha, status: 'in_progress', started_at: new Date().toISOString(),
+          output: { title: '' }, external_id: 'pending:repo:its-nix/kit:ref:release%2Ftrunk:pr:5' }] };
+      }
+      if (path === '/graphql') return { data: {} };
+      if (method === 'GET' && path.endsWith('/pulls/5')) return { ...pr, auto_merge: body ? null : null };
+      if (path.includes('/contents/')) return missing();
+      return {};
+    };
+    await reviewRepository({ ...CFG, appId: '1' }, 't', pub, { gh: api, approved: () => false, log: () => {},
+      run: () => assert.fail('no model should run while a review is in flight') });
+    return calls;
+  };
+  const enforced = await pass(1);         // numeric integration_id matches the string App id
+  const unenforced = await pass(15368);   // the rule is pinned to another app (Actions)
+  const reviewListings = (calls) => calls.filter(([, , path]) => path.includes('/check-runs?') && path.includes('app_id=')).length;
+  assert.ok(enforced.some(([m, path]) => m === 'POST' && path === '/graphql'), 'enforced repo arms auto-merge');
+  assert.ok(!unenforced.some(([m, path]) => m === 'POST' && path === '/graphql'), 'unenforced repo is never armed');
+  assert.ok(reviewListings(unenforced) > reviewListings(enforced), 'only the unenforced repo takes the self-merge path');
+});
+
 test('public repository uses its non-main default branch for auto-merge and branch updating', async () => {
   const repo = { ...KIT, full_name: 'its-nix/dsio', private: false };
   const cfg = { ...KIT_CFG, repo: repo.full_name, private: false, enforced: true };
