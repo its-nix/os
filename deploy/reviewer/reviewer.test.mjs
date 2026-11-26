@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
+import { ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
   hasFounderApproval, parseProtectedPaths } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
@@ -339,4 +339,40 @@ test('PR content is entity-encoded reversibly and cannot close the prompt tags',
   assert.equal(decode(payload), diff);
   assert.equal(prompt.split('</diff>').length - 1, 1);
   assert.equal(prompt.split('</pull_request>').length - 1, 1);
+});
+
+test('always-merge: enables squash auto-merge once per head, honours the hold label, skips ineligible PRs', async () => {
+  const calls = [];
+  const api = async (path, { body }) => { calls.push(body.query); return { data: {} }; };
+  const base = { number: 9, node_id: 'PR_1', draft: false, base: { ref: 'main' },
+    head: { sha: '1'.repeat(40), repo: { full_name: 'its-nix/os' } }, labels: [], auto_merge: null };
+  assert.equal(await ensureAutoMerge(CFG, 't', base, api), 'enabled');
+  assert.match(calls[0], /enablePullRequestAutoMerge\(input:\{pullRequestId:\$id,mergeMethod:SQUASH\}\)/);
+  assert.equal(await ensureAutoMerge(CFG, 't', base, api), null);  // same head: not retried
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, auto_merge: { merge_method: 'squash' } }, api), null);
+  const held = { ...base, head: { ...base.head, sha: '2'.repeat(40) }, labels: [{ name: 'hold' }], auto_merge: { merge_method: 'squash' } };
+  assert.equal(await ensureAutoMerge(CFG, 't', held, api), 'disabled');
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...held, head: { ...held.head, sha: '3'.repeat(40) }, auto_merge: null }, api), null);
+  for (const pr of [{ ...base, draft: true }, { ...base, base: { ref: 'dev' } }, { ...base, head: { ...base.head, repo: { full_name: 'x/fork' } } }]) {
+    assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, head: { ...pr.head, sha: '4'.repeat(40) } }, api), null);
+  }
+  const logs = [];
+  const denied = async () => ({ errors: [{ message: 'Resource not accessible by integration' }] });
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...base, head: { ...base.head, sha: '5'.repeat(40) } }, denied, (m) => logs.push(m)), false);
+  assert.match(logs[0], /not accessible/);
+});
+
+test('auto-merge PRs left behind are updated with the exact head; others are left alone', async () => {
+  const pr = { number: 9, draft: false, base: { ref: 'main' }, labels: [], auto_merge: { merge_method: 'squash' },
+    head: { sha: '6'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  const calls = [];
+  const api = (state) => async (path, { method = 'GET', body } = {}) => {
+    calls.push([method, path, body]);
+    return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha } } : {};
+  };
+  assert.equal(await keepUpToDate(CFG, 't', pr, api('behind')), 'updated');
+  assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/9/update-branch', { expected_head_sha: pr.head.sha }]);
+  assert.equal(await keepUpToDate(CFG, 't', pr, api('blocked')), null);
+  assert.equal(await keepUpToDate(CFG, 't', { ...pr, auto_merge: null }, api('behind')), null);
+  assert.equal(await keepUpToDate(CFG, 't', { ...pr, labels: [{ name: 'hold' }] }, api('behind')), null);
 });
