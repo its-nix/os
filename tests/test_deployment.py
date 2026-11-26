@@ -17,6 +17,7 @@ spec.loader.exec_module(deployment)
 deployment.T3_UID, deployment.T3_GID = os.getuid(), os.getgid()
 deployment.ROOT_UID, deployment.ROOT_GID = os.getuid(), os.getgid()
 deployment.HERMES_UID, deployment.HERMES_GID = os.getuid(), os.getgid()  # Tests run unprivileged.
+deployment.HINDSIGHT_UID, deployment.HINDSIGHT_GID = os.getuid(), os.getgid()
 
 
 _real_apply = deployment.apply
@@ -30,6 +31,10 @@ def apply(*args, **kwargs):
     kwargs.setdefault('t3_credential', lambda state: False)
     kwargs.setdefault('t3_loaded', lambda state: None)
     kwargs.setdefault('units', lambda source, run: False)
+    kwargs.setdefault('memory', lambda state, run: state / '.hindsight-plugin-reload')  # see test_hindsight_memory
+    kwargs.setdefault('login', lambda source: None)
+    kwargs.setdefault('memory_preflight', lambda source, state, image, run: None)
+    kwargs.setdefault('redaction', lambda source, image, run: None)  # see test_hindsight_memory
     kwargs.setdefault('personal', lambda source, state, run: 'present')
     return _real_apply(*args, **kwargs)
 
@@ -59,12 +64,14 @@ class DeploymentTests(unittest.TestCase):
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' healthy'
                 if name == 'reviewer':
                     return 'nixos-t3:' + deployment.t3_build_tag(ROOT) + ' running'
+                if name == 'hindsight':
+                    return deployment.HINDSIGHT_IMAGE + ' healthy'
                 return images[name]['image'] + ' healthy'
             if argv[-4:] == ['config', 'get', '--json', 'mcp_servers.t3']:
                 return '{"url": "http://127.0.0.1:3773/mcp", "enabled": true}'
             if argv == ['ss', '-lntH']:
                 return '\n'.join('LISTEN 0 128 127.0.0.1:' + port + ' 0.0.0.0:*'
-                                 for port in ('18642', '19119', '13100', '3773'))
+                                 for port in ('18642', '19119', '13100', '3773', '18888'))
             return ''
         return healthy
 
@@ -96,10 +103,65 @@ class DeploymentTests(unittest.TestCase):
             receipt = json.loads((state / 'deployment.json').read_text())
             self.assertEqual('b' * 40, receipt['revision'])
             self.assertEqual('healthy', receipt['status'])
+            versions = json.loads((state / 'versions.json').read_text())
+            self.assertEqual(receipt['images']['hermes'], versions['hermes']['image'])
             self.assertEqual(ROOT, current.resolve())
             self.assertEqual('Learning must survive failed deployment', (state / 'hermes/memory.md').read_text())
             self.assertTrue(any('unittest' in call for call in calls))
             self.assertFalse(any('down' in call or '--volumes' in call for call in calls))
+
+    def test_memory_redaction_probe_runs_on_the_new_hermes_image_before_anything_starts(self):
+        image = json.loads((ROOT / 'deploy/versions.json').read_text())['hermes']['image']
+        for verdict in ('redaction-probe: ok', 'redaction-probe: failed: leaks: jwt', ''):
+            with self.subTest(verdict=verdict), tempfile.TemporaryDirectory() as td:
+                state = self.prepare_state(td)
+                calls, healthy = [], self.healthy_runner([])
+
+                def run(argv):
+                    calls.append(argv)
+                    if argv[:2] == ['docker', 'run'] and '--network' in argv:
+                        return verdict
+                    return healthy(argv)
+                probe = lambda source, img, runner: deployment.probe_hermes_redaction(source, img, runner)
+                if verdict.endswith(': ok'):
+                    apply('b' * 40, ROOT, state, Path(td) / 'current', run=run, redaction=probe)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'scrub secrets'):
+                        apply('b' * 40, ROOT, state, Path(td) / 'current', run=run, redaction=probe)
+                probes = [i for i, c in enumerate(calls) if c[:2] == ['docker', 'run'] and '--network' in c]
+                self.assertEqual(1, len(probes))
+                self.assertIn(image, calls[probes[0]])
+                self.assertEqual(['none'], [calls[probes[0]][calls[probes[0]].index('--network') + 1]])
+                ups = [i for i, c in enumerate(calls) if 'up' in c and c[:2] == ['docker', 'compose']]
+                if verdict.endswith(': ok'):
+                    self.assertLess(probes[0], ups[0])
+                else:
+                    self.assertEqual([], ups)  # nothing running was changed
+
+    def test_invalid_active_memory_refuses_before_compose_up(self):
+        for problem in ('wrong bank', 'missing plugin'):
+            with self.subTest(problem), tempfile.TemporaryDirectory() as td:
+                state = self.prepare_state(td)
+                deployment.ensure_hindsight_state(state)
+                config = state / 'hermes/hindsight/config.json'
+                config.parent.mkdir()
+                bank = 'personal' if problem == 'wrong bank' else 'lnx'
+                config.write_text(json.dumps(deployment.hindsight_profile_config(
+                    'default', bank, deployment.hindsight_api_key(state))))
+                calls = []
+                healthy = self.healthy_runner([])
+
+                def run(argv):
+                    calls.append(argv)
+                    if argv[:2] == ['docker', 'run'] and 'HERMES_HOME=/opt/data' in argv:
+                        self.assertIn('--network', argv)
+                        self.assertIn(f'type=bind,source={state}/hermes,target=/opt/data,readonly', argv)
+                        return '["hindsight", false]'
+                    return healthy(argv)
+                with self.assertRaisesRegex(ValueError, 'own local Hindsight bank|reviewed commit'):
+                    apply('b' * 40, ROOT, state, Path(td) / 'current', run=run,
+                          memory_preflight=deployment.preflight_memory)
+                self.assertFalse(any('up' in call or 'restart' in call for call in calls))
 
     def test_changed_native_inputs_refuse_before_running_commands(self):
         with tempfile.TemporaryDirectory() as td:

@@ -320,7 +320,7 @@ class DeletedContainerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             rc, calls = self.hook_run(td, [], crm=False)
             self.assertEqual(0, rc)
-            self.assertEqual(['start nixos-hermes', 'start nixos-t3', 'start nixos-reviewer'], calls)
+            self.assertEqual(['start nixos-hindsight', 'start nixos-hermes', 'start nixos-t3', 'start nixos-reviewer'], calls)
             rc, calls = self.hook_run(td, ['nixos-t3'], crm=False)
         compose = [c for c in calls if c.startswith('compose')]
         self.assertEqual(1, len(compose))

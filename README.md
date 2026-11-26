@@ -20,7 +20,7 @@ Each row is as of its evidence date. Founder items were requested on 2026-11-23 
 | Twenty CRM (optional profile) | Ready, off | Merged (#76); starts when `twenty/ENABLED` exists; first admin + workspace key are founder-created |
 | Lead → CRM → approval-gated action procedure | Deployed, not live-proven | `skills/crm-lead-ops` (#77); needs a Twenty workspace key and a Todoist queue token (founder request, 2026-11-23) |
 | Company loops (health, digest, improvement) | **Running** | LNX cron: no-agent health check every 6 h (silent when healthy), daily digest, weekly improvement (#78) |
-| Hindsight memory | Open PR #102 (unmerged at 2026-11-25) | The extraction LLM choice (local GPU vs hosted) is recorded as a privacy decision for the founder |
+| Hindsight memory | Open PR #102 (unmerged at 2026-11-25) | PR #102 configures a pinned loopback server, per-profile banks and local embeddings. The founder chose ChatGPT for extraction and must complete a [one-time device sign-in](deploy/hindsight/README.md) after deployment. |
 | Drive + Obsidian knowledge | Not started | Needs the vault folder and scoped access; the KB snapshot stays authoritative meanwhile |
 | Personal agent profile (`personal`) | Contract + idempotent deploy step ([contract](docs/PERSONAL-PROFILE.md)) | Logical separation only; email/calendar blocked on the founder |
 | Paperclip | **Retired from active Compose** (#80, merged 2026-11-23) | State archived and captured in recovery (2026-11-25). At the 2026-11-23 baseline: 0 issues/projects, 3 paused agents |
@@ -50,7 +50,7 @@ docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/venture-factor
 
 | Path | Role |
 | --- | --- |
-| `deploy/` | Compose, pins (`versions.json`), T3 image |
+| `deploy/` | Compose, pins (`versions.json`), T3 image, Hindsight memory (`deploy/hindsight`) |
 | `scripts/deploy-os.{sh,py}` | Root deploy launcher and release application |
 | `automation/recovery/` | Cold capture, verified private publish, restore |
 | `skills/` | First-party OS skills distributed to `skills/nix-os/` (Venture Factory, venture lead, T3 delegate, CRM lead ops) |

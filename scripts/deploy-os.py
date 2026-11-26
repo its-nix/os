@@ -488,6 +488,17 @@ def configure_memory(state, run):
     return pending
 
 
+def install_hindsight_login(source, bin_dir=Path('/usr/local/bin'), tmpfiles_dir=Path('/etc/tmpfiles.d'), run=run):
+    """Root-owned copy of the founder's one-time Hindsight sign-in, runnable by the `nixos` operator
+    (who cannot read the release directory)."""
+    # Recovery runs with UMask=0077 and can be first after boot. Give the Docker
+    # operator read access to the same inode even then. tmpfiles 'f' never truncates it.
+    rule = 'nix-os-deploy-lock.conf'
+    _root_write(tmpfiles_dir, rule, 'f /run/lock/nix-os-deploy.lock 0640 root docker -\n', 0o644)
+    run(['systemd-tmpfiles', '--create', str(tmpfiles_dir / rule)])
+    _root_write(bin_dir, 'nix-hindsight-login', (source / 'deploy/hindsight/codex-login.sh').read_text(), 0o755)
+
+
 def confirm_t3_credential(state):
     _token_module().mark_loaded(state / 'hermes')
 
@@ -861,7 +872,9 @@ def install_health_script(source, state):
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
-          t3_loaded=confirm_t3_credential, units=sync_recovery_units, personal=ensure_personal_profile):
+          t3_loaded=confirm_t3_credential, units=sync_recovery_units, memory=configure_memory,
+          login=install_hindsight_login, redaction=probe_hermes_redaction, personal=ensure_personal_profile,
+          memory_preflight=preflight_memory):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('An exact commit SHA is required')
     if not state.is_dir() or state.is_symlink():
@@ -882,14 +895,22 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         installed = json.loads((state / 'hermes/nix/versions.json').read_text())
         if {k: v for k, v in installed.items() if k not in RUNTIMES} != desired['dependencies']:
             raise ValueError('Installed native dependency pins do not match the reviewed source')
-        for name, repository in [('hermes', 'nousresearch/hermes-agent')]:
-            if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
-                raise ValueError('Only digest-pinned official images may deploy')
+        base_image = versions['hermes']['base_image']
+        if not re.fullmatch(r'nousresearch/hermes-agent@sha256:[0-9a-f]{64}', base_image):
+            raise ValueError('Only digest-pinned official images may deploy')
+        hermes_image = versions['hermes']['image']
+        recipe = (source / 'deploy/hermes/Dockerfile').read_bytes()
+        if hermes_image != 'nixos-hermes:' + hashlib.sha256(recipe).hexdigest()[:16] or \
+                recipe.decode().splitlines()[0] != 'FROM ' + base_image:
+            raise ValueError('Hermes runtime recipe differs from its declared image pins')
+        if not run(['docker', 'image', 'ls', '--quiet', hermes_image]).strip():
+            run(['docker', 'build', '--tag', hermes_image, str(source / 'deploy/hermes')])
         candidate.write_text(''.join(key + '=' + json.dumps(value) + '\n' for key, value in {
-            'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': versions['hermes']['image'],
+            'NIX_CLEAN_ROOT': str(state), 'HERMES_IMAGE': hermes_image,
             'T3_BUILD_TAG': t3_build_tag(source),
         }.items()))
         ensure_t3_state(state)
+        ensure_hindsight_state(state)
         reviewer_changed = ensure_reviewer_state(source, state)
         candidate.chmod(0o600)
         crm = crm_enabled(state)
@@ -907,6 +928,8 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
                    '--file', str(source / 'deploy/compose.yaml'), '--file', str(state / 'packs.compose.json')] + (['--profile', 'crm'] if crm else [])
         run(compose + ['config', '--quiet'])
         run(compose + ['pull', '--ignore-buildable'])
+        memory_preflight(source, state, hermes_image, run)
+        redaction(source, hermes_image, run)  # before up: a failure changes nothing running
         run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
         if reviewer_changed:  # the evaluator's new code must actually be the code that runs
             run(compose + ['up', '--detach', '--no-deps', '--force-recreate', 'reviewer'])
@@ -914,21 +937,22 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         # NIX_CLEAN_ROOT/paperclip and in every recovery image for rollback.
         if run(['docker', 'ps', '--quiet', '--filter', 'name=^nixos-paperclip$']).strip():
             run(['docker', 'stop', '--time', '90', 'nixos-paperclip'])
-        for name in ('hermes',):
-            observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}',
-                            'nixos-' + name])
-            if observed != versions[name]['image'] + ' healthy':
-                raise ValueError('Native image or health readback differs from the declared deployment')
+        observed = run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-hermes'])
+        if observed != hermes_image + ' healthy':
+            raise ValueError('Native image or health readback differs from the declared deployment')
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-t3']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' healthy':
             raise ValueError('T3 image or health readback differs from the declared deployment')
         if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Status}}', 'nixos-reviewer']) \
                 != 'nixos-t3:' + t3_build_tag(source) + ' running':
             raise ValueError('Reviewer image or state readback differs from the declared deployment')
+        if run(['docker', 'inspect', '--format', '{{.Config.Image}} {{.State.Health.Status}}', 'nixos-hindsight']) \
+                != HINDSIGHT_IMAGE + ' healthy':
+            raise ValueError('Hindsight image or health readback differs from the declared deployment')
         if crm and run(['docker', 'inspect', '--format', '{{.State.Health.Status}}', 'nixos-twenty-server']) != 'healthy':
             raise ValueError('Twenty CRM health readback failed')
         listeners = run(['ss', '-lntH']).splitlines()
-        for port in ('18642', '19119', '3773') + (('3020',) if crm else ()):
+        for port in ('18642', '19119', '3773', '18888') + (('3020',) if crm else ()):
             addresses = [line.split()[3] for line in listeners if len(line.split()) >= 5
                          and line.split()[3].rsplit(':', 1)[-1] == port]
             if addresses != ['127.0.0.1:' + port]:
@@ -937,12 +961,6 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
              '/opt/data/nix/kb/.venv/bin/python', '-m', 'unittest', 'discover', '-s', 'tests', '-q'])
         credential_changed = t3_credential(state)
         registration_pending = register_t3_for_leads(state, run)
-        if credential_changed or registration_pending.exists():
-            # Hermes reads MCP_T3_API_KEY from its private .env at start; renewals are ~monthly.
-            run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
-            run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
-            t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
-            registration_pending.unlink(missing_ok=True)
         try:
             personal(source, state, run)
         except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as exc:
@@ -951,7 +969,17 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
             detail = f': {exc}' if type(exc) is ValueError else ''
             print('Personal profile provisioning failed; deployment continues and retries next run' + detail,
                   file=sys.stderr)
+        memory_pending = memory(state, run)
+        if credential_changed or registration_pending.exists() or memory_pending.exists():
+            # Hermes reads MCP_T3_API_KEY from its private .env at start (renewals are ~monthly), and
+            # imports a newly installed memory plugin's client only in a new gateway process.
+            run(['docker', 'restart', '--timeout', '60', 'nixos-hermes'])
+            run(compose + ['up', '--detach', '--wait', '--wait-timeout', '300'])
+            t3_loaded(state)  # only after a healthy restart; an interrupted run retries the restart
+            registration_pending.unlink(missing_ok=True)
+            memory_pending.unlink(missing_ok=True)
         units(source, run)
+        login(source)
         sync_os_skills(source, state)
         install_health_script(source, state)
         link = current.with_name(current.name + '.next')
@@ -964,7 +992,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         write_json(state / 'versions.json', versions)
         (state / 'source-revision').write_text(revision + '\n')
         receipt = dict(attempt, status='healthy', completed_at=datetime.now(timezone.utc).isoformat(),
-                       images={'hermes': versions['hermes']['image'], 't3': 'nixos-t3:' + t3_build_tag(source)})
+                       images={'hermes': hermes_image, 't3': 'nixos-t3:' + t3_build_tag(source)})
         write_json(state / 'deployment.json', receipt)
         write_json(state / 'deployment-attempt.json', receipt)
         publish_health(state, receipt)

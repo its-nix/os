@@ -23,8 +23,13 @@ def inputs():
     pilot = json.loads((REPO / 'deploy/pilot.json').read_text())
     official = {'hermes': 'nousresearch/hermes-agent', 'paperclip': 'ghcr.io/paperclipai/paperclip'}
     for name, repository in official.items():
-        if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['image']):
+        if not re.fullmatch(re.escape(repository) + r'@sha256:[0-9a-f]{64}', versions[name]['base_image' if name == 'hermes' else 'image']):
             raise Refusal('An immutable official image digest is required')
+    recipe = (REPO / 'deploy/hermes/Dockerfile').read_bytes()
+    hermes = versions['hermes']
+    if hermes['image'] != 'nixos-hermes:' + hashlib.sha256(recipe).hexdigest()[:16] or \
+            recipe.decode().splitlines()[0] != 'FROM ' + hermes['base_image']:
+        raise Refusal('Hermes runtime recipe differs from its declared image pins')
     return versions, pilot
 
 

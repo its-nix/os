@@ -45,6 +45,12 @@ echo "T3_BUILD_TAG=\"$(sha256sum deploy/t3/Dockerfile | cut -c1-16)\"" >> /srv/n
 docker build -t "nixos-t3:$(sha256sum deploy/t3/Dockerfile | cut -c1-16)" deploy/t3
 ```
 
+Build the Hermes runtime used by the prepared environment. Deployment also builds this tag when missing.
+
+```bash
+docker build -t "nixos-hermes:$(sha256sum deploy/hermes/Dockerfile | cut -c1-16)" deploy/hermes
+```
+
 Start the native entrypoints:
 
 ```bash

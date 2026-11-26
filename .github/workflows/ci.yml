@@ -35,15 +35,20 @@ jobs:
           python3 -I - <<'PYTHON'
           import json, os, subprocess
           from pathlib import Path
+          from tempfile import TemporaryDirectory
           versions = json.loads(Path('deploy/versions.json').read_text())
-          env = dict(os.environ, NIX_CLEAN_ROOT='/tmp/nix-clean-ci',
-                     HERMES_IMAGE=versions['hermes']['image'],
-                     PAPERCLIP_IMAGE=versions['paperclip']['image'], T3_BUILD_TAG='ci')
-          subprocess.run(['docker', 'compose', '-f', 'deploy/compose.yaml', 'config', '--quiet'], env=env, check=True)
-          crm = Path('/tmp/nix-clean-ci/twenty'); crm.mkdir(parents=True, exist_ok=True)
-          for name in ('db.env', 'server.env'):
-              (crm / name).write_text('')
-          subprocess.run(['docker', 'compose', '-f', 'deploy/compose.yaml', '--profile', 'crm', 'config', '--quiet'], env=env, check=True)
+          with TemporaryDirectory(prefix='nix-clean-ci-') as directory:
+              root = Path(directory)
+              (root / 'hindsight.env').write_text('HINDSIGHT_API_TENANT_API_KEY=' + '0' * 64 + '\n')
+              env = dict(os.environ, NIX_CLEAN_ROOT=str(root),
+                         HERMES_IMAGE=versions['hermes']['image'],
+                         PAPERCLIP_IMAGE=versions['paperclip']['image'], T3_BUILD_TAG='ci')
+              subprocess.run(['docker', 'compose', '-f', 'deploy/compose.yaml', 'config', '--quiet'], env=env, check=True)
+              crm = root / 'twenty'
+              crm.mkdir()
+              for name in ('db.env', 'server.env'):
+                  (crm / name).write_text('')
+              subprocess.run(['docker', 'compose', '-f', 'deploy/compose.yaml', '--profile', 'crm', 'config', '--quiet'], env=env, check=True)
           PYTHON
       - name: Reviewer service tests
         run: node --test deploy/reviewer/reviewer.test.mjs

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -15,11 +16,16 @@ spec = importlib.util.spec_from_file_location('deployment_memory', ROOT / 'scrip
 deployment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deployment)
 deployment.HINDSIGHT_UID, deployment.HINDSIGHT_GID = os.getuid(), os.getgid()
+COMPOSE = (ROOT / 'deploy/compose.yaml').read_text()
 probe_spec = importlib.util.spec_from_file_location('redaction_probe', ROOT / 'deploy/hindsight/redaction_probe.py')
 probe = importlib.util.module_from_spec(probe_spec)
 probe_spec.loader.exec_module(probe)
 CATALOG = (f'name: hindsight\nrepo: https://github.com/vectorize-io/hindsight\nsha: {deployment.HINDSIGHT_PLUGIN_SHA}\n'
            'subdir: hindsight-integrations/hermes\nversion: "1.2.4"\n')
+
+
+def service(name):
+    return COMPOSE.split(f'\n  {name}:\n', 1)[1].split('\n  # ', 1)[0].split('\n  reviewer:\n', 1)[0]
 
 
 class FakeHermes:
@@ -265,6 +271,70 @@ class HindsightMemoryTests(unittest.TestCase):
             (Path(td) / 'hindsight/codex').symlink_to(td)
             with self.assertRaises(ValueError):
                 deployment.ensure_hindsight_state(Path(td))
+
+    def test_server_is_pinned_local_loopback_only_and_resource_capped(self):
+        hindsight = service('hindsight')
+        self.assertIn('image: ' + deployment.HINDSIGHT_IMAGE + '  #', hindsight)
+        self.assertRegex(deployment.HINDSIGHT_IMAGE, r'@sha256:[0-9a-f]{64}$')
+        self.assertEqual(['      - 127.0.0.1:18888:8888'], [l for l in hindsight.splitlines() if l.startswith('      - ') and ':8888' in l])
+        self.assertTrue(deployment.HINDSIGHT_URL.startswith('http://127.0.0.1:18888'))
+        for required in ('networks: [memory]', 'mem_limit: 1536m', 'cpus: 1.0', 'cap_drop: [ALL]',
+                         'HINDSIGHT_API_LLM_PROVIDER: openai-codex',
+                         'HINDSIGHT_API_LLM_CODEX_HOME: /var/lib/hindsight/codex',
+                         'HINDSIGHT_API_EMBEDDINGS_PROVIDER: local', 'HINDSIGHT_API_RERANKER_PROVIDER: rrf',
+                         'HINDSIGHT_API_DECISION_MODEL_PROVIDER: none', "HF_HUB_OFFLINE: '1'",
+                         "HINDSIGHT_API_MCP_ENABLED: 'false'", 'HINDSIGHT_API_RETAIN_MISSION:',
+                         '}/hindsight\n        target: /var/lib/hindsight\n',
+                         'HOME=/var/lib/hindsight exec /app/start-all.sh',
+                         'HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension',
+                         '}/hindsight.env\n        required: true',
+                         "HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH: 'true'"):
+            self.assertIn(required, hindsight)
+        for forbidden in ('network_mode', 'vectorize.io', 'docker.sock', '/hermes', '/t3/', '/reviewer/'):
+            self.assertNotIn(forbidden, hindsight)
+        self.assertNotIn('vectorize.io', COMPOSE)
+
+    def test_apply_requires_healthy_pinned_server_and_loopback_listener(self):
+        source = (ROOT / 'scripts/deploy-os.py').read_text()
+        self.assertIn("'3773', '18888'", source)
+        self.assertIn("'nixos-hindsight']) \\\n                != HINDSIGHT_IMAGE + ' healthy'", source)
+        self.assertNotIn('hindsight', json.dumps(json.loads((ROOT / 'deploy/versions.json').read_text())))
+
+    def test_recovery_stops_the_server_after_hermes_and_starts_it_first(self):
+        spec = importlib.util.spec_from_file_location('full_create_memory', ROOT / 'automation/recovery/full_create.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertLess(module.CONTAINERS.index('nixos-hermes'), module.CONTAINERS.index('nixos-hindsight'))
+        unit = (ROOT / 'automation/recovery/nixos-recovery.service').read_text()
+        self.assertIn('for c in nixos-hindsight nixos-hermes', unit)
+
+    def test_founder_login_is_hindsights_own_codex_device_login(self):
+        script = (ROOT / 'deploy/hindsight/codex-login.sh').read_text()
+        self.assertIn("docker inspect --format '{{.Config.Image}}' nixos-t3", script)  # pinned codex, no new fetch
+        self.assertLess(script.index('exec 9</run/lock/nix-os-deploy.lock'), script.index('flock -w 300 9 ||'))
+        self.assertLess(script.index('flock -w 300 9 ||'), script.index('image=$(docker'))
+        self.assertIn('login --device-auth', script)
+        self.assertIn('cli_auth_credentials_store="file"', script)
+        self.assertIn('source=/srv/nix-clean/hindsight/codex,target=/codex', script)
+        self.assertIn('--user 1000:1000', script)
+        self.assertIn('docker restart --timeout 60 nixos-hindsight', script)
+        for forbidden in ('/srv/nix-clean/hermes', 't3/home', 'reviewer/home', 'auth.json /', 'cp ', 'curl',
+                          'hindsight.env'):
+            self.assertNotIn(forbidden, script)
+        # The model check runs inside the server with its own key: the key never enters a host argv.
+        self.assertIn('docker exec nixos-hindsight', script)
+        self.assertIn('os.environ["HINDSIGHT_API_TENANT_API_KEY"]', script)
+        self.assertEqual(0, subprocess.run(['sh', '-n', str(ROOT / 'deploy/hindsight/codex-login.sh')]).returncode)
+        with tempfile.TemporaryDirectory() as td:
+            calls = []
+            deployment.install_hindsight_login(ROOT, Path(td), Path(td), calls.append)
+            rule = Path(td) / 'nix-os-deploy-lock.conf'
+            self.assertEqual('f /run/lock/nix-os-deploy.lock 0640 root docker -', rule.read_text().strip())
+            self.assertEqual([['systemd-tmpfiles', '--create', str(rule)]], calls)
+            installed = Path(td) / 'nix-hindsight-login'
+            self.assertEqual(script, installed.read_text())
+            self.assertEqual(0o755, installed.stat().st_mode & 0o777)
+        self.assertIn('ssh -t -l nixos vps nix-hindsight-login', (ROOT / 'deploy/hindsight/README.md').read_text())
 
 
 class RedactionProbeTests(unittest.TestCase):
