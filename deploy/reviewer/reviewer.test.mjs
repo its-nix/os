@@ -224,17 +224,21 @@ test('new heads are reviewed against escaped blocking findings from earlier head
   assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].external_id, `${ordinaryId}:pr:${PR.number}`);
 });
 
-test('review fails closed when earlier blocking findings exceed the prompt budget', async () => {
-  const old = 'a'.repeat(40);
+test('oversized prior findings keep the newest within budget instead of blocking the PR', async () => {
+  const older = 'a'.repeat(40), newer = 'b'.repeat(40);
   const state = { calls: [], headAfter: PR.head.sha,
-    history: { null: { nodes: [{ commit: { oid: old } }], pageInfo: {} } },
-    priorRuns: { [old]: [{ app: { id: 1 }, status: 'completed', conclusion: 'failure',
-      output: { title: 'REQUEST_CHANGES by codex', summary: `Reviewer: **codex**\n\nChanges requested.\n\n- **blocking** \`a.mjs\`: ${'x'.repeat(8_001)}` } }] } };
-  await reviewOne(CFG, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
-    run: async () => assert.fail('provider called with incomplete context') });
-  const check = state.calls.find(([method]) => method === 'PATCH')[2];
-  assert.equal(check.conclusion, 'failure');
-  assert.match(check.output.summary, /Prior blocking findings are too large/);
+    history: { null: { nodes: [{ commit: { oid: older } }, { commit: { oid: newer } }], pageInfo: {} } },
+    priorRuns: {
+      [older]: [{ id: 1, app: { id: 1 }, status: 'completed', conclusion: 'failure',
+        output: { title: 'REQUEST_CHANGES by codex', summary: `Reviewer: **codex**\n\nChanges requested.\n\n- **blocking** \`a.mjs\`: OLD ${'x'.repeat(7_000)}` } }],
+      [newer]: [{ id: 2, app: { id: 1 }, status: 'completed', conclusion: 'failure',
+        output: { title: 'REQUEST_CHANGES by grok', summary: `Reviewer: **grok**\n\nChanges requested.\n\n- **blocking** \`b.mjs\`: NEW ${'y'.repeat(3_000)}` } }] } };
+  let prompt;
+  await reviewOne({ ...CFG, pool: ['grok'] }, 't', PR, { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }),
+    run: async (_cmd, args) => { [, prompt] = args; return { ok: true, out: '{"verdict":"REQUEST_CHANGES","summary":"s","findings":[]}' }; } });
+  assert.match(prompt, /NEW y/);
+  assert.doesNotMatch(prompt, /OLD x/);
+  assert.match(prompt, /Older prior findings omitted for length/);
 });
 
 test('no available reviewer, moved head, or already-reviewed revision', async () => {

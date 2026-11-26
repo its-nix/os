@@ -375,8 +375,7 @@ function blockingItems(summary) {
 }
 
 async function priorBlockingFindings(cfg, token, pr, api) {
-  const findings = new Set();
-  let size = 0;
+  const checks = [];
   for (const sha of await earlierCommits(cfg, token, pr, api)) {
     for (const check of await listReviewRuns(cfg, token, sha, api)) {
       if (String(check.app?.id) !== String(cfg.appId) || check.status !== 'completed' ||
@@ -385,16 +384,25 @@ async function priorBlockingFindings(cfg, token, pr, api) {
       const boundPr = check.external_id?.match(PR_BINDING)?.[1];
       if (boundPr ? boundPr !== String(pr.number) :
         check.pull_requests?.length && !check.pull_requests.some((p) => p.number === pr.number)) continue;
-      for (const item of blockingItems(check.output.summary || '')) {
-        const finding = item.trim();
-        if (!finding || findings.has(finding)) continue;
-        size += finding.length + (findings.size ? 2 : 0);
-        if (size > MAX_PRIOR_FINDINGS_CHARS) return null;
-        findings.add(finding);
-      }
+      checks.push(check);
     }
   }
-  return [...findings].join('\n\n');
+  // Newest verdicts first. Each later review already had to resolve the findings it was given, so when the
+  // history outgrows the budget the oldest findings are the safest to omit (a long PR must stay reviewable).
+  checks.sort((a, b) => b.id - a.id);
+  const findings = new Set();
+  let size = 0;
+  let omitted = false;
+  for (const check of checks) {
+    for (const item of blockingItems(check.output.summary || '')) {
+      const finding = item.trim().slice(0, MAX_PRIOR_FINDINGS_CHARS);
+      if (!finding || findings.has(finding)) continue;
+      if (size + finding.length + 2 > MAX_PRIOR_FINDINGS_CHARS) { omitted = true; continue; }
+      size += finding.length + 2;
+      findings.add(finding);
+    }
+  }
+  return [...findings].join('\n\n') + (omitted ? '\n\n(Older prior findings omitted for length; later reviews already had to resolve them.)' : '');
 }
 
 export async function reviewOne(cfg, token, pr, deps = {}) {
@@ -442,7 +450,6 @@ export async function reviewOne(cfg, token, pr, deps = {}) {
   const attempts = [];
   const accepted = (deps.accepted || acceptedRisk)(pr.head.sha);
   const priorFindings = await priorBlockingFindings(cfg, token, pr, api);
-  if (priorFindings === null) return finish('failure', 'Not reviewable', 'Prior blocking findings are too large to review in one pass; split the PR.');
   const prompt = buildPrompt(pr, data.diff, accepted, priorFindings);
   if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) return finish('failure', 'Not reviewable', 'PR text plus diff too large to review in one pass; split the PR.');
   for (const provider of order) {
