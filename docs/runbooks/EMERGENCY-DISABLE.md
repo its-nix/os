@@ -23,7 +23,9 @@ SSH access is the `nixos` operator alias used by the other guides. GitHub steps 
 - Never delete or regenerate a state directory under `/srv/nix-clean` to "reset" anything.
 - Credential revocation (layer 7) is the last resort: it breaks recovery until each login is re-issued.
 
-## 1. Hold PR auto-merge (an auto-merge freeze, not a merge block)
+## 1. Hold PR auto-merge
+
+This is an auto-merge freeze, not a merge block.
 
 Holding takes effect on the reviewer's next poll (about a minute); an already-armed PR whose checks finish inside that window can still merge. **Converting to a draft is the guarantee**: GitHub never merges drafts.
 
@@ -41,7 +43,7 @@ gh pr ready <number> --undo                  # per PR, when the guarantee matter
   - It does not disarm PRs already armed; draft those (`gh pr ready <number> --undo`).
   - Stopping `nixos-reviewer` (`docker stop --time 90 nixos-reviewer`) is optional on top: it stops new reviews, but it is not a freeze on its own.
 - A merge freeze never pauses the deploy pipeline itself: the scheduled 05:17 UTC reconcile deploys current `main` regardless of merges. Apply and verify the deploy pause in layer 6 independently.
-- **Verify**: each open PR shows the `hold` label (and draft state where applied); `gh pr view <number> --json autoMergeRequest` prints `null` once a PR is disarmed.
+- **Verify**: each open PR shows the `hold` label (and draft state where applied); `gh pr view <number> --json autoMergeRequest -q .autoMergeRequest` prints `null` once a PR is disarmed.
 - **Resume**: `gh pr edit <number> --remove-label hold` and `gh pr ready <number>`. A PR that was already green gets a fresh independent review before auto-merge re-arms; the ruleset gate is never skipped ([AUTHORITY](../AUTHORITY.md)).
 
 ## 2. Stop the founder approval worker timer
@@ -138,7 +140,7 @@ docker stop --time 90 nixos-hermes nixos-hindsight
 
 - `--time 90` matches the deploy's own stop grace; Hermes and T3 shut down gracefully inside it. A forced kill after the timeout still loses no state.
 - **Verify**: `docker ps --filter name=nixos-` lists nothing running.
-- **Resume**: start the core runtimes — `docker start nixos-hindsight nixos-hermes nixos-t3 nixos-reviewer` once the repository-level merge freeze is verified (layer 1; leave `nixos-t3` stopped after a bearer compromise, layer 7), and the Twenty containers **only after the `ENABLED` marker is back** (layer 5 resume); started without it, the next deploy stops them again and the nightly capture refuses. Then `sudo systemctl enable --now nixos-recovery.timer` — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running — and lift the GitHub deploy pause above. The reviewed alternative to all of it is one deploy of current main, which starts and health-checks the whole stack.
+- **Resume**: start the core runtimes — `docker start nixos-hindsight nixos-hermes nixos-t3 nixos-reviewer` once the repository-level merge freeze is verified (layer 1). After a bearer compromise leave `nixos-t3` stopped and do **not** enable the recovery timer, lift the deploy pause or run a deploy until layer 7 step 3 ends: each of those starts T3. and the Twenty containers **only after the `ENABLED` marker is back** (layer 5 resume); started without it, the next deploy stops them again and the nightly capture refuses. Then `sudo systemctl enable --now nixos-recovery.timer` — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running — and lift the GitHub deploy pause above. The reviewed alternative to all of it is one deploy of current main, which starts and health-checks the whole stack.
 - Stopped containers and everything on disk survive. Unpushed commits in T3 worktrees are only at risk on host loss, not on a stop.
 
 ## 7. Revoke credentials at the provider
@@ -155,19 +157,20 @@ Last resort: this breaks the stack until each credential is re-issued. Do it whe
 
 ### Suspected compromise of the Hermes→T3 bearer
 
-`MCP_T3_API_KEY` is a full-access credential and, once minted, stays valid on T3's side for up to 30 days — waiting out the expiry is not containment.
+`MCP_T3_API_KEY` is a full-access credential and, once minted, stays valid on T3's side for up to 30 days — waiting out the expiry is not containment, and rotating it does not invalidate the stolen copy. Work in this order:
 
-- T3 listens on host loopback only (`deploy/t3/README.md`), so the bearer is usable only from the VPS itself; the host access boundary is the real containment. Then rotate so Hermes stops presenting the old token:
+1. **Record the old token's expiry first.** `sudo cat /srv/nix-clean/hermes/nix/t3-mcp.json` and write down `expires_at` somewhere off the host. Nothing below may delete that file before this.
+2. **Contain.** First pause everything that would start T3 again: the recovery timer (`sudo systemctl disable --now nixos-recovery.timer`, then wait for `systemctl is-active nixos-recovery.service` to read `inactive`) and the GitHub deploy (layer 6, deploy pause). Then `docker stop --time 90 nixos-t3`. With no listener the old bearer cannot be used from anywhere (T3 listens on host loopback only, `deploy/t3/README.md`).
+3. **Keep it contained** until the old token is revoked on T3's side (this repository's tooling has none — only the pairing flow is implemented; check T3's own auth commands in the cockpit, verify before use) or the recorded `expires_at` has passed. No manual deploys, no recovery timer and no lifted deploy pause in that window: each starts T3.
+4. **Rotate when T3 comes back.** With T3 running again, force a fresh token so Hermes stops presenting the old one:
 
 ```bash
-sudo rm /srv/nix-clean/hermes/nix/t3-mcp.json                 # non-secret sidecar; without it the mint script must issue a fresh token
+sudo rm /srv/nix-clean/hermes/nix/t3-mcp.json                 # non-secret sidecar; without it the mint script issues a fresh token
 sudo python3 /opt/nix-clean-source/deploy/t3/hermes_token.py  # writes the new MCP_T3_API_KEY, never prints it
 docker restart --timeout 60 nixos-hermes                     # the gateway loads the key only at start
 ```
 
-- The mint script reuses a stored token only when the sidecar, the stored key and T3's probe of it all agree (`ensure()` in `deploy/t3/hermes_token.py`); with the sidecar gone it mints unconditionally.
-- The old token remains valid on T3's side until its recorded expiry. This repository's tooling has no T3-side revoke — only the pairing flow is implemented (`deploy/t3/README.md`); check T3's own auth commands in the cockpit for a revoke (verify before use).
-- **Containment until then:** keep `nixos-t3` stopped (`docker stop --time 90 nixos-t3`). With no listener the old bearer cannot be used from anywhere. Start T3 again only after a verified T3-side revoke of the old token, or after its recorded expiry has passed. Rotating the token above changes only what Hermes presents; it does not invalidate the stolen one.
+- The mint script reuses a stored token only when the sidecar, the stored key and T3's probe of it all agree (`ensure()` in `deploy/t3/hermes_token.py`); with the sidecar gone it mints unconditionally. It needs T3 running.
 - The next deploy shares the new token with every venture lead's private `.env` and completes the bookkeeping ([PROVIDER-AUTH-RECOVERY](PROVIDER-AUTH-RECOVERY.md)).
 
 ## What each layer leaves behind
