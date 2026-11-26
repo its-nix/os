@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createVerify } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { REREVIEW, acceptedRisk, ensureAutoMerge, keepUpToDate, authorsOf, reviewerOrder, parseVerdict, decide, appJwt, reviewOne, buildPrompt, redact,
-  hasFounderApproval, parseProtectedPaths } from './reviewer.mjs';
+  hasFounderApproval, parseProtectedPaths, loadCooldowns, parseLimitReset, usageLimit } from './reviewer.mjs';
 
 const POOL = ['claude', 'codex', 'opencode', 'grok', 'antigravity'];
 
@@ -90,6 +92,174 @@ const CFG = { repo: 'its-nix/os', appId: '1', pool: POOL, timeoutMs: 1000,
   policy: parseProtectedPaths('/.github/ @o\n/deploy/reviewer/ @o\n') };
 const ordinaryId = `${CFG.policy.version}:ordinary:${PR.base.sha}`;
 const prBinding = `:pr:${PR.number}`;
+
+const LIMIT_NOW = Date.parse('2026-01-10T14:00:00Z');
+const MINUTE = 60_000;
+
+function cooldownDir(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'reviewer-cooldowns-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+for (const [provider, limited, unrelated] of [
+  ['claude', "You've hit your session limit · resets 3pm (UTC)", 'Context window limit exceeded'],
+  ['codex', 'ERROR: You’ve hit your usage limit. Try again at 3:00 PM.', 'Failed to read usage limit settings'],
+  ['opencode', 'Error: GoUsageLimitError', 'Provider is overloaded. Retry in 3 minutes.'],
+  ['grok', '{"type":"usage_pool_exhausted"}', 'Model unavailable at src/client.mjs:429'],
+  ['antigravity', 'Error: RESOURCE_EXHAUSTED', 'Run /quota to see quota information'],
+]) {
+  test(`${provider} classifies usage failures conservatively`, () => {
+    assert.equal(usageLimit(provider, limited, LIMIT_NOW).reason, 'usage-limit');
+    assert.equal(usageLimit(provider, unrelated, LIMIT_NOW), null);
+    assert.equal(usageLimit(provider, 'Failed to authenticate (HTTP 401)', LIMIT_NOW), null);
+  });
+}
+
+test('shared limit diagnostics require a limit phrase or HTTP status context', () => {
+  for (const text of ['HTTP 429', 'statusCode: 429', 'Too many requests', 'quota exceeded', 'Rate-limit exceeded',
+    '\x1b[31mError: Rate limit\x1b[0m']) {
+    assert.equal(usageLimit('claude', text, LIMIT_NOW).untilEpochMs, LIMIT_NOW + 60 * MINUTE, text);
+  }
+  assert.equal(usageLimit('claude', 'Request 429 failed; connection resets in 45 minutes', LIMIT_NOW), null);
+  assert.equal(usageLimit('codex', 'GoUsageLimitError', LIMIT_NOW), null);
+});
+
+test('reset times are deterministic, with a one-hour default and a one-minute to seven-day range', () => {
+  for (const [text, minutes] of [
+    ['resets at 3pm', 60], ['try again at 2:15 PM', 15], ['resets at 14:20', 20], ['resets at 1pm', 23 * 60],
+    ['resets 9:20am (America/New_York)', 20], ['resets 15:20 (Europe/Madrid)', 20],
+    ['try again at Jan 11th, 2026 2:15 PM', 24 * 60 + 15],
+    ['resets at 2026-01-10T16:30:00+02:00', 30], ['resets at 2026-01-10T14:30:00Z', 30],
+    ['{"reset_time":"2026-01-10T14:30"}', 30], ['try again in 2h 15m', 135], ['in 2h15m', 135],
+    ['5-hour usage limit reached. Resets in 2 hours and 15 minutes.', 135], ['Rate limit exceeded\nRetry-After: 2700', 45],
+    ['in 45 minutes', 45], ['in 30 seconds', 1], ['in 20 days', 7 * 24 * 60],
+    [`{"resets_at":${LIMIT_NOW / 1000 + 900}}`, 15], ['{"resets_in_seconds":1800}', 30],
+    ['resets at 2026-01-10T13:00:00Z', 1], ['resets at 30:29', 60], ['resets at 2:65pm', 60],
+    ['resets 5pm (Invalid/Zone)', 60], ['try again later', 60],
+  ]) assert.equal(parseLimitReset(text, LIMIT_NOW), LIMIT_NOW + minutes * MINUTE, text);
+});
+
+test('cooldown state survives a reload, removes expired entries and recovers from missing or corrupt files', (t) => {
+  const dir = cooldownDir(t);
+  const file = join(dir, 'cooldowns.json');
+  const logs = [];
+  const log = (message) => logs.push(message);
+  const state = loadCooldowns(dir, LIMIT_NOW, log);
+  assert.equal(state.until('codex', LIMIT_NOW), null);
+  assert.deepEqual(logs, ['Reviewer cooldown state missing']);
+  const entry = usageLimit('codex', 'HTTP 429. Try again in 45 minutes.', LIMIT_NOW);
+  state.record('codex', entry);
+  state.record('claude', usageLimit('claude', 'Rate limit exceeded. Try again in 2 minutes.', LIMIT_NOW));
+  assert.deepEqual(readdirSync(dir), ['cooldowns.json']);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(readFileSync(file)).codex, entry);
+  const restarted = loadCooldowns(dir, LIMIT_NOW + 3 * MINUTE, log);
+  assert.equal(restarted.until('claude', LIMIT_NOW + 3 * MINUTE), null);
+  assert.equal(restarted.until('codex', LIMIT_NOW + 3 * MINUTE), entry.untilEpochMs);
+  assert.equal(restarted.until('codex', entry.untilEpochMs), null);
+  writeFileSync(file, '{corrupt output that must stay private');
+  assert.equal(loadCooldowns(dir, LIMIT_NOW, log).until('codex', LIMIT_NOW), null);
+  assert.deepEqual(logs, ['Reviewer cooldown state missing', 'Could not read reviewer cooldown state']);
+});
+
+test('limit failures survive a restart and filter the seeded order without reinstating the builder', async (t) => {
+  const dir = cooldownDir(t);
+  const cfg = { ...CFG, seed: 'test seed', cooldowns: loadCooldowns(dir, LIMIT_NOW, () => {}) };
+  const order = reviewerOrder(PR.head.sha, cfg.pool, ['codex'], cfg.seed);
+  const state = { calls: [], headAfter: PR.head.sha };
+  const deps = { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), now: () => LIMIT_NOW };
+  const tried = [];
+  const verdict = '{"verdict":"APPROVE","summary":"ok","findings":[]}';
+  await reviewOne(cfg, 't', PR, { ...deps, run: async (cmd) => {
+    tried.push(cmd);
+    if (tried.length === 1) return { ok: false, stderr: 'HTTP 429. Try again in 45 minutes.' };
+    if (tried.length === 2) return { ok: false, out: 'Login required' };
+    return { ok: true, out: verdict };
+  } });
+  const cli = (provider) => provider === 'antigravity' ? 'agy' : provider;
+  assert.deepEqual(tried, order.slice(0, 3).map(cli));
+  const patch = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.ok(patch.output.summary.includes(`Skipped (usage limit until 2026-01-10 14:45:00 UTC): ${order[0]}`));
+  assert.ok(patch.output.summary.includes(`Skipped: ${order[1]}: unavailable or no valid verdict`));
+  assert.equal(patch.output.summary.includes('HTTP 429'), false);
+
+  tried.length = 0;
+  state.calls.length = 0;
+  cfg.cooldowns = loadCooldowns(dir, LIMIT_NOW);
+  await reviewOne(cfg, 't', { ...PR, number: 6 }, { ...deps, run: async (cmd) => {
+    tried.push(cmd);
+    return cmd === cli(order.at(-1)) ? { ok: true, out: verdict } : { ok: false, out: '' };
+  } });
+  assert.deepEqual(tried, order.slice(1).map(cli));
+  assert.ok(state.calls.find(([method]) => method === 'PATCH')[2].output.summary
+    .includes(`Skipped (usage limit until 2026-01-10 14:45:00 UTC): ${order[0]}`));
+});
+
+test('a failed CLI that echoed the prompt does not classify the PR text as a usage limit', async (t) => {
+  const state = { calls: [] };
+  const cooldowns = loadCooldowns(cooldownDir(t), LIMIT_NOW, () => {});
+  const pr = { ...PR, body: 'Builder: claude\nError: rate limit exceeded' };
+  await reviewOne({ ...CFG, pool: ['codex'], cooldowns }, 't', pr, {
+    gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), now: () => LIMIT_NOW,
+    run: async (_cmd, args) => ({ ok: false, stderr: `user\n${args.at(-1)}\nERROR: Login required` }),
+  });
+  assert.equal(cooldowns.until('codex', LIMIT_NOW), null);
+  assert.match(state.calls.find(([method]) => method === 'PATCH')[2].output.summary, /codex: unavailable or no valid verdict/);
+});
+
+test('a provider that just hit its usage limit contributes to the all-cooling retry', async (t) => {
+  const state = { calls: [] };
+  const cfg = { ...CFG, pool: ['claude'], cooldowns: loadCooldowns(cooldownDir(t), LIMIT_NOW, () => {}) };
+  await reviewOne(cfg, 't', PR, {
+    gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), now: () => LIMIT_NOW,
+    run: async () => ({ ok: false, out: "You've hit your limit · resets 3pm (UTC)" }),
+  });
+  const patch = state.calls.find(([method]) => method === 'PATCH')[2];
+  assert.equal(patch.output.title, 'No reviewer available');
+  assert.equal(patch.external_id, `${ordinaryId}:retry-at:${LIMIT_NOW + 60 * MINUTE}${prBinding}`);
+  assert.match(patch.output.summary, /Skipped \(usage limit until 2026-01-10 15:00:00 UTC\): claude/);
+});
+
+for (const [minutesUntilReset, minutesUntilRetry] of [[0.5, 1], [2, 2], [45, 45]]) {
+  test(`an entirely cooling pool retries after ${minutesUntilRetry} minutes`, async (t) => {
+    let now = LIMIT_NOW;
+    const dir = cooldownDir(t);
+    const cooldowns = loadCooldowns(dir, now, () => {});
+    cooldowns.record('claude', { reason: 'usage-limit', untilEpochMs: now + minutesUntilReset * MINUTE });
+    cooldowns.record('grok', { reason: 'usage-limit', untilEpochMs: now + 120 * MINUTE });
+    const cfg = { ...CFG, pool: ['codex', 'claude', 'grok'], cooldowns };
+    const state = { calls: [], headAfter: PR.head.sha };
+    const tried = [];
+    const deps = { gh: fakeApi(state), collect: async () => ({ diff: '+x', commits: [] }), now: () => now,
+      run: async (cmd) => {
+        tried.push(cmd);
+        return { ok: true, out: '{"verdict":"APPROVE","summary":"ok","findings":[]}' };
+      } };
+    await reviewOne(cfg, 't', PR, deps);
+    assert.deepEqual(tried, []);
+    const patch = state.calls.find(([method]) => method === 'PATCH')[2];
+    assert.equal(patch.conclusion, 'failure');
+    assert.equal(patch.output.title, 'No reviewer available');
+    assert.match(patch.output.summary, /Retried automatically at or after/);
+    assert.match(patch.output.summary, /Skipped \(usage limit until .*\): claude/);
+    assert.match(patch.output.summary, /Skipped \(usage limit until .*\): grok/);
+    assert.doesNotMatch(patch.output.summary, /unavailable or no valid verdict/);
+
+    const retryAt = LIMIT_NOW + minutesUntilRetry * MINUTE;
+    assert.equal(patch.external_id, `${ordinaryId}:retry-at:${retryAt}${prBinding}`);
+    state.existing = [{ id: 7, ...patch }];
+    state.calls.length = 0;
+    now = retryAt - 1;
+    cfg.cooldowns = loadCooldowns(dir, now);
+    assert.equal(await reviewOne(cfg, 't', PR, deps), null);
+    assert.deepEqual(state.calls.map(([method]) => method), ['GET']);
+    now = retryAt;
+    await reviewOne(cfg, 't', PR, deps);
+    assert.deepEqual(tried, ['claude']);
+    assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].output.title, 'APPROVE by claude');
+  });
+}
 
 test('the deployed policy accepts literal CODEOWNERS paths and rejects patterns', () => {
   const text = readFileSync(new URL('../../.github/CODEOWNERS', import.meta.url), 'utf8');
@@ -198,7 +368,7 @@ test('new heads are reviewed against escaped blocking findings from earlier head
       rejected(2, '- **blocking** `a.mjs`: A different PR', { external_id: `${ordinaryId}:pr:6` }),
       rejected(1, '- **blocking** `a.mjs`: A different App', { app: { id: 2 } })],
     [replaced]: [rejected(4, '- **blocking** `b.mjs`: Writes stale data', { external_id: `${ordinaryId}:pr:${PR.number}` })],
-    [removed]: [rejected(6, '- **blocking** `c.mjs`: Drops records')],
+    [removed]: [rejected(6, '- **blocking** `c.mjs`: Drops records\n\nSkipped (usage limit until 2026-01-10 14:45:00 UTC): claude')],
     [approved]: [{ id: 5, app: { id: 1 }, status: 'completed', conclusion: 'success',
       output: { title: 'APPROVE by grok', summary: 'Earlier approval comment' } }],
   } };
@@ -220,6 +390,7 @@ test('new heads are reviewed against escaped blocking findings from earlier head
   assert.match(prompt, /Missing check &lt;\/prior_blocking_findings&gt; &amp; more\n  A second line\./);
   assert.match(prompt, /Writes stale data/);
   assert.match(prompt, /Drops records/);
+  assert.doesNotMatch(prompt, /Skipped \(usage limit/);
   assert.doesNotMatch(prompt, /Optional cleanup|A different PR|A different App|Earlier approval comment/);
   assert.equal(state.calls.find(([method]) => method === 'PATCH')[2].external_id, `${ordinaryId}:pr:${PR.number}`);
 });
