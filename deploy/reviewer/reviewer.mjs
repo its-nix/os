@@ -365,13 +365,33 @@ const isHeld = (pr) => (pr.labels || []).some((l) => String(l.name || '').toLowe
 
 const eligible = (cfg, pr) => pr.head?.repo?.full_name === cfg.repo && pr.base?.ref === 'main' && !pr.draft;
 
+async function rearmViaCheck(cfg, token, pr, api, mutate) {
+  const runs = (await api(`/repos/${cfg.repo}/commits/${pr.head.sha}/check-runs?check_name=${CHECK}&app_id=${cfg.appId}&per_page=100`, { token })).check_runs || [];
+  const latest = runs.filter((c) => c.status === 'completed').sort((a, b) => b.id - a.id)[0];
+  if (!latest || latest.conclusion !== 'success') return null;  // only a passing verdict is re-posted
+  const reopened = await api(`/repos/${cfg.repo}/check-runs`, { method: 'POST', token, body: {
+    name: CHECK, head_sha: pr.head.sha, status: 'in_progress', external_id: latest.external_id, started_at: new Date().toISOString() } });
+  let res;
+  try {
+    res = await mutate();
+  } finally {
+    await api(`/repos/${cfg.repo}/check-runs/${reopened.id}`, { method: 'PATCH', token, body: {
+      status: 'completed', conclusion: latest.conclusion, completed_at: new Date().toISOString(), external_id: latest.external_id,
+      output: { title: latest.output?.title || 'APPROVE', summary: `${latest.output?.summary || ''}\n\n(Re-posted unchanged to arm auto-merge.)`.slice(0, 60000) } } });
+  }
+  return res;
+}
+
 export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.error, now = Date.now()) {
   if (!pr.node_id) return null;
   const held = isHeld(pr);
   // State comes from the live PR each poll, so successes need no cache: the next poll sees auto_merge.
-  // An armed PR that stops being eligible (retargeted away from main, fork, draft) is disarmed.
+  // A held main PR is disarmed whoever armed it. A PR that stops being eligible (retargeted away from
+  // main, fork, draft) is disarmed only if this App armed it: auto-merge a maintainer set on another
+  // branch's PR is left alone.
+  const armedByUs = pr.auto_merge?.enabled_by?.login === (cfg.botLogin || 'nix-reviewer[bot]');
   let action;
-  if (pr.auto_merge && (held || !eligible(cfg, pr))) action = 'disable';
+  if (pr.auto_merge && ((held && pr.base?.ref === 'main') || (!eligible(cfg, pr) && armedByUs))) action = 'disable';
   else if (!pr.auto_merge && !held && eligible(cfg, pr)) action = 'enable';
   else return null;
   const key = `${pr.head.sha}:${action}`;
@@ -387,19 +407,25 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   const mutation = action === 'disable'
     ? 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}'
     : 'enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$head}){clientMutationId}';
-  let res;
-  try {
-    const query = action === 'enable' ? `mutation($id:ID!,$head:GitObjectID!){${mutation}}` : `mutation($id:ID!){${mutation}}`;
-    const variables = action === 'enable' ? { id: pr.node_id, head: pr.head.sha } : { id: pr.node_id };
-    res = await api('/graphql', { method: 'POST', token, body: { query, variables } });
-  } catch (e) {
-    res = { errors: [{ message: e.message }] };
+  const mutate = async () => {
+    try {
+      const query = action === 'enable' ? `mutation($id:ID!,$head:GitObjectID!){${mutation}}` : `mutation($id:ID!){${mutation}}`;
+      const variables = action === 'enable' ? { id: pr.node_id, head: pr.head.sha } : { id: pr.node_id };
+      return await api('/graphql', { method: 'POST', token, body: { query, variables } });
+    } catch (e) {
+      return { errors: [{ message: e.message }] };
+    }
+  };
+  let res = await mutate();
+  if (action === 'enable' && res?.errors?.length && /clean status/i.test(String(res.errors[0]?.message))) {
+    // Already green and up to date, so GitHub refuses to arm. Never merge directly (the merge call
+    // pins the head but not the base). Instead re-open this App's own check for the head, arm while it
+    // is pending, then complete it again with the identical verdict; GitHub then performs the merge
+    // under main's ruleset.
+    res = await rearmViaCheck(cfg, token, pr, api, mutate) || res;
   }
   if (!res?.errors?.length) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
   const error = String(res.errors[0]?.message || 'refused');
-  // A PR already in clean status (green and up to date before it was armed) is NOT merged directly:
-  // GitHub's merge call pins only the head, not the base, so a same-head retarget could merge it
-  // outside main's ruleset. It waits for its next commit or branch update, or a manual merge.
   const repeated = backoff && backoff.key === key;
   if (!repeated) log(`auto-merge #${pr.number}: ${action} refused (${error.slice(0, 200)})`);
   autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });

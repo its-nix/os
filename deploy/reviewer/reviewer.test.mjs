@@ -397,22 +397,37 @@ test('always-merge: a failed disable (hold brake) is retried on the very next po
   assert.equal(await ensureAutoMerge(CFG, 't', { ...held, number: 13 }, empty, () => {}, 4), false);
 });
 
-test('always-merge: an already-green PR is never merged directly (merge cannot pin the base)', async () => {
+test('always-merge: an already-green PR is armed by re-opening our own check, never merged directly', async () => {
   const calls = [];
   const sha = '7'.repeat(40);
+  let graphql = 0;
   const api = async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
-    if (path === '/graphql') return { errors: [{ message: 'Pull request is in clean status' }] };
-    return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' },
-      head: { sha, repo: { full_name: 'its-nix/os' } } };
+    if (path === '/graphql') { graphql++; return graphql === 1 ? { errors: [{ message: 'Pull request is in clean status' }] } : { data: {} }; }
+    if (path.includes('/check-runs?')) return { check_runs: [{ id: 5, status: 'completed', conclusion: 'success', external_id: 'v1:ordinary:c', output: { title: 'APPROVE by opencode', summary: 'ok' } }] };
+    if (method === 'POST') return { id: 6 };
+    return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' }, head: { sha, repo: { full_name: 'its-nix/os' } } };
   };
   const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
     head: { sha, repo: { full_name: 'its-nix/os' } } };
-  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), false);
-  assert.ok(!calls.some(([m]) => m === 'PUT'));
-  const enable = calls.find(([, p]) => p === '/graphql')[2];
-  assert.match(enable.query, /expectedHeadOid:\$head/);
-  assert.equal(enable.variables.head, sha);
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), 'enabled');
+  assert.ok(!calls.some(([m, p]) => m === 'PUT' || p.endsWith('/merge')));
+  const post = calls.find(([m, p]) => m === 'POST' && p.endsWith('/check-runs'))[2];
+  assert.equal(post.status, 'in_progress');
+  const patch = calls.find(([m]) => m === 'PATCH')[2];
+  assert.equal(patch.conclusion, 'success');
+  assert.equal(patch.external_id, 'v1:ordinary:c');
+  assert.match(patch.output.title, /APPROVE by opencode/);
+  assert.match(calls.filter(([, p]) => p === '/graphql').at(-1)[2].query, /expectedHeadOid:\$head/);
+});
+
+test('always-merge: a non-main PR armed by someone else is left alone; one armed by us is disarmed', async () => {
+  const calls = [];
+  const ok = async (path, { method = 'GET', body } = {}) => { calls.push([method, path, body]); return { data: {} }; };
+  const release = { number: 40, node_id: 'PR_40', draft: false, base: { ref: 'release' }, labels: [],
+    head: { sha: 'c'.repeat(40), repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...release, auto_merge: { enabled_by: { login: 'maintainer' } } }, ok), null);
+  assert.equal(await ensureAutoMerge(CFG, 't', { ...release, auto_merge: { enabled_by: { login: 'nix-reviewer[bot]' } } }, ok), 'disabled');
 });
 
 test('auto-merge PRs left behind are updated with the exact head; others are left alone', async () => {
@@ -457,7 +472,7 @@ test('always-merge: base retargeting is re-validated live; an armed PR leaving m
   };
   assert.equal(await ensureAutoMerge(CFG, 't', listed, retargeted), null);  // live base is not main: never armed
   assert.ok(!calls.some(([m, p]) => p === '/graphql' || m === 'PUT'));
-  const armedElsewhere = { ...listed, base: { ref: 'release' }, auto_merge: { merge_method: 'squash' } };
+  const armedElsewhere = { ...listed, base: { ref: 'release' }, auto_merge: { merge_method: 'squash', enabled_by: { login: 'nix-reviewer[bot]' } } };
   const ok = async (path, { method = 'GET', body } = {}) => { calls.push([method, path, body]); return { data: {} }; };
   assert.equal(await ensureAutoMerge(CFG, 't', armedElsewhere, ok), 'disabled');
   assert.match(calls.at(-1)[2].query, /disablePullRequestAutoMerge/);
