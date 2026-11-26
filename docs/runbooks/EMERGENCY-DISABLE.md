@@ -37,7 +37,7 @@ gh pr ready <number> --undo                  # per PR, when the guarantee matter
 - **Per-PR only.** This disarms exactly the PRs listed above: a PR opened or retargeted to `main` while the reviewer runs is armed on its next poll (about a minute), and a merge that slipped in just before the hold can still be deploying — the deploy pause is layer 6.
 - For a sustained freeze, stop what arms merges, then draft the already-armed PRs for the guarantee:
   - `docker stop --time 90 nixos-reviewer` — the reviewer is what enables squash auto-merge (`ensureAutoMerge` in `deploy/reviewer/reviewer.mjs`); layer 6 stops it anyway, doing it here freezes new arming while the rest of the stack still runs.
-  - Or turn auto-merge off at the repository level — a repo settings change (Settings → General → Allow auto-merge): `gh api -X PATCH repos/its-nix/os -f allow_auto_merge=false` (restore with `-f allow_auto_merge=true`). Do not rely on this for PRs already armed; draft those too.
+  - Or turn auto-merge off at the repository level — a repo settings change (Settings → General → Allow auto-merge): `gh api -X PATCH repos/its-nix/os -F allow_auto_merge=false` (restore with `-F allow_auto_merge=true`; `-F` sends a boolean, `-f` would send a string). Verify with `gh api repos/its-nix/os -q .allow_auto_merge`. Do not rely on this for PRs already armed; draft those too.
 - A merge freeze never pauses the deploy pipeline itself: the scheduled 05:17 UTC reconcile deploys current `main` regardless of merges. Apply and verify the deploy pause in layer 6 independently.
 - **Verify**: each open PR shows the `hold` label (and draft state where applied); `gh pr view <number> --json autoMergeRequest` prints `null` once a PR is disarmed.
 - **Resume**: `gh pr edit <number> --remove-label hold` and `gh pr ready <number>`. A PR that was already green gets a fresh independent review before auto-merge re-arms; the ruleset gate is never skipped ([AUTHORITY](../AUTHORITY.md)).
@@ -114,16 +114,17 @@ systemctl is-active nixos-recovery.service          # a capture the timer alread
 
 **The GitHub deploy.** Do not disable the whole `ci` workflow: that also stops PR CI, including the `verify` check the merge ruleset requires, so every open PR stalls. Pause the deploy job itself. It runs only for `main` (push, schedule, manual dispatch) inside the `vps` GitHub environment (`.github/workflows/ci.yml`), which gives two levers:
 
-- Require an approval in that environment (repo Settings → Environments → `vps` → Required reviewers). Every deploy — merge-triggered, the scheduled 05:17 UTC reconcile, a manual dispatch — then waits for an approval you simply do not grant, and PR CI is untouched. The same gate can be set through the environments REST API (verify the exact call before use).
+- First record the environment's current protection so resume can restore it exactly: `gh api repos/its-nix/os/environments/vps > vps-environment-before.json` (keep it off the repo). Then require an approval in that environment (repo Settings → Environments → `vps` → Required reviewers). Every deploy — merge-triggered, the scheduled 05:17 UTC reconcile, a manual dispatch — then waits for an approval you simply do not grant, and PR CI is untouched. The same gate can be set through the environments REST API (verify the exact call before use).
 - Cancel deploy runs already queued or in progress — they serialize in the `nix-os-vps` concurrency group (`cancel-in-progress: false`), so cancel each:
 
 ```bash
-gh run list --workflow ci --branch main --status queued      # runs waiting to deploy
-gh run list --workflow ci --branch main --status in_progress # a deploy executing now
+# every run not yet completed: queued, in_progress, waiting (environment gate), pending, requested
+gh run list --workflow ci --branch main --limit 50 --json databaseId,status,event \
+  -q '.[] | select(.status != "completed")'
 gh run cancel <run-id>
 ```
 
-- On the VPS, confirm no deploy is executing before stopping containers: `sudo cat /srv/nix-clean/deployment-attempt.json` — `"status": "deploying"` means one is in flight (deploys serialize with the capture on `/run/lock/nix-os-deploy.lock`, and a deploy runs `compose up`, which restarts what you stop; the file reads `healthy` or `failed` once it ends). A cancelled GitHub run may leave the remote deploy executing — trust this file, not the run state. Let it finish, then re-check.
+- On the VPS, confirm remote deploy work has drained before stopping containers. A deploy runs `compose up`, which restarts what you stop. `deployment-attempt.json` alone is not enough: a deploy that was dispatched but is still waiting for `/run/lock/nix-os-deploy.lock` leaves the previous attempt's `healthy` or `failed` visible. Check for any deploy process, running or waiting on the lock: `pgrep -af deploy-os` must print nothing, and `sudo cat /srv/nix-clean/deployment-attempt.json` must not read `"status": "deploying"`. A cancelled GitHub run may leave the remote deploy executing; trust these checks, not the run state. If one is running, let it finish, then re-check both.
 - Deploys restart stopped containers; that is why this pause comes before the runtimes. Disabling the whole workflow (Actions → disable workflow) remains the blunt last resort — it stops PR CI too.
 
 **The runtimes.**
@@ -135,7 +136,7 @@ docker stop --time 90 nixos-hermes nixos-hindsight
 
 - `--time 90` matches the deploy's own stop grace; Hermes and T3 shut down gracefully inside it. A forced kill after the timeout still loses no state.
 - **Verify**: `docker ps --filter name=nixos-` lists nothing running.
-- **Resume**: start the core runtimes — `docker start nixos-hindsight nixos-hermes nixos-t3 nixos-reviewer` — and the Twenty containers **only after the `ENABLED` marker is back** (layer 5 resume); started without it, the next deploy stops them again and the nightly capture refuses. Then `sudo systemctl enable --now nixos-recovery.timer` — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running — and lift the GitHub deploy pause above. The reviewed alternative to all of it is one deploy of current main, which starts and health-checks the whole stack.
+- **Resume**: start the core runtimes — `docker start nixos-hindsight nixos-hermes nixos-t3` — and leave `nixos-reviewer` stopped if stopping it is your merge freeze (layer 1; it starts at resume step 6), and the Twenty containers **only after the `ENABLED` marker is back** (layer 5 resume); started without it, the next deploy stops them again and the nightly capture refuses. Then `sudo systemctl enable --now nixos-recovery.timer` — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running — and lift the GitHub deploy pause above. The reviewed alternative to all of it is one deploy of current main, which starts and health-checks the whole stack.
 - Stopped containers and everything on disk survive. Unpushed commits in T3 worktrees are only at risk on host loss, not on a stop.
 
 ## 7. Revoke credentials at the provider
@@ -174,9 +175,9 @@ Resume in this order, not in any order — the Twenty marker, the containers and
 
 1. If any credential was revoked (layer 7), re-issue it first ([PROVIDER-AUTH-RECOVERY](PROVIDER-AUTH-RECOVERY.md)); nothing else resumes a dead login.
 2. Restore the Twenty `ENABLED` marker (layer 5 resume) if the CRM was enabled before the incident, and verify it. This comes before any deploy or container start: with the marker absent, the deploy stops the CRM again (`crm_enabled` in `scripts/deploy-os.py`).
-3. Start the containers (layer 6 resume): the core runtimes, then the Twenty containers — only after step 2. A single deploy of current main starts and health-checks the whole stack instead.
+3. Start the containers (layer 6 resume): the core runtimes, then the Twenty containers — only after step 2. If stopping `nixos-reviewer` is your merge freeze, do not start it here, and do not use a deploy (a deploy starts the reviewer too) unless you first switch the freeze to repo auto-merge off (layer 1) and verify it. Otherwise a single deploy of current main starts and health-checks the whole stack.
 4. Re-enable the host timers: the approval timer (layer 2), then the recovery timer — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running.
-5. Lift the GitHub deploy pause (layer 6): remove the `vps` environment gate — or re-enable the `ci` workflow if it was disabled outright.
+5. Lift the GitHub deploy pause (layer 6): restore the `vps` environment's protection to what `vps-environment-before.json` recorded (if it already had required reviewers, keep them; remove only the reviewer you added), and verify with `gh api repos/its-nix/os/environments/vps`. Or re-enable the `ci` workflow if it was disabled outright.
 6. Lift the merge freeze (layer 1): restore repo auto-merge if it was disabled, `docker start nixos-reviewer` if it was stopped separately, then unhold and mark ready each PR.
 
 Layers 3 and 4 (ventures, Hermes cron) can resume in either order once Hermes is running; their own commands are enough.
