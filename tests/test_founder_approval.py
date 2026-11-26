@@ -44,7 +44,7 @@ class FakeTodoist(worker.Todoist):
         if path == 'tasks':
             return {'results': list(self.active.values()), 'next_cursor': None}
         if path == 'tasks/completed/by_completion_date':
-            return {'items': list(self.completed.values()), 'next_cursor': None}
+            return {'items': list(self.completed.values())}  # the live API omits next_cursor here
         if path == 'sync':
             [command] = json.loads(data['commands'])
             assert data['resource_types'] == '[]'

@@ -167,7 +167,7 @@ class Todoist:
         for _ in range(20):
             page = self.call(endpoint, params)
             yield from (task for task in page[field] if task['project_id'] == self.project)
-            cursor = page['next_cursor']
+            cursor = page.get('next_cursor')  # absent on the last page of completed tasks
             if not cursor:
                 return
             params['cursor'] = cursor
