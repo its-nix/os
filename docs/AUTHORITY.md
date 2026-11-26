@@ -18,6 +18,14 @@ After reviewing the exact diff, the founder or a founder-authorized root operato
 sha='<full head SHA>'; [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && install -o root -g root -m 0400 /dev/null "/srv/nix-clean/reviewer/approvals/$sha"
 ```
 
+**Founder-accepted risk.** When the founder has deliberately accepted a policy risk for a change (for example a credential exposure traded for speed), the approval file for that exact head can carry it as one or more `accepted-risk: <decision id and what is accepted>` lines:
+
+```bash
+sha='<full head SHA>'; [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && printf 'accepted-risk: %s\n' '<D-number: risk the founder accepted>' | install -o root -g root -m 0400 /dev/stdin "/srv/nix-clean/reviewer/approvals/$sha"
+```
+
+The reviewer is told the accepted risk, marked as trusted founder input separate from the untrusted PR text. It must not block solely because the change implements that risk, and it still blocks implementation defects and any risk beyond what is stated. The check result prints the accepted risk. Use it only for a decision the founder actually took and recorded in docs/REFACTOR.md.
+
 The reviewer retries on its next poll after approval. If approval is removed while the PR is open, the next poll replaces any passing protected verdict with a failure. A new commit needs its own approval. The file authorizes protected-path changes and the model review must still pass. The App excludes the declared builder, chooses a reviewer per head SHA and rechecks both the head and base before publishing the model verdict. It considers only the latest completed check for that head and reviews again if the policy version or base has changed. Legacy checks without a policy and base binding are reviewed again. A missing reviewer triggers a 30-minute retry for the same policy and base. The App leaves drafts, forks and non-main PRs without an approving check, fails incomplete, binary or oversized diffs, reads the diff through the GitHub API and runs the review CLI with tools disabled.
 
 Ordinary business events (CRM updates, analytics reads, approved procedure runs) are not PRs.

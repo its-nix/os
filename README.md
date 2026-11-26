@@ -9,7 +9,7 @@ Each row is as of its evidence date. Founder items were requested on 2026-11-23 
 | Capability | Status | Evidence / where |
 | --- | --- | --- |
 | Hermes runtime (one container, multi-profile, native Kanban/Cron) | **Running** | `nixos-hermes`, official pinned 0.23.0; profiles hot-added without restart |
-| Venture Factory + dynamic venture leads (C) | **Running**, board progress during LNX pause unproven | On 2026-11-26 the Factory created, paused, resumed and retired a disposable venture. The `demo` distillation loop completed while all LNX cron jobs were paused. Its two completed cards stayed in place. [Live evidence](docs/REFACTOR.md#4-evidence-ledger) |
+| Venture Factory + dynamic venture leads (C) | **Verified** | On 2026-11-26 the Factory created, paused, resumed and retired a disposable venture. In a separate run, the `demo` outcome loop completed card `t_02b38370` and wrote the internal positioning note while all three LNX cron jobs were paused. [Live evidence](docs/REFACTOR.md#4-evidence-ledger) |
 | T3 Code (Dockerized, 5 harnesses) | **Running** | `nixos-t3` (v0.1.11 + Claude Code, Codex, OpenCode, Antigravity CLI, Grok); isolated network, no Docker socket or Hermes state |
 | Hermes → T3 delegation (D) | **Verified** for concurrent worktrees | On 2026-11-26 the `demo` lead launched two full-access Codex tasks through its registered T3 MCP. Scratch work overlapped for 54 seconds across two worktrees. [Live evidence](docs/REFACTOR.md#4-evidence-ledger) |
 | Harness logins inside T3 | Codex verified on 2026-11-26 | The two delegated Codex tasks ran successfully. Other harness logins await verification. |
