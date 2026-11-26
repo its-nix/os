@@ -386,32 +386,20 @@ export async function ensureAutoMerge(cfg, token, pr, api = gh, log = console.er
   for (const [number, entry] of autoMergeBackoff) if (now >= entry.until) autoMergeBackoff.delete(number);
   const mutation = action === 'disable'
     ? 'disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}'
-    : 'enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}';
+    : 'enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$head}){clientMutationId}';
   let res;
   try {
-    res = await api('/graphql', { method: 'POST', token, body: { query: `mutation($id:ID!){${mutation}}`, variables: { id: pr.node_id } } });
+    const query = action === 'enable' ? `mutation($id:ID!,$head:GitObjectID!){${mutation}}` : `mutation($id:ID!){${mutation}}`;
+    const variables = action === 'enable' ? { id: pr.node_id, head: pr.head.sha } : { id: pr.node_id };
+    res = await api('/graphql', { method: 'POST', token, body: { query, variables } });
   } catch (e) {
     res = { errors: [{ message: e.message }] };
   }
   if (!res?.errors?.length) { autoMergeBackoff.delete(pr.number); return action === 'disable' ? 'disabled' : 'enabled'; }
   const error = String(res.errors[0]?.message || 'refused');
-  if (action === 'enable' && /clean status/i.test(error)) {
-    // Already green and up to date: GitHub refuses auto-merge, so merge now, pinned to this head.
-    // The ruleset still gates the merge; a stale or red head is refused by GitHub.
-    try {
-      // Re-read the live PR right before merging: a hold label or draft added since the listing wins.
-      const live = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
-      if (live.head?.sha !== pr.head.sha || !eligible(cfg, live) || isHeld(live) || live.state !== 'open') return null;
-      const result = await api(`/repos/${cfg.repo}/pulls/${pr.number}/merge`, { method: 'PUT', token, body: { merge_method: 'squash', sha: pr.head.sha } });
-      if (result?.merged !== true) throw new Error('merge not confirmed');
-      autoMergeBackoff.delete(pr.number);
-      return 'merged';
-    } catch (e) {
-      log(`auto-merge #${pr.number}: direct merge refused (${String(e.message).slice(0, 120)})`);
-      autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });
-      return false;
-    }
-  }
+  // A PR already in clean status (green and up to date before it was armed) is NOT merged directly:
+  // GitHub's merge call pins only the head, not the base, so a same-head retarget could merge it
+  // outside main's ruleset. It waits for its next commit or branch update, or a manual merge.
   const repeated = backoff && backoff.key === key;
   if (!repeated) log(`auto-merge #${pr.number}: ${action} refused (${error.slice(0, 200)})`);
   autoMergeBackoff.set(pr.number, { key, until: now + RETRY_MS });
@@ -426,7 +414,8 @@ export async function keepUpToDate(cfg, token, pr, api = gh) {
   if (isHeld(pr)) return null;
   const full = await api(`/repos/${cfg.repo}/pulls/${pr.number}`, { token });
   if (full.mergeable_state !== 'behind' || full.head.sha !== pr.head.sha) return null;
-  if (!full.auto_merge || full.draft || isHeld(full)) return null;  // live state may have changed since the listing
+  // Live state may have changed since the listing: only an armed, held-free main PR from this repo.
+  if (!full.auto_merge || !eligible(cfg, full) || isHeld(full)) return null;
   await api(`/repos/${cfg.repo}/pulls/${pr.number}/update-branch`, { method: 'PUT', token, body: { expected_head_sha: pr.head.sha } });
   return 'updated';
 }
@@ -436,7 +425,7 @@ async function loop(cfg) {
     try {
       const token = await installationToken(cfg);
       const prs = [];
-      for (let page = 1; page <= 10; page++) {  // up to 1000 open PRs; every eligible PR is handled
+      for (let page = 1; ; page++) {  // follow pagination to the end: every open PR is handled
         // All bases: a PR retargeted away from main must still be seen so its auto-merge is disarmed.
         const batch = await gh(`/repos/${cfg.repo}/pulls?state=open&per_page=100&page=${page}`, { token });
         prs.push(...batch);

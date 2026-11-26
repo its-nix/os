@@ -354,7 +354,7 @@ test('always-merge: live state drives enable/disable; hold toggles on one head; 
     head: { sha, repo: { full_name: 'its-nix/os' } }, labels: [], auto_merge: null };
   const on = { merge_method: 'squash' };
   assert.equal(await ensureAutoMerge(CFG, 't', base, ok), 'enabled');
-  assert.match(calls.find(([p]) => p === '/graphql')[1].query, /enablePullRequestAutoMerge\(input:\{pullRequestId:\$id,mergeMethod:SQUASH\}\)/);
+  assert.match(calls.find(([p]) => p === '/graphql')[1].query, /enablePullRequestAutoMerge\(input:\{pullRequestId:\$id,mergeMethod:SQUASH,expectedHeadOid:\$head\}\)/);
   assert.equal(await ensureAutoMerge(CFG, 't', { ...base, auto_merge: on }, ok), null);
   // Same head: hold -> disabled, unhold -> enabled again, re-hold -> disabled again.
   assert.equal(await ensureAutoMerge(CFG, 't', { ...base, labels: [{ name: 'HOLD' }], auto_merge: on }, ok), 'disabled');
@@ -397,27 +397,22 @@ test('always-merge: a failed disable (hold brake) is retried on the very next po
   assert.equal(await ensureAutoMerge(CFG, 't', { ...held, number: 13 }, empty, () => {}, 4), false);
 });
 
-test('always-merge: an already-green PR is merged directly, pinned to its head, only if live state allows and GitHub confirms', async () => {
+test('always-merge: an already-green PR is never merged directly (merge cannot pin the base)', async () => {
   const calls = [];
-  let live, merged = true;
+  const sha = '7'.repeat(40);
   const api = async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
     if (path === '/graphql') return { errors: [{ message: 'Pull request is in clean status' }] };
-    if (method === 'GET') return { base: { ref: 'main' }, ...live, head: { ...live.head, repo: { full_name: 'its-nix/os' } } };
-    return { merged };
+    return { state: 'open', draft: false, labels: [], auto_merge: null, base: { ref: 'main' },
+      head: { sha, repo: { full_name: 'its-nix/os' } } };
   };
   const pr = { number: 11, node_id: 'PR_3', draft: false, base: { ref: 'main' }, labels: [], auto_merge: null,
-    head: { sha: '7'.repeat(40), repo: { full_name: 'its-nix/os' } } };
-  live = { state: 'open', draft: false, labels: [], head: { sha: pr.head.sha } };
-  assert.equal(await ensureAutoMerge(CFG, 't', pr, api), 'merged');
-  assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/11/merge', { merge_method: 'squash', sha: pr.head.sha }]);
-  calls.length = 0;
-  live = { ...live, labels: [{ name: 'hold' }] };  // held since the listing: never merged
-  assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, number: 14 }, api), null);
+    head: { sha, repo: { full_name: 'its-nix/os' } } };
+  assert.equal(await ensureAutoMerge(CFG, 't', pr, api, () => {}), false);
   assert.ok(!calls.some(([m]) => m === 'PUT'));
-  live = { ...live, labels: [] };
-  merged = false;  // GitHub did not merge: not reported as merged
-  assert.equal(await ensureAutoMerge(CFG, 't', { ...pr, number: 15 }, api, () => {}), false);
+  const enable = calls.find(([, p]) => p === '/graphql')[2];
+  assert.match(enable.query, /expectedHeadOid:\$head/);
+  assert.equal(enable.variables.head, sha);
 });
 
 test('auto-merge PRs left behind are updated with the exact head; others are left alone', async () => {
@@ -426,7 +421,7 @@ test('auto-merge PRs left behind are updated with the exact head; others are lef
   const calls = [];
   const api = (state) => async (path, { method = 'GET', body } = {}) => {
     calls.push([method, path, body]);
-    return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha }, auto_merge: pr.auto_merge, labels: [] } : {};
+    return method === 'GET' ? { mergeable_state: state, head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge, labels: [], base: { ref: 'main' } } : {};
   };
   assert.equal(await keepUpToDate(CFG, 't', pr, api('behind')), 'updated');
   assert.deepEqual(calls.at(-1), ['PUT', '/repos/its-nix/os/pulls/9/update-branch', { expected_head_sha: pr.head.sha }]);
@@ -435,9 +430,18 @@ test('auto-merge PRs left behind are updated with the exact head; others are lef
   assert.equal(await keepUpToDate(CFG, 't', { ...pr, labels: [{ name: 'hold' }] }, api('behind')), null);
   const liveHeld = async (path, { method = 'GET' } = {}) => {
     calls.push([method, path]);
-    return { mergeable_state: 'behind', head: { sha: pr.head.sha }, auto_merge: pr.auto_merge, labels: [{ name: 'hold' }] };
+    return { mergeable_state: 'behind', head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge,
+      labels: [{ name: 'hold' }], base: { ref: 'main' } };
   };
   assert.equal(await keepUpToDate(CFG, 't', pr, liveHeld), null);  // labelled hold after the listing
+  const liveRetargeted = async (path, { method = 'GET' } = {}) => {
+    calls.push([method, path]);
+    return { mergeable_state: 'behind', head: { sha: pr.head.sha, repo: { full_name: 'its-nix/os' } }, auto_merge: pr.auto_merge,
+      labels: [], base: { ref: 'release' } };
+  };
+  const before = calls.filter(([m]) => m === 'PUT').length;
+  assert.equal(await keepUpToDate(CFG, 't', pr, liveRetargeted), null);  // same head, retargeted: never updated
+  assert.equal(calls.filter(([m]) => m === 'PUT').length, before);
 });
 
 test('always-merge: base retargeting is re-validated live; an armed PR leaving main is disarmed', async () => {
