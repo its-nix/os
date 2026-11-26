@@ -41,4 +41,6 @@ Agents prepare these and never perform them:
 
 The founder executes the action, or approves a narrowly bounded method, and the receipt is recorded on the originating Kanban card. A completed Todoist task is **not** an authenticated approval and never triggers an effect by itself. A missing reply is not approval; an expired request is closed. Agents check for an existing receipt (by action id) before queueing or executing anything, and never blindly retry an ambiguous irreversible action.
 
+The founder's own Todoist account holds the queue. Hermes submits a bounded request to a local spool and reads a status file for that request. The VPS host worker holds the account token outside container mounts and confines Todoist reads and writes to the configured private `Nix` project. Expiry is the end of the stated UTC date. Preview and effect are rendered as literal text in the description. See the [setup, recovery and acceptance H runbook](FOUNDER-APPROVAL-QUEUE.md).
+
 Credentials that could perform these effects are not given to Hermes or T3 runtimes. A prompt rule does not enforce anything that the runtime credential allows.
