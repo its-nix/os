@@ -8,12 +8,12 @@ SSH access is the `nixos` operator alias used by the other guides. GitHub steps 
 
 | # | Layer | Stops | Reversible by |
 | --- | --- | --- | --- |
-| 1 | [Hold PR auto-merge](#1-hold-pr-auto-merge) | merges to `main`, so CI deploys | remove label / mark ready |
+| 1 | [Hold PR auto-merge](#1-hold-pr-auto-merge) | merges of the held PRs (per-PR; a sustained freeze needs more) | remove label / mark ready |
 | 2 | [Stop the approval worker timer](#2-stop-the-founder-approval-worker-timer) | new Todoist approval tasks | start the timer |
 | 3 | [Pause each venture](#3-pause-each-venture) | venture lead cron loops | `venture.py resume` |
 | 4 | [Pause remaining Hermes cron](#4-pause-remaining-hermes-cron-jobs) | LNX/ops loops per profile | `cron resume` |
 | 5 | [Disable Twenty CRM](#5-disable-twenty-crm) | CRM intake and worker | restore marker, deploy |
-| 6 | [Stop containers](#6-stop-containers) | everything, including the gateway | `docker start`, re-enable timers |
+| 6 | [Stop containers](#6-stop-containers) | everything, including the gateway | `docker start`, re-enable timers, lift the deploy pause |
 | 7 | [Revoke credentials](#7-revoke-credentials-at-the-provider) | the credentials themselves | re-issue each login |
 
 ## Hard rules
@@ -25,6 +25,8 @@ SSH access is the `nixos` operator alias used by the other guides. GitHub steps 
 
 ## 1. Hold PR auto-merge
 
+This is an auto-merge freeze, not a merge block.
+
 Holding takes effect on the reviewer's next poll (about a minute); an already-armed PR whose checks finish inside that window can still merge. **Converting to a draft is the guarantee**: GitHub never merges drafts.
 
 ```bash
@@ -34,8 +36,14 @@ gh pr ready <number> --undo                  # per PR, when the guarantee matter
 ```
 
 - Scope (`deploy/reviewer/reviewer.mjs`): every eligible PR — same repository, base `main`, not a draft. `HOLD_LABEL` is `hold`.
-- This also stops main→VPS deploys: CI deploys only on merges to `main`.
-- **Verify**: each open PR shows the `hold` label (and draft state where applied).
+- **Per-PR only.** This disarms exactly the PRs listed above: a PR opened or retargeted to `main` while the reviewer runs is armed on its next poll (about a minute), and a merge that slipped in just before the hold can still be deploying — the deploy pause is layer 6.
+- This layer stops **automatic** merges only. Anyone with write access (including an agent using the founder's token) can still merge an eligible PR by hand; if that is the risk, revoke the token (layer 7) or add a temporary ruleset restriction, and verify it with `gh api repos/its-nix/os/rulesets`.
+- For a sustained auto-merge freeze, first record the current setting (`gh api repos/its-nix/os -q .allow_auto_merge`, keep the value for resume), then turn auto-merge off at the repository level and draft the already-armed PRs. This is the freeze; do not rely on a stopped reviewer instead, because a recovery capture (`ExecStopPost`) or any deploy starts `nixos-reviewer` again:
+  - A repo settings change (Settings → General → Allow auto-merge): `gh api -X PATCH repos/its-nix/os -F allow_auto_merge=false` (restore with `-F allow_auto_merge=true`; `-F` sends a boolean, `-f` would send a string). Verify with `gh api repos/its-nix/os -q .allow_auto_merge`, which must print `false`.
+  - It does not disarm PRs already armed; draft those (`gh pr ready <number> --undo`).
+  - Stopping `nixos-reviewer` (`docker stop --time 90 nixos-reviewer`) is optional on top: it stops new reviews, but it is not a freeze on its own.
+- A merge freeze never pauses the deploy pipeline itself: the scheduled 05:17 UTC reconcile deploys current `main` regardless of merges. Apply and verify the deploy pause in layer 6 independently.
+- **Verify**: each open PR shows the `hold` label (and draft state where applied); `gh pr view <number> --json autoMergeRequest -q '.autoMergeRequest == null'` prints `true` once a PR is disarmed.
 - **Resume**: `gh pr edit <number> --remove-label hold` and `gh pr ready <number>`. A PR that was already green gets a fresh independent review before auto-merge re-arms; the ruleset gate is never skipped ([AUTHORITY](../AUTHORITY.md)).
 
 ## 2. Stop the founder approval worker timer
@@ -47,7 +55,8 @@ sudo systemctl stop nixos-approval.timer              # pause now
 sudo systemctl disable --now nixos-approval.timer      # also keep it off across reboot
 ```
 
-- **Verify**: `systemctl is-active nixos-approval.timer` prints `inactive`.
+- Stopping the timer does not stop a worker run the timer already triggered. The service is a short oneshot (`TimeoutStartSec=75s`, `scripts/approval/nixos-approval.service`) that only reconciles the spool into Todoist tasks: a run in flight is safe to wait out, and `sudo systemctl stop nixos-approval.service` ends it — interrupted or not, the next run reconciles by action id and duplicates nothing.
+- **Verify**: `systemctl is-active nixos-approval.timer nixos-approval.service` — both print `inactive`.
 - **Resume**: `sudo systemctl enable --now nixos-approval.timer` (or `start` if still enabled). The worker reconciles existing requests by action id, so nothing is duplicated.
 
 ## 3. Pause each venture
@@ -91,18 +100,38 @@ sudo mv /srv/nix-clean/twenty/ENABLED /srv/nix-clean/twenty/ENABLED.off
 - The deploy does the same thing from the marker alone: with `ENABLED` absent it stops (never removes) any running Twenty container (`crm_enabled` in `scripts/deploy-os.py`).
 - Keep the marker move **temporary**: the nightly capture refuses while `twenty/` sits in the state root without its flag. Either restore the marker before the next 03:17 UTC run, or stop the recovery timer (layer 6). To retire the CRM for good instead, move the whole `twenty/` directory out of the root together with the flag ([DOCKERHUB-RECOVERY](../DOCKERHUB-RECOVERY.md)).
 - **Verify**: `docker ps --filter name=nixos-twenty-` lists nothing.
-- **Resume**: `sudo mv /srv/nix-clean/twenty/ENABLED.off /srv/nix-clean/twenty/ENABLED`, then deploy the current main revision (`sudo -n /usr/local/sbin/nix-os-deploy <main sha>`; the daily reconcile or the next merge does the same). A manual start works too, databases first: `docker start nixos-twenty-db nixos-twenty-redis`, wait healthy, then `nixos-twenty-server`, then `nixos-twenty-worker`.
+- **Never start the Twenty containers while `ENABLED` is absent.** The next deploy stops them again (`crm_enabled` in `scripts/deploy-os.py`), and the nightly capture refuses while CRM containers run with the CRM disabled (`stopped_services` in `automation/recovery/full_create.py`).
+- **Resume**: restore the marker first — `sudo mv /srv/nix-clean/twenty/ENABLED.off /srv/nix-clean/twenty/ENABLED` — and verify it (`sudo test -f /srv/nix-clean/twenty/ENABLED && echo marker present`) before starting anything. Then deploy the current main revision (`sudo -n /usr/local/sbin/nix-os-deploy <main sha>`; the daily reconcile or the next merge does the same) — with the marker back, the deploy starts the CRM again. A manual start works too, databases first: `docker start nixos-twenty-db nixos-twenty-redis`, wait healthy, then `nixos-twenty-server`, then `nixos-twenty-worker`.
 
 ## 6. Stop containers
 
-First stop the two things that would restart the stack on you:
+First the two things that would restart the stack on you, then the runtimes. Apps before datastores; the Twenty containers were handled in layer 5.
+
+**The recovery timer.** The 03:17 UTC capture cold-stops and restarts everything, and a failed attempt retries every 15 minutes (up to three per 2h, `automation/recovery/nixos-recovery.service`).
 
 ```bash
-sudo systemctl stop nixos-recovery.timer       # the 03:17 UTC capture cold-stops and restarts everything
+sudo systemctl disable --now nixos-recovery.timer   # pause now, stay off across reboot
+systemctl show nixos-recovery.service -p ActiveState -p SubState --value   # a capture the timer already triggered keeps running
 ```
 
-- In GitHub, disable the `ci` workflow's daily 05:17 UTC deploy run (Actions → disable workflow). Every main deploy runs `compose up` and restarts stopped containers; merges are already held by layer 1, but the scheduled reconcile is not.
-- Then stop the runtimes. Apps before datastores; the Twenty containers were handled in layer 5.
+- Stopping the timer does not stop a capture already in flight. An in-flight capture cold-stops the stack and restarts every container when it ends — on success, on failure, and even if you `systemctl stop nixos-recovery.service`, because the unit's `ExecStopPost` unconditionally starts the four runtimes (and the Twenty containers when `ENABLED` exists). A refused run does the same. Wait until it has drained — a capture can take up to an hour (`TimeoutStartSec=1h`) — accept its one-time restart, then continue. A capture has drained when `systemctl show nixos-recovery.service -p ActiveState -p SubState --value` reads `inactive`/`dead` or `failed`/`failed` (a failed capture settles in `failed` after its `ExecStopPost` has run) — not `activating`, `deactivating` or `reloading`. Do not wait for `inactive` alone.
+
+**The GitHub deploy.** Do not disable the whole `ci` workflow: that also stops PR CI, including the `verify` check the merge ruleset requires, so every open PR stalls. Pause the deploy job itself. It runs only for `main` (push, schedule, manual dispatch) inside the `vps` GitHub environment (`.github/workflows/ci.yml`), which gives two levers:
+
+- First record the environment's current protection so resume can restore it exactly: `gh api repos/its-nix/os/environments/vps > vps-environment-before.json` (keep it off the repo). Then require an approval in that environment (repo Settings → Environments → `vps` → Required reviewers). The gate is only as strong as its approvers: any listed reviewer can release a deploy, and administrators can when admin bypass is allowed. For the incident, set the reviewers to the founder alone and turn off admin bypass (in the same settings page: "Allow administrators to bypass"), then verify both with `gh api repos/its-nix/os/environments/vps`. Agents open PRs with the founder's GitHub token, so if agent access is the suspected problem this gate is not containment: revoke the token (layer 7). Disabling the workflow is not containment either: the same token can re-enable it. Every deploy — merge-triggered, the scheduled 05:17 UTC reconcile, a manual dispatch — then waits for an approval you simply do not grant, and PR CI is untouched. The same gate can be set through the environments REST API (verify the exact call before use).
+- Cancel deploy runs already queued or in progress — they serialize in the `nix-os-vps` concurrency group (`cancel-in-progress: false`), so cancel each:
+
+```bash
+# every run not yet completed: queued, in_progress, waiting (environment gate), pending, requested
+gh run list --workflow ci --branch main --limit 50 --json databaseId,status,event \
+  -q '.[] | select(.status != "completed")'
+gh run cancel <run-id>
+```
+
+- On the VPS, confirm remote deploy work has drained before stopping containers. A deploy runs `compose up`, which restarts what you stop. `deployment-attempt.json` alone is not enough: a deploy that was dispatched but is still waiting for `/run/lock/nix-os-deploy.lock` leaves the previous attempt's `healthy` or `failed` visible. Check for any process holding or waiting on the deploy lock: `sudo fuser -v /run/lock/nix-os-deploy.lock` must list nothing (a waiter opens the lock file before it blocks, and the recovery capture and approval worker use the same lock; do not use `pgrep -f deploy-os`, which also matches reviewer prompts that mention the file), and `sudo cat /srv/nix-clean/deployment-attempt.json` must not read `"status": "deploying"`. A cancelled GitHub run may leave the remote deploy executing; trust these checks, not the run state. If one is running, let it finish, then re-check both.
+- Deploys restart stopped containers; that is why this pause comes before the runtimes. Disabling the whole workflow (Actions → disable workflow) remains the blunt last resort — it stops PR CI too.
+
+**The runtimes.**
 
 ```bash
 docker stop --time 90 nixos-t3 nixos-reviewer
@@ -111,7 +140,7 @@ docker stop --time 90 nixos-hermes nixos-hindsight
 
 - `--time 90` matches the deploy's own stop grace; Hermes and T3 shut down gracefully inside it. A forced kill after the timeout still loses no state.
 - **Verify**: `docker ps --filter name=nixos-` lists nothing running.
-- **Resume**: `docker start nixos-hindsight nixos-hermes nixos-t3 nixos-reviewer`, then the stopped Twenty containers if the CRM was enabled. `sudo systemctl enable --now nixos-recovery.timer`, and re-enable the GitHub workflow. The reviewed alternative to all of it is one deploy of current main, which starts and health-checks the whole stack.
+- **Resume**: once the repository-level merge freeze is verified (layer 1), start the core runtimes — `docker start nixos-hindsight nixos-hermes nixos-t3 nixos-reviewer` — and the Twenty containers **only after the `ENABLED` marker is back** (layer 5 resume); started without it, the next deploy stops them again and the nightly capture refuses. Then `sudo systemctl enable --now nixos-recovery.timer` — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running — and lift the GitHub deploy pause above. The reviewed alternative to all of it is one deploy of current main, which starts and health-checks the whole stack. **After a bearer compromise** leave `nixos-t3` out of the `docker start`, and do not enable the recovery timer, lift the deploy pause or run a deploy until layer 7 step 3 ends: each of those starts T3.
 - Stopped containers and everything on disk survive. Unpushed commits in T3 worktrees are only at risk on host loss, not on a stop.
 
 ## 7. Revoke credentials at the provider
@@ -120,14 +149,42 @@ Last resort: this breaks the stack until each credential is re-issued. Do it whe
 
 | Credential | Where it lives | Revoke at the provider | Resume |
 | --- | --- | --- | --- |
-| Reviewer GitHub App key | `/srv/nix-clean/reviewer/secrets/app.pem` | GitHub App settings: regenerate the private key (or suspend/uninstall the App). `independent-review` then fails closed, so nothing merges | install the new key per [deploy/reviewer](../../deploy/reviewer/README.md) and recreate the reviewer container |
+| Reviewer GitHub App key | `/srv/nix-clean/reviewer/secrets/app.pem` | GitHub App settings: **delete the compromised private key** — regenerating adds a new one and every old key stays valid until deleted. If the App itself is compromised, suspend or uninstall the installation instead. `independent-review` then fails closed, so nothing merges | install the new key per [deploy/reviewer](../../deploy/reviewer/README.md) and recreate the reviewer container |
+| Founder GitHub token (used by agents and the orchestrator for PRs) | `gh` logins on the operator's machine and any agent environment the founder signed in | GitHub → Settings → Developer settings → revoke the personal access token(s), and Settings → Applications → revoke the `gh` CLI OAuth grant; run `gh auth status` on each machine that held it | verify revocation: `gh api user` with that token must return 401 and an attempted `gh pr merge` must fail; then sign in again with a new token |
 | Todoist API token (founder account) | `/srv/nix-clean/todoist/token` (root-only) | revoke the token in Todoist settings; also remove the file on the VPS | provision a fresh token via operator-controlled transfer and run the worker check ([FOUNDER-APPROVAL-QUEUE](../FOUNDER-APPROVAL-QUEUE.md)) |
 | Twenty API key (per venture lead, `TWENTY_API_KEY`) | lead profile environment | delete the workspace API key in Twenty's settings | issue a new least-privilege key and configure it for the lead |
-| Google Drive vault grant | `/srv/nix-clean/drive/` (root-only, rclone token) | revoke the rclone grant in the founder's Google account; stop `nix-drive.timer` | repeat the SSH sign-in ([KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md)) |
+| Google Drive grant (gws, D17) | the Hermes home, `/opt/data/.config/gws` inside `nixos-hermes` | revoke the app's access in the founder's Google account (Security → Third-party access); it is account-wide, so do this first on suspicion | repeat the gws sign-in ([KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md)) |
 | Harness logins (Claude Code, Codex, OpenCode, Antigravity, Grok) | `t3/home` and `reviewer/home` | sign out / revoke the device at each provider; a dead login drops that provider from the reviewer rotation | [PROVIDER-AUTH-RECOVERY](PROVIDER-AUTH-RECOVERY.md) |
 
-The Hermes→T3 token is minted by the deploy and expires in 30 days on its own; it needs no emergency revocation.
+### Suspected compromise of the Hermes→T3 bearer
+
+`MCP_T3_API_KEY` is a full-access credential and, once minted, stays valid on T3's side for up to 30 days — waiting out the expiry is not containment, and rotating it does not invalidate the stolen copy. Work in this order:
+
+1. **Record a conservative expiry bound first.** `sudo cat /srv/nix-clean/hermes/nix/t3-mcp.json` and note `expires_at` and `renewed_at` off the host before anything below can delete the file. The sidecar describes only the current token: an earlier bearer that was replaced early (for example after a rejection) can stay valid past it, and a missing sidecar gives no date. Without a verified T3-side revoke, the bound is the latest of: the sidecar's `expires_at`, and 30 days (the token lifetime, REFACTOR D7) after the moment containment is verified in step 2. Any bearer an attacker could have obtained was minted no later than that moment, so it expires by then.
+2. **Contain.** First pause everything that would start T3 again: the recovery timer (`sudo systemctl disable --now nixos-recovery.timer`, then wait until the capture has drained, `inactive` or `failed` as in layer 6) and the GitHub deploy (layer 6, deploy pause). Then `docker stop --time 90 nixos-t3`. With no listener the old bearer cannot be used from anywhere (T3 listens on host loopback only, `deploy/t3/README.md`).
+3. **Keep it contained** until the old token is revoked on T3's side (this repository's tooling has none — only the pairing flow is implemented; check T3's own auth commands in the cockpit, verify before use) or the conservative bound from step 1 has passed. No manual deploys, no recovery timer and no lifted deploy pause in that window: each starts T3.
+4. **Rotate when T3 comes back.** With T3 running again, force a fresh token so Hermes stops presenting the old one:
+
+```bash
+sudo rm /srv/nix-clean/hermes/nix/t3-mcp.json                 # non-secret sidecar; without it the mint script issues a fresh token
+sudo python3 /opt/nix-clean-source/deploy/t3/hermes_token.py  # writes the new MCP_T3_API_KEY, never prints it
+docker restart --timeout 60 nixos-hermes                     # the gateway loads the key only at start
+```
+
+- The mint script reuses a stored token only when the sidecar, the stored key and T3's probe of it all agree (`ensure()` in `deploy/t3/hermes_token.py`); with the sidecar gone it mints unconditionally. It needs T3 running.
+- The next deploy shares the new token with every venture lead's private `.env` and completes the bookkeeping ([PROVIDER-AUTH-RECOVERY](PROVIDER-AUTH-RECOVERY.md)).
 
 ## What each layer leaves behind
 
-Every layer above is a pause. The venture registry, cron stores, Kanban boards, CRM database, approval spool and all logins stay under `/srv/nix-clean` and keep being captured by the recovery image once its timer runs again. Resume in any order; each layer's own resume command is enough.
+Every layer above is a pause. The venture registry, cron stores, Kanban boards, CRM database, approval spool and all logins stay under `/srv/nix-clean` and keep being captured by the recovery image once its timer runs again.
+
+Resume in this order, not in any order — the Twenty marker, the containers and the timers interact:
+
+1. Re-issue revoked credentials that need nothing running: provider logins and the Todoist token ([PROVIDER-AUTH-RECOVERY](PROVIDER-AUTH-RECOVERY.md)). Install a new reviewer GitHub App key on disk but do **not** recreate the reviewer yet. Credentials that need a running service wait for it: a new Twenty API key after step 3 starts Twenty, the reviewer recreate after step 3's merge-freeze check, and the Hermes→T3 bearer rotation only when layer 7's containment ends (layer 7 step 4).
+2. Restore the Twenty `ENABLED` marker (layer 5 resume) if the CRM was enabled before the incident, and verify it. This comes before any deploy or container start: with the marker absent, the deploy stops the CRM again (`crm_enabled` in `scripts/deploy-os.py`).
+3. Before anything below can restart the reviewer, confirm the merge freeze is the repository-level one: `gh api repos/its-nix/os -q .allow_auto_merge` prints `false` (layer 1). Steps 3–5 can each start `nixos-reviewer` (a container start, a missed recovery capture, a deploy). Then start the containers (layer 6 resume): the core runtimes, then the Twenty containers — only after step 2. A single deploy of current main starts and health-checks the whole stack instead. If the Hermes→T3 bearer was compromised (layer 7), keep `nixos-t3` stopped and skip the deploy option, steps 4 (recovery timer) and 5 until the old bearer's revocation or expiry is verified: a deploy, a recovery capture's `ExecStopPost` and a lifted deploy pause each start T3 again. No manual deploys in that window.
+4. Re-enable the host timers: the approval timer (layer 2), then the recovery timer — `Persistent=true` makes a missed 03:17 window fire the capture immediately on activation, so enable it only with the stack running.
+5. Lift the GitHub deploy pause (layer 6): restore the `vps` environment's protection exactly as `vps-environment-before.json` recorded it — the full required-reviewer list (re-add any you removed, drop any you added), the wait timer and the admin-bypass setting — then fetch `gh api repos/its-nix/os/environments/vps` and compare `protection_rules` and `can_admins_bypass` field by field with the snapshot. Or re-enable the `ci` workflow if it was disabled outright.
+6. Lift the merge freeze (layer 1): set repo auto-merge back to the value recorded before the freeze (`-F allow_auto_merge=<recorded value>`, verify it), then unhold and mark ready each PR.
+
+Layers 3 and 4 (ventures, Hermes cron) can resume in either order once Hermes is running; their own commands are enough.
