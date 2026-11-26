@@ -19,10 +19,10 @@ Keep shared notes, templates and links as ordinary Markdown files under **Nix**.
    ssh -l nixos vps 'docker exec -u 10000 nixos-hermes gws auth login --scopes https://www.googleapis.com/auth/drive >/dev/null'
    ```
 
-4. Keep login running. Read the port from the printed authorization URL’s `redirect_uri` (the digits after `localhost`, with the colon possibly encoded as `%3A`). In a second session on the same device, replace both instances of `PORT` with those digits and keep the tunnel running. Open the printed Google URL in that device’s browser and approve with your own Google account. Close the tunnel after the login command succeeds. The pinned CLI uses a loopback callback. On a phone, use an SSH client with local port forwarding, set the local and remote ports to the printed port, and open the URL in the phone’s browser. [Upstream authentication guide](https://github.com/googleworkspace/cli/tree/v0.22.5#authentication)
+4. Keep login running. Read the port from the printed authorization URL’s `redirect_uri` (the digits after `localhost`, with the colon possibly encoded as `%3A`). In a second session on the same device, replace both instances of `PORT` with those digits and keep the tunnel running. Open the printed Google URL in that device’s browser and approve with your own Google account. Close the tunnel after the login command succeeds. The pinned CLI listens for the callback on `127.0.0.1:PORT` (IPv4) inside `nixos-hermes`. That container runs with `network_mode: host` (`deploy/compose.yaml`), so its loopback is the VPS host's loopback and the tunnel's `127.0.0.1:PORT` target reaches it; the explicit IPv4 address avoids a `localhost` → `::1` mismatch. On a phone, use an SSH client with local port forwarding, set the local and remote ports to the printed port, and open the URL in the phone’s browser. [Upstream authentication guide](https://github.com/googleworkspace/cli/tree/v0.22.5#authentication)
 
    ```sh
-   ssh -N -o ExitOnForwardFailure=yes -L localhost:PORT:localhost:PORT -l nixos vps
+   ssh -N -o ExitOnForwardFailure=yes -L PORT:127.0.0.1:PORT -l nixos vps
    ```
 
 5. Check the grant with a read-only Drive API call that returns no file names or IDs.

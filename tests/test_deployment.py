@@ -910,3 +910,5 @@ class DriveCredentialIsolationTests(unittest.TestCase):
                 self.assertNotIn(forbidden, section, service)
         dockerfile = (ROOT / 'deploy/hermes/Dockerfile').read_text()
         self.assertIn('GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/opt/data/.config/gws', dockerfile)  # inside the Hermes home only
+        hermes = re.search(r'^  hermes:\n(.*?)(?=^  [\w-]+:|\Z)', compose, re.M | re.S)[1]
+        self.assertIn('network_mode: host', hermes)  # the documented gws loopback sign-in tunnel depends on it

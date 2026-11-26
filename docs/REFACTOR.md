@@ -119,7 +119,7 @@ Removed as obsolete on 2026-11-25: the request to allow `pull_request_target` fo
 - **Live delegation and worktree concurrency (acceptance D):** verified through the `demo` lead on 2026-11-26. A separate end-to-end T3-authored PR and red CI merge-blocking exercise remain open.
 - **After a Twenty key and a Todoist token:** run `crm-lead-ops` live for the `demo` venture with a fictitious lead; the approval appears in Todoist; nothing is sent (acceptance E/H).
 - **Hindsight:** After #102 deploys and the founder signs in, verify extraction and recall with synthetic text in a test bank on the pinned server (D14).
-- **Drive (D17):** after founder sign-in, verify a Markdown round trip inside Nix and open a native Google document from an index note (D15).
+- **Drive (D17):** after founder sign-in, verify a Markdown round trip inside Nix and open a native Google document from an index note (D17).
 - **NixKit packs and Skillshare:** core and engineering packs are deployed through Skillshare (#100, merged 2026-11-25). Remaining: a native discovery readback on production after a healthy `main` deployment (see the pack migration evidence below).
 
 ## Pack migration evidence — 2026-11-25
