@@ -80,7 +80,7 @@ curl -s http://127.0.0.1:18888/health
 
 ## Hermes→T3 token
 
-Symptom: a venture lead's delegation to T3 fails; `hermes mcp test t3` does not connect. This is the 30-day OAuth bearer the root deploy mints via T3's own pairing approval ([REFACTOR D7](../REFACTOR.md)); it has no refresh and is renewed when fewer than 7 days remain.
+Symptom: a venture lead's delegation to T3 fails; `hermes mcp test t3` does not connect. This is the 30-day OAuth bearer the root deploy mints via T3's own pairing approval ([REFACTOR D7](../REFACTOR.md)); it has no refresh. A deployment mints a new one only when fewer than 7 days remain on the recorded expiry, or when the stored token is missing or rejected by T3 (`RENEW_DAYS = 7`, `ensure()` in [deploy/t3/hermes_token.py](../../deploy/t3/hermes_token.py)); with a current, accepted token a deployment changes nothing.
 
 Confirm:
 
@@ -89,20 +89,24 @@ docker exec -u 10000 nixos-hermes hermes -p <profile> mcp test t3
 sudo cat /srv/nix-clean/hermes/nix/t3-mcp.json     # non-secret sidecar: expires_at, renewed_at
 ```
 
-Renew — preferred, because it also restarts Hermes and records the loaded credential:
+The sidecar date alone proves nothing: a token can be rejected while still unexpired. Trust `mcp test t3`.
+
+Renew — preferred, because it also restarts Hermes when the credential changed, records the loaded fingerprint, and shares the token with every venture lead's private `.env`:
 
 ```bash
 sudo -n /usr/local/sbin/nix-os-deploy <current main sha>
 ```
 
-Every deployment renews the token automatically. Manual, when a deploy is not wanted right now:
+This is also the recovery path for a rejected-but-unexpired token: the deploy probes the stored token against T3 first and mints a fresh one when the probe fails, whatever the sidecar date says (`ensure()` in [deploy/t3/hermes_token.py](../../deploy/t3/hermes_token.py)).
+
+Manual, when a deploy is not wanted right now — same probe-then-mint logic, and the gateway loads the key only at start:
 
 ```bash
-sudo python3 /opt/nix-clean-source/deploy/t3/hermes_token.py     # mints and writes MCP_T3_API_KEY
-docker restart --timeout 60 nixos-hermes                          # the gateway loads the key only at start
+sudo python3 /opt/nix-clean-source/deploy/t3/hermes_token.py     # probes, mints and writes MCP_T3_API_KEY
+docker restart --timeout 60 nixos-hermes
 ```
 
-The script shares the new token with every venture lead's private `.env`. The next deploy completes the bookkeeping; it never prints the token.
+The standalone script writes Hermes' own private `.env` only; it does not touch the venture leads' `.env` files — the next deploy propagates the token to them and completes the bookkeeping (`share_with_leads` in [scripts/deploy-os.py](../../scripts/deploy-os.py)). It never prints the token.
 
 Verify:
 
@@ -114,7 +118,7 @@ docker exec -u 10000 nixos-hermes hermes -p <profile> mcp test t3
 
 ## Google Drive vault
 
-There is no `skills/google-drive` in this repository; the only Google login this deployment implements is the Drive vault's rclone token, held root-only on the host ([KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md)). Symptom: `nix-drive.service` fails or bisync refuses; the grant expired or was revoked. Confirm on the host:
+There is no `skills/google-drive` in this repository; the only Google login this deployment implements is the Drive vault's rclone token, held root-only on the host ([KNOWLEDGE-VAULT](../KNOWLEDGE-VAULT.md)). The Drive design is moving from this host bridge to the gws CLI inside Hermes ([PR #112](https://github.com/its-nix/os/pull/112), open at the time of writing); until it merges, this section tracks main and the rclone login below is the one to recover. Symptom: `nix-drive.service` fails or bisync refuses; the grant expired or was revoked. Confirm on the host:
 
 ```bash
 systemctl status nix-drive.timer nix-drive.service
