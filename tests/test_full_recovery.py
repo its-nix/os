@@ -169,6 +169,21 @@ class FullRecoveryTests(unittest.TestCase):
         self.assertFalse(any(r.startswith(('reviewer/home/.npm/', 'reviewer/home/.cache/',
                                            'reviewer/home/.codex/tmp/')) for r in rels))
 
+    def test_hindsight_codex_login_is_captured_but_its_runtime_temp_links_are_not(self):
+        recovery = self.module()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'hindsight/codex').mkdir(parents=True)
+            (root / 'hindsight/codex/auth.json').write_text('x')
+            helper = root / 'hindsight/codex/tmp/arg0-linux/codex-arg0x'
+            helper.mkdir(parents=True)
+            (helper / 'apply_patch').symlink_to('/usr/local/lib/node_modules/@openai/codex/bin/codex')
+            (root / 'hindsight/codex/.tmp').mkdir()
+            (root / 'hindsight/codex/.tmp/y').write_text('x')
+            rels = {p.relative_to(root).as_posix() for p in recovery.durable_paths(root)}
+        self.assertIn('hindsight/codex/auth.json', rels)
+        self.assertFalse(any(r.startswith(('hindsight/codex/tmp/', 'hindsight/codex/.tmp/')) for r in rels))
+
     def test_twenty_database_redis_storage_and_env_are_captured_cold_state(self):
         recovery = self.module()
         with tempfile.TemporaryDirectory() as td:
