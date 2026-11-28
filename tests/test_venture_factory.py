@@ -5,9 +5,14 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / 'skills/venture-factory/scripts/venture.py'
+FOUNDER = '1' * 18
+VENTURE_CHANNEL = '2' * 18
+LNX_CHANNEL = '3' * 18
+OTHER_USER = '4' * 18
 
 # Stateful fake of the Hermes 0.23.0 CLI surface used by the scaffolder (formats observed live).
 FAKE = r'''#!/usr/bin/env python3
@@ -21,6 +26,15 @@ if a[:1] == ['-p']: profile, a = a[1], a[2:]
 pdir = home / 'profiles' / profile if profile else home
 boards = home / 'boards.json'
 def load(p, d): return json.loads(p.read_text()) if p.exists() else d
+if a[:1] == ['config'] and profile == 'default':
+    config = home / 'config.json'
+    values = load(config, {})
+    key = a[2]
+    if a[1] == 'set':
+        values[key] = json.loads(a[3]); config.write_text(json.dumps(values)); sys.exit(0)
+    if key not in values:
+        print(f'Config key not set: {key}', file=sys.stderr); sys.exit(1)
+    print(json.dumps(values[key])); sys.exit(0)
 if a[:2] == ['profile', 'create']:
     d = home / 'profiles' / a[2]
     if d.exists(): print('exists', file=sys.stderr); sys.exit(1)
@@ -99,6 +113,7 @@ class VentureFactoryTests(unittest.TestCase):
         self.assertIn('core', m['packs'])
         self.assertEqual('venture-acme', m['memory']['bank'])
         self.assertFalse(m['integrations']['crm']['enabled'])
+        self.assertEqual({'channel': None, 'status': 'unbound'}, m['integrations']['discord'])
         soul = (self.home / 'profiles/acme/SOUL.md').read_text()
         self.assertIn('Acme Widgets', soul)
         self.assertIn('Founder-gated', soul)
@@ -117,6 +132,100 @@ class VentureFactoryTests(unittest.TestCase):
         self.assertEqual(1, sum(c[:2] == ['profile', 'create'] for c in self.calls()))
         self.assertEqual(1, sum(c[:3] == ['kanban', 'boards', 'create'] for c in self.calls()))
         self.assertEqual(1, len(second['history']))
+
+    def discord_config(self, **overrides):
+        path = self.home / 'config.json'
+        config = {'gateway.multiplex_profiles': True, 'gateway.profile_routes': [],
+                  'DISCORD_HOME_CHANNEL': LNX_CHANNEL, 'DISCORD_ALLOWED_USERS': FOUNDER}
+        config.update(overrides)
+        path.write_text(json.dumps(config))
+
+    def discord_routes(self):
+        return json.loads((self.home / 'config.json').read_text())['gateway.profile_routes']
+
+    def bind(self, channel=VENTURE_CHANNEL, venture='acme'):
+        return self.call('bind-discord', venture, '--channel', channel)
+
+    def test_bind_discord_is_idempotent_and_records_receipt_for_existing_manifest(self):
+        self.assertEqual(0, self.create())
+        path = self.home / 'ventures/acme/manifest.json'
+        legacy = self.manifest()
+        del legacy['integrations']['discord']
+        path.write_text(json.dumps(legacy))
+        self.discord_config()
+        self.assertEqual(0, self.bind())
+        first = path.read_bytes()
+        self.assertEqual(0, self.bind())
+        self.assertEqual(first, path.read_bytes())
+        binding = self.manifest()['integrations']['discord']
+        self.assertEqual(VENTURE_CHANNEL, binding['channel'])
+        self.assertEqual('configured', binding['status'])
+        self.assertTrue(binding['receipt']['at'])
+        self.assertEqual(VENTURE_CHANNEL, binding['receipt']['channel'])
+        self.assertEqual(1, len(self.discord_routes()))
+        self.assertEqual(1, sum(c[:5] == ['-p', 'default', 'config', 'set', 'gateway.profile_routes']
+                                for c in self.calls()))
+
+    def test_discord_route_matches_only_founder_in_venture_channel_and_preserves_lnx(self):
+        lnx = {'name': 'lnx', 'platform': 'discord', 'profile': 'default', 'chat_id': LNX_CHANNEL}
+        self.discord_config(**{'gateway.profile_routes': [lnx], 'DISCORD_ALLOWED_USERS': '',
+                               'discord.allow_from': [FOUNDER]})
+        self.assertEqual(0, self.create())
+        self.assertEqual(1, self.bind(LNX_CHANNEL))
+        self.assertEqual(0, self.bind())
+        preserved, route = self.discord_routes()
+        self.assertEqual(lnx, preserved)
+        # Hermes matches all declared fields together. A miss remains on the receiving bot.
+        self.assertEqual({'name': 'nix-venture-acme', 'platform': 'discord', 'profile': 'acme',
+                          'chat_id': VENTURE_CHANNEL, 'user_id': FOUNDER, 'enabled': True}, route)
+        self.assertNotEqual(OTHER_USER, route['user_id'])
+        self.assertNotEqual(LNX_CHANNEL, route['chat_id'])
+        self.assertEqual(0, self.create('another'))
+        self.assertEqual(1, self.bind(venture='another'))
+        self.assertEqual([lnx, route], self.discord_routes())
+
+    def test_pause_resume_and_retire_reconcile_discord_route(self):
+        self.discord_config()
+        self.assertEqual(0, self.create())
+        self.assertEqual(0, self.bind())
+        original = self.discord_routes()[0]
+        for command, status, enabled in (('pause', 'disabled', False),
+                                         ('resume', 'configured', True),
+                                         ('retire', 'disabled', False)):
+            with self.subTest(command=command):
+                self.assertEqual(0, self.call(command, '--id', 'acme'))
+                self.assertEqual([{**original, 'enabled': enabled}], self.discord_routes())
+                binding = self.manifest()['integrations']['discord']
+                self.assertEqual(VENTURE_CHANNEL, binding['channel'])
+                self.assertEqual(status, binding['receipt']['status'])
+        self.assertEqual(1, self.call('resume', '--id', 'acme'))
+        self.assertEqual(1, self.bind())
+
+    def test_bind_requires_one_numeric_founder(self):
+        self.assertEqual(0, self.create())
+        for allowed in (None, '*', f'{FOUNDER},{OTHER_USER}'):
+            with self.subTest(allowed=allowed):
+                self.discord_config(DISCORD_ALLOWED_USERS=allowed)
+                self.assertEqual(1, self.bind())
+                self.assertEqual([], self.discord_routes())
+                self.assertEqual('unbound', self.manifest()['integrations']['discord']['status'])
+
+    def test_pause_reconciles_discord_after_failed_config_write(self):
+        self.discord_config()
+        self.assertEqual(0, self.create())
+        self.assertEqual(0, self.bind())
+        real_run = self.v.Hermes.run
+
+        def failing(hermes, *args, **kwargs):
+            if args[:2] == ('config', 'set'):
+                raise self.v.Refusal('injected')
+            return real_run(hermes, *args, **kwargs)
+
+        with patch.object(self.v.Hermes, 'run', failing):
+            self.assertEqual(1, self.call('pause', '--id', 'acme'))
+        self.assertTrue(all(job['state'] == 'paused' for job in self.jobs()))
+        self.assertEqual(0, self.call('pause', '--id', 'acme'))
+        self.assertFalse(self.discord_routes()[0]['enabled'])
 
     def test_foreign_or_legacy_profile_is_never_adopted(self):
         (self.home / 'profiles/legacy').mkdir(parents=True)

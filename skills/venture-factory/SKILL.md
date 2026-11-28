@@ -43,5 +43,8 @@ The OS deployment installs `venture-lead` into the new lead's `skills/nix-os/`. 
 ## 5. Lifecycle
 `venture.py pause|resume|retire --id <id> --reason "<why>"` and `venture.py stage --id <id> --to operating|scaling|pivoting`. Pause and retire stop the lead's routines; nothing is deleted. `venture.py status` lists the registry.
 
+## 6. Founder Discord channel
+The founder creates a private channel on the existing LNX bot's server and runs `venture.py bind-discord <id> --channel <channel-id>`. Pause and retire disable that binding. Resume restores it. The operator restarts the shared gateway to apply each routing change. See `docs/runbooks/VENTURE-DISCORD.md` for the bind command and live verification.
+
 ## Known limits
 Provisioning is crash-safe and serialized per venture. Two things are out of scope: an operator hand-creating the same profile or board slug *during* a provisioning retry, and archiving the mission card before an interrupted first run recorded it. In either case, check `venture.py status` and fix the state deliberately.
