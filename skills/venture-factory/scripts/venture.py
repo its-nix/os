@@ -7,6 +7,7 @@ change goes through the `hermes` CLI; profile cron stores are only read back.
 
   venture.py create  --id ID --name NAME --mission TEXT --approval-ref REF [--prd F] [--gtm F]
                      [--pack P ...] [--crm] [--repo OWNER/NAME] [--timezone TZ] [--dry-run]
+  venture.py bind-discord ID --channel CHANNEL_ID
   venture.py pause|resume|retire --id ID [--reason TEXT]
   venture.py stage   --id ID --to operating|scaling|pivoting
   venture.py status  [--id ID]
@@ -33,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 TEMPLATES = HERE.parent / 'templates'
 SCHEMA_VERSION = 1
 ID_RE = re.compile(r'[a-z][a-z0-9]{1,23}')
+DISCORD_ID_RE = re.compile(r'[1-9][0-9]{14,19}')
 # Names that already mean something in Hermes or in the company runtime.
 RESERVED = {'default', 'lnx', 'personal', 'engineer', 'reviewer', 'root', 'admin', 'hermes', 'nix'}
 LIFECYCLE = ('approved', 'incubating', 'operating', 'scaling', 'pivoting', 'paused', 'retired')
@@ -78,7 +80,7 @@ class Hermes:
         self.dry_run = dry_run
         self.planned = []
 
-    def run(self, *argv, profile=None, board=None, mutate=True):
+    def run(self, *argv, profile=None, board=None, mutate=True, missing_config=None):
         cmd = [self.binary]
         if profile:
             cmd += ['-p', profile]
@@ -94,8 +96,14 @@ class Hermes:
         except subprocess.TimeoutExpired:
             raise Refusal(f'hermes command timed out: {" ".join(cmd[1:4])} …') from None
         if result.returncode:
+            if missing_config and result.stderr.rstrip().endswith(f'Config key not set: {missing_config}'):
+                return 'null'
             raise Refusal(f'hermes command failed: {" ".join(cmd[1:4])} …')
         return result.stdout
+
+    def config_get(self, key, optional=False):
+        return json.loads(self.run('config', 'get', key, '--json', '--raw', profile='default',
+                                   mutate=False, missing_config=key if optional else None))
 
     def profile_dir(self, name):
         return self.home / 'profiles' / name
@@ -196,6 +204,105 @@ def marker_ok(hermes, vid):
 def require_owned(hermes, manifest):
     if not marker_ok(hermes, manifest['lead_profile']):
         raise Refusal(f'Profile {manifest["lead_profile"]} is not the registry-owned lead; refusing to act on it')
+
+
+def discord_founder(hermes):
+    allowed = hermes.config_get('DISCORD_ALLOWED_USERS', optional=True)
+    if not allowed:
+        for key in ('discord.allow_from', 'platforms.discord.extra.allow_from',
+                    'platforms.discord.extra.allowed_users'):
+            allowed = hermes.config_get(key, optional=True)
+            if allowed is not None:
+                break
+    entries = allowed if isinstance(allowed, list) else str(allowed or '').split(',')
+    users = {str(entry).strip() for entry in entries if str(entry).strip()}
+    if len(users) != 1 or not DISCORD_ID_RE.fullmatch(next(iter(users))):
+        raise Refusal('The default Discord bot allowlist must identify exactly one numeric founder user ID')
+    return next(iter(users))
+
+
+def discord_routes(hermes, manifest, channel, enabled):
+    """Plan an edit to this venture's row in the default gateway's shared route table."""
+    key = 'profile_routes'
+    current = hermes.config_get(key, optional=True)
+    if current is None:
+        key = 'gateway.profile_routes'
+        current = hermes.config_get(key)
+    if not isinstance(current, list) or any(not isinstance(row, dict) for row in current):
+        raise Refusal('The default gateway profile route table is invalid')
+    lead = manifest['lead_profile']
+    name = f'nix-venture-{manifest["id"]}'
+    owned = [row for row in current if row.get('name') == name]
+    if len(owned) > 1 or any(row.get('platform') != 'discord' or row.get('profile') != lead
+                             or row.get('bot_profile') not in (None, '', 'default') for row in owned):
+        raise Refusal('The venture Discord route name is already in use')
+    if enabled:
+        if hermes.config_get('gateway.multiplex_profiles') is not True:
+            raise Refusal('Venture Discord routing requires the default multiplexed gateway')
+        homes = (hermes.config_get('DISCORD_HOME_CHANNEL', optional=True),
+                 hermes.config_get('platforms.discord.home_channel.chat_id', optional=True))
+        if any(str(home or '').strip().rstrip('/').rsplit('/', 1)[-1] == channel for home in homes):
+            raise Refusal('The existing LNX home channel cannot be bound to a venture')
+        desired = {'name': name, 'platform': 'discord', 'profile': lead, 'chat_id': channel,
+                   'user_id': discord_founder(hermes), 'enabled': True}
+    else:
+        desired = {**owned[0], 'enabled': False} if owned else None
+
+    for row in current:
+        if (row in owned or row.get('platform') != 'discord'
+                or row.get('bot_profile') not in (None, '', 'default')):
+            continue
+        if row.get('profile') == lead:
+            raise Refusal('An unmanaged Discord route already targets this venture lead')
+        if enabled and channel in (str(row.get('chat_id')), str(row.get('thread_id'))):
+            raise Refusal('This Discord channel already has a gateway profile route')
+
+    if owned:
+        updated = [desired if row in owned else row for row in current]
+    else:
+        updated = [*current, desired] if desired else current
+    return key, current, updated
+
+
+def apply_discord(hermes, registry, manifest, channel, configured, routes):
+    key, current, updated = routes
+    if updated != current:
+        hermes.run('config', 'set', key, json.dumps(updated), profile='default')
+        if hermes.config_get(key) != updated:
+            raise Refusal('Discord route configuration did not match its readback')
+    discord = manifest['integrations']['discord']
+    state = {'channel': channel, 'status': 'configured' if configured else 'disabled'}
+    if updated != current or any(discord.get(field) != value for field, value in state.items()):
+        discord.update(state, receipt={'at': now(), **state})
+        registry.save(manifest)
+    print('Discord route configuration read back. Restart the shared Hermes gateway to apply it.',
+          file=sys.stderr)
+
+
+def bind_discord(args, hermes, registry):
+    channel = args.channel
+    if not DISCORD_ID_RE.fullmatch(channel):
+        raise Refusal('Supply a numeric Discord channel ID')
+    with venture_lock(registry, args.id), venture_lock(registry, '.discord'):
+        manifest = registry.load(args.id)
+        if manifest is None or manifest['lifecycle'] not in ACTIVE:
+            raise Refusal('Only a provisioned, active venture can bind a Discord channel')
+        require_owned(hermes, manifest)
+        routes = discord_routes(hermes, manifest, channel, enabled=True)
+        discord = manifest['integrations'].setdefault('discord', {})
+        if discord.get('channel') != channel:
+            discord.update(channel=channel, status='pending')
+            registry.save(manifest)
+        apply_discord(hermes, registry, manifest, channel, True, routes)
+        return manifest
+
+
+def reconcile_discord(hermes, registry, manifest, active):
+    channel = manifest.get('integrations', {}).get('discord', {}).get('channel')
+    if channel:
+        with venture_lock(registry, '.discord'):
+            routes = discord_routes(hermes, manifest, channel, enabled=active)
+            apply_discord(hermes, registry, manifest, channel, active, routes)
 
 
 def own_profile(hermes, registry, manifest):
@@ -397,6 +504,7 @@ def new_manifest(args, packs):
         'approval': {'ref': args.approval_ref.strip(), 'recorded_at': now()},
         'memory': {'provider': 'hindsight', 'bank': f'venture-{args.id}', 'status': 'pending'},
         'integrations': {'crm': {'enabled': bool(args.crm), 'workspace': None},
+                         'discord': {'channel': None, 'status': 'unbound'},
                          'github_repo': args.repo, 'knowledge_folder': f'Ventures/{args.id}'},
         'timezone': args.timezone, 'created_at': now(), 'history': [], 'provisioning': {},
     }
@@ -427,27 +535,30 @@ def transition(args, hermes, registry, target):
             raise Refusal('Unknown venture')
         require_owned(hermes, manifest)
         state = manifest['lifecycle']
-        if target == state or (target == 'resume' and state in ACTIVE):
-            # Retry of a decision already recorded (e.g. a cron call failed): reconcile routines only.
-            ensure_loops(hermes, registry, manifest, activate=state in ACTIVE)
-            registry.save(manifest)
-            return manifest
-        if state == 'retired':
-            raise Refusal('Venture is retired')
-        if target == 'resume':
-            if state != 'paused':
-                raise Refusal('Only a paused venture can resume')
-            target = manifest.get('resume_to', 'incubating')
-        elif target == 'paused':
-            if state not in ACTIVE:
-                raise Refusal('Only an active venture can pause')
-            manifest['resume_to'] = state
-        elif target in ('operating', 'scaling', 'pivoting') and state not in ACTIVE:
-            raise Refusal('Resume the venture before changing its stage')
-        manifest['lifecycle'] = target
-        manifest['history'].append({'at': now(), 'to': target, 'reason': getattr(args, 'reason', None)})
-        registry.save(manifest)  # the decision is durable first; a failed cron call is retried
-        ensure_loops(hermes, registry, manifest, activate=target in ACTIVE)
+        if target != state and (target != 'resume' or state not in ACTIVE):
+            if state == 'retired':
+                raise Refusal('Venture is retired')
+            if target == 'resume':
+                if state != 'paused':
+                    raise Refusal('Only a paused venture can resume')
+                target = manifest.get('resume_to', 'incubating')
+            elif target == 'paused':
+                if state not in ACTIVE:
+                    raise Refusal('Only an active venture can pause')
+                manifest['resume_to'] = state
+            elif target in ('operating', 'scaling', 'pivoting') and state not in ACTIVE:
+                raise Refusal('Resume the venture before changing its stage')
+            manifest['lifecycle'] = target
+            manifest['history'].append({'at': now(), 'to': target, 'reason': getattr(args, 'reason', None)})
+            registry.save(manifest)  # the decision is durable first; a failed reconciliation is retried
+        active = manifest['lifecycle'] in ACTIVE
+        try:
+            if not active:
+                reconcile_discord(hermes, registry, manifest, active=False)
+        finally:
+            ensure_loops(hermes, registry, manifest, activate=active)
+        if active and args.command == 'resume':
+            reconcile_discord(hermes, registry, manifest, active=True)
         registry.save(manifest)
         return manifest
 
@@ -470,6 +581,9 @@ def main(argv=None):
     c.add_argument('--repo')
     c.add_argument('--timezone')
     c.add_argument('--dry-run', action='store_true')
+    d = sub.add_parser('bind-discord')
+    d.add_argument('id')
+    d.add_argument('--channel', required=True)
     for name in ('pause', 'resume', 'retire'):
         p = sub.add_parser(name)
         p.add_argument('--id', required=True)
@@ -486,6 +600,9 @@ def main(argv=None):
     try:
         if args.command == 'create':
             result = create(args, hermes, registry)
+        elif args.command == 'bind-discord':
+            validate_id(args.id)
+            result = bind_discord(args, hermes, registry)
         elif args.command == 'status':
             result = registry.load(args.id) if args.id else [
                 {k: v[k] for k in ('id', 'name', 'lifecycle', 'board')} for v in registry.all()]
