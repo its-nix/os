@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import io
 import json
@@ -37,7 +38,8 @@ def apply(*args, **kwargs):
     kwargs.setdefault('memory_preflight', lambda source, state, image, run: None)
     kwargs.setdefault('redaction', lambda source, image, run: None)  # see test_hindsight_memory
     kwargs.setdefault('personal', lambda source, state, run: 'present')
-    return _real_apply(*args, **kwargs)
+    with patch.object(deployment, 'container_health', return_value={}):
+        return _real_apply(*args, **kwargs)
 
 
 class DeploymentTests(unittest.TestCase):
@@ -845,8 +847,73 @@ class DeploymentTests(unittest.TestCase):
             nix = state / 'hermes/nix'
             nix.rename(Path(td) / 'real-nix')
             nix.symlink_to(outside)
-            deployment.publish_health(state, {'status': 'healthy', 'revision': 'r'})  # no exception
+            with patch.object(deployment, 'container_health', return_value={}):
+                deployment.publish_health(state, {'status': 'healthy', 'revision': 'r'})  # no exception
             self.assertEqual([], list(outside.iterdir()))
+
+    def test_health_refresh_publishes_only_operational_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            compose = (ROOT / 'deploy/compose.yaml').read_text()
+            self.assertCountEqual(deployment.HEALTH_SERVICES, [
+                line.split('nixos-', 1)[1] for line in compose.splitlines()
+                if line.startswith('    container_name: nixos-')
+            ])
+            now = datetime.now(timezone.utc)
+            stamp = now.isoformat()
+            active_reset = now + timedelta(hours=1)
+            auth_home = state / 't3/home'
+            generation = 'a' * 64
+            core = state / 'pack-releases' / generation
+            core.mkdir(parents=True)
+            for path, content in {
+                state / 'deployment.json': json.dumps({'revision': 'b' * 40, 'completed_at': stamp}),
+                state / 'deployment-attempt.json': json.dumps({'revision': 'c' * 40, 'status': 'failed'}),
+                state / 'recovery/last-success.json': json.dumps({'completed_at': stamp}),
+                state / 'recovery/last-attempt.json': json.dumps({'status': 'published'}),
+                state / 'approvals/state/last-success.json': json.dumps({'completed_at': stamp}),
+                state / 'reviewer/reviewer.env': 'REVIEW_POOL="codex, gemini"\n',
+                state / 'reviewer/state/cooldowns.json': json.dumps({
+                    'codex': {'reason': 'usage-limit', 'untilEpochMs': int(active_reset.timestamp() * 1000),
+                              'extra': 'private-marker'},
+                    'claude': {'reason': 'usage-limit', 'untilEpochMs': int(now.timestamp() * 1000)},
+                }),
+                state / 'packs.compose.json': json.dumps({'services': {'t3': {'volumes': [
+                    {'source': str(core), 'target': '/opt/nixkit'}
+                ]}}}),
+                state / 'builder-pat-expiry': '2030-01-02\n',
+                auth_home / '.codex/auth.json': 'private-marker',
+                auth_home / '.t3/userdata/providers/antigravity/instance/antigravity-acp/acp_token.json':
+                    'private-marker',
+            }.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            docker = subprocess.CompletedProcess([], 1, '/nixos-hermes running healthy\n'
+                                                  '/nixos-t3 exited unhealthy\n/nixos-reviewer running\n')
+            with patch.object(deployment.subprocess, 'run', return_value=docker) as inspect:
+                deployment.publish_health(state, recovery=state / 'recovery', pat_expiry=state / 'builder-pat-expiry')
+                inspect.assert_called_once()
+                self.assertEqual(['nixos-hermes', 'nixos-t3', 'nixos-hindsight', 'nixos-reviewer'],
+                                 inspect.call_args.args[0][5:])
+            output = (state / 'hermes/nix/health.json').read_text()
+            self.assertNotIn('private-marker', output)
+            self.assertNotIn(str(core), output)
+            snapshot = json.loads(output)
+            self.assertEqual({
+                'hermes': 'healthy', 't3': 'exited', 'hindsight': 'unavailable', 'reviewer': 'running',
+                **dict.fromkeys(('twenty-db', 'twenty-redis', 'twenty-server', 'twenty-worker'), 'disabled'),
+            }, snapshot['containers'])
+            self.assertEqual(stamp, snapshot['backup_last_success'])
+            self.assertEqual(stamp, snapshot['approval_worker_last_success'])
+            self.assertEqual('failed', snapshot['deploy_attempt_status'])
+            self.assertEqual('b' * 40, snapshot['deployed_revision'])
+            self.assertEqual(['antigravity', 'codex'], snapshot['reviewer_pool'])
+            reset = datetime.fromtimestamp(int(active_reset.timestamp() * 1000) / 1000, timezone.utc)
+            self.assertEqual({'codex': reset.isoformat()}, snapshot['reviewer_cooldowns'])
+            self.assertEqual({'claude': False, 'codex': True, 'opencode': False, 'grok': False,
+                              'antigravity': True}, snapshot['t3_provider_auth'])
+            self.assertEqual(generation, snapshot['pack_sync']['generation'])
+            self.assertEqual('2030-01-02', snapshot['builder_pat_expires_on'])
 
     def test_paperclip_is_stopped_never_removed_and_not_required(self):
         with tempfile.TemporaryDirectory() as td:

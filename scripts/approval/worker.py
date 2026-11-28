@@ -341,6 +341,8 @@ def main():
             print('Todoist credential and ' + PROJECT_NAME + ' project access verified.')
         else:
             tick(ROOT, remote, datetime.now(timezone.utc))
+            atomic_status(ROOT / 'approvals/state', 'last-success',
+                          {'completed_at': datetime.now(timezone.utc).isoformat()})
     except HTTPError as error:
         print(f'Todoist queue deferred (HTTP {error.code}).', file=sys.stderr)
         return 1
