@@ -38,11 +38,18 @@ if a[:2] == ['kanban', '--board'] and a[3] == 'create':
 if a[:1] == ['cron']:
     store = pdir / 'cron' / 'jobs.json'; store.parent.mkdir(parents=True, exist_ok=True)
     data = load(store, {'jobs': []})
+    if '--script' in a and not (pdir / 'scripts' / a[a.index('--script') + 1]).is_file():  # real cron refuses these
+        print('Script file not found', file=sys.stderr); sys.exit(1)
     if a[1] == 'create':
         paused = '--paused' in a
         data['jobs'].append({'id': uuid.uuid4().hex[:12], 'name': a[a.index('--name') + 1], 'enabled': True,
                              'state': 'paused' if paused else 'scheduled', 'paused_at': 'x' if paused else None,
-                             'skills': [a[i + 1] for i, v in enumerate(a) if v == '--skill']})
+                             'skills': [a[i + 1] for i, v in enumerate(a) if v == '--skill'],
+                             'script': a[a.index('--script') + 1] if '--script' in a else None})
+    elif a[1] == 'edit':
+        for j in data['jobs']:
+            if j['id'] == a[2]:
+                j['script'] = a[a.index('--script') + 1]
     elif a[1] in ('pause', 'resume'):
         for j in data['jobs']:
             if j['id'] == a[2]:
@@ -106,6 +113,40 @@ class VentureFactoryTests(unittest.TestCase):
         self.assertEqual({'acme-outcome', 'acme-distill'}, {j['name'] for j in self.jobs()})
         self.assertTrue(all(j['state'] == 'scheduled' and j['skills'] == ['venture-lead'] for j in self.jobs()))
         self.assertTrue(m['first_task'].startswith('t_'))
+
+    def test_loops_carry_an_idle_gate_and_the_distillation_rule_and_existing_jobs_get_the_gate(self):
+        self.assertEqual(0, self.create())
+        self.assertEqual({'acme-outcome': 'nix-os/gate-outcome.py', 'acme-distill': 'nix-os/gate-distill.py'},
+                         {j['name']: j['script'] for j in self.jobs()})
+        self.assertFalse(any(c[:2] == ['-p', 'acme'] and c[2:4] == ['cron', 'edit'] for c in self.calls()))
+        collector = (ROOT / 'skills/company-ops/scripts/collect_evidence.py').read_text()
+        for name in ('gate-outcome.py', 'gate-distill.py'):  # installed before the jobs that name them
+            gate = self.home / 'profiles/acme/scripts/nix-os' / name
+            self.assertEqual((collector, 0o755), (gate.read_text(), gate.stat().st_mode & 0o777))
+        distill = next(c for c in self.calls() if 'acme-distill' in c)
+        prompt = distill[distill.index('create') + 2]
+        for needle in ('Deterministic-first', 'script, CI check, lint or API constraint', 'Never auto-apply',
+                       'never edit the tests or metric'):
+            self.assertIn(needle, prompt)
+        store = self.home / 'profiles/acme/cron/jobs.json'
+        data = json.loads(store.read_text())
+        for job in data['jobs']:  # jobs created by an earlier release have no gate
+            job['script'] = None
+        store.write_text(json.dumps(data))
+        self.assertEqual(0, self.create())  # rerun reconciles exactly the script field
+        edits = [c for c in self.calls() if c[2:4] == ['cron', 'edit']]
+        self.assertEqual(2, len(edits))
+        self.assertTrue(all(c[5] == '--script' and len(c) == 7 for c in edits))
+        self.assertEqual(['nix-os/gate-outcome.py', 'nix-os/gate-distill.py'], sorted(j['script'] for j in self.jobs())[::-1])
+        self.assertEqual(0, self.create())
+        self.assertEqual(2, len([c for c in self.calls() if c[2:4] == ['cron', 'edit']]))  # no further edits
+
+    def test_loops_are_created_ungated_when_the_collector_or_a_safe_target_is_missing(self):
+        self.v.GATE_SOURCE = self.home / 'missing-collector.py'
+        self.assertEqual(0, self.create('beta'))
+        self.assertEqual([None, None], [j['script'] for j in self.jobs('beta')])
+        self.assertFalse(any('--script' in c for c in self.calls()))
+        self.assertFalse((self.home / 'profiles/beta/scripts').exists())
 
     def test_create_is_idempotent(self):
         self.assertEqual(0, self.create())

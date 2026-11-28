@@ -787,6 +787,35 @@ class DeploymentTests(unittest.TestCase):
             self.assertFalse((hermes / 'skills/.nix-os.prev').exists())
             self.assertFalse((hermes / 'profiles/clone/skills/nix-os').exists())
 
+    def test_idle_gate_scripts_install_into_each_owning_profile_only(self):
+        collector = (ROOT / 'skills/company-ops/scripts/collect_evidence.py').read_text()
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            hermes = state / 'hermes'
+            (hermes / 'skills').mkdir()
+            (hermes / 'profiles/acme/skills').mkdir(parents=True)
+            (hermes / 'profiles/acme/nix-venture.json').write_text('{"venture": "acme"}')
+            (hermes / 'profiles/clone/skills').mkdir(parents=True)
+            (hermes / 'profiles/clone/nix-venture.json').write_text('{"venture": "acme"}')  # copied marker
+            apply('8' * 40, ROOT, state, Path(td) / 'current', run=self.healthy_runner([]))
+            for home in (hermes, hermes / 'profiles/acme'):
+                for loop in ('outcome', 'distill', 'improvement'):
+                    gate = home / f'scripts/nix-os/gate-{loop}.py'
+                    self.assertEqual(collector, gate.read_text())
+                    self.assertEqual(0o755, gate.stat().st_mode & 0o777)
+            self.assertTrue((hermes / 'scripts/nix-os/health.py').is_file())
+            self.assertFalse((hermes / 'profiles/acme/scripts/nix-os/health.py').exists())
+            self.assertFalse((hermes / 'profiles/clone/scripts').exists())
+        with tempfile.TemporaryDirectory() as td:
+            state = self.prepare_state(td)
+            hermes = state / 'hermes'
+            (hermes / 'skills').mkdir()
+            (hermes / 'profiles/acme/skills').mkdir(parents=True)
+            (hermes / 'profiles/acme/nix-venture.json').write_text('{"venture": "acme"}')
+            (hermes / 'profiles/acme/scripts').symlink_to(Path(td))
+            with self.assertRaisesRegex(ValueError, 'must not be a symlink'):
+                deployment.install_health_script(ROOT, state)
+
     def test_crm_is_opt_in_and_its_secrets_are_generated_once(self):
         with tempfile.TemporaryDirectory() as td:
             state = self.prepare_state(td)
