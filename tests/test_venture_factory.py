@@ -61,7 +61,7 @@ class VentureFactoryTests(unittest.TestCase):
         fake = Path(self.td.name) / 'hermes'
         fake.write_text(FAKE)
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-        self.env = patch_env({'HERMES_BIN': str(fake)})
+        self.env = patch_env({'HERMES_BIN': str(fake), 'GWS_BIN': str(Path(self.td.name) / 'no-gws')})
         self.env.__enter__()
         spec = importlib.util.spec_from_file_location('venture', TOOL)
         self.v = importlib.util.module_from_spec(spec)
@@ -247,6 +247,94 @@ class VentureFactoryTests(unittest.TestCase):
         for legacy in ('pulse', 'algua', 'meabeclick', 'nixvert'):
             self.assertNotIn(legacy, text)
 
+    def _fake_drive(self):
+        spec = importlib.util.spec_from_file_location('test_vault_helper', ROOT / 'tests/test_vault.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        drive_dir = Path(self.td.name) / 'drive'
+        drive_dir.mkdir(exist_ok=True)
+        return mod.FakeDriveHarness(drive_dir)
+
+    def test_create_provisions_drive_folder_records_redacted_receipt_and_reuses_on_retry(self):
+        drive = self._fake_drive()
+        with patch_env({
+            'PATH': f"{drive.bin_dir}:{os.environ.get('PATH', '')}",
+            'FAKE_GWS_STATE': str(drive.state_path),
+            'FAKE_GWS_LOG': str(drive.log_path),
+            'GWS_BIN': None,
+        }):
+            self.assertEqual(0, self.create())
+            m = self.manifest()
+            kv = m['provisioning']['knowledge_vault']
+            self.assertEqual('provisioned', kv['status'])
+            self.assertEqual('Nix/Ventures/acme', kv['path'])
+            self.assertEqual(64, len(kv['folder_id_sha256']))
+            receipt_file = self.home / 'ventures/acme/knowledge-vault.json'
+            self.assertTrue(receipt_file.is_file())
+            raw_receipt = receipt_file.read_text()
+            raw_manifest = (self.home / 'ventures/acme/manifest.json').read_text()
+            for fid in drive.all_ids():
+                self.assertNotIn(fid, raw_receipt)
+                self.assertNotIn(fid, raw_manifest)
+            readme = drive.find_by_path('Nix/Ventures/acme/README.md')
+            self.assertIsNotNone(readme)
+            self.assertIn('[PRD](PRD.md)', readme['content'])
+            self.assertIn('[GTM](GTM.md)', readme['content'])
+
+            # Retry reuses the redacted receipt without calling gws again.
+            drive.clear_calls()
+            self.assertEqual(0, self.create())
+            self.assertEqual([], drive.calls())
+            self.assertEqual(kv['folder_id_sha256'], self.manifest()['provisioning']['knowledge_vault']['folder_id_sha256'])
+
+            # Pause and retire leave the Drive folder intact.
+            self.assertEqual(0, self.call('pause', '--id', 'acme', '--reason', 'hold'))
+            self.assertEqual(0, self.call('retire', '--id', 'acme', '--reason', 'done'))
+            self.assertIsNotNone(drive.find_by_path('Nix/Ventures/acme/README.md'))
+
+    def test_create_tolerates_gws_unavailable_and_reconciles_pending_on_retry(self):
+        # Default setUp points GWS_BIN to a missing binary: create succeeds and records pending.
+        self.assertEqual(0, self.create())
+        m = self.manifest()
+        self.assertEqual('pending', m['provisioning']['knowledge_vault']['status'])
+        receipt = json.loads((self.home / 'ventures/acme/knowledge-vault.json').read_text())
+        self.assertEqual('pending', receipt['status'])
+
+        # Once gws is available on PATH, retry reconciles pending -> provisioned.
+        drive = self._fake_drive()
+        with patch_env({
+            'PATH': f"{drive.bin_dir}:{os.environ.get('PATH', '')}",
+            'FAKE_GWS_STATE': str(drive.state_path),
+            'FAKE_GWS_LOG': str(drive.log_path),
+            'GWS_BIN': None,
+        }):
+            self.assertEqual(0, self.create())
+            self.assertEqual('provisioned', self.manifest()['provisioning']['knowledge_vault']['status'])
+            self.assertIsNotNone(drive.find_by_path('Nix/Ventures/acme/README.md'))
+
+    def test_create_reuses_partially_provisioned_drive_folder_and_dry_run_skips_gws(self):
+        drive = self._fake_drive()
+        drive.add_item('drv_ventures', 'Ventures', 'application/vnd.google-apps.folder', 'drv_nix_owned')
+        drive.add_item('drv_acme', 'acme', 'application/vnd.google-apps.folder', 'drv_ventures')
+        with patch_env({
+            'PATH': f"{drive.bin_dir}:{os.environ.get('PATH', '')}",
+            'FAKE_GWS_STATE': str(drive.state_path),
+            'FAKE_GWS_LOG': str(drive.log_path),
+            'GWS_BIN': None,
+        }):
+            self.assertEqual(0, self.create('acme', '--dry-run'))
+            self.assertEqual([], drive.calls())
+            self.assertFalse((self.home / 'ventures/acme/knowledge-vault.json').exists())
+
+            self.assertEqual(0, self.create('acme'))
+            acme_folders = [
+                f for f in drive.load_state()['files'].values()
+                if f['name'] == 'acme' and f['mimeType'] == 'application/vnd.google-apps.folder'
+            ]
+            self.assertEqual(1, len(acme_folders))
+            self.assertIsNotNone(drive.find_by_path('Nix/Ventures/acme/README.md'))
+            self.assertEqual('provisioned', self.manifest()['provisioning']['knowledge_vault']['status'])
+
 
 class patch_env:
     def __init__(self, values):
@@ -255,7 +343,10 @@ class patch_env:
     def __enter__(self):
         for k, v in self.values.items():
             self.saved[k] = os.environ.get(k)
-            os.environ[k] = v
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def __exit__(self, *exc):
         for k, v in self.saved.items():

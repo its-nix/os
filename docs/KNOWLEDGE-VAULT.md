@@ -2,7 +2,28 @@
 
 Hermes works directly in **My Drive → Nix** on the founder’s own Google account. The pinned Google Workspace CLI (`gws`) runs in the Hermes container. The host sync bridge from PR #109 was retired before activation.
 
-Keep shared notes, templates and links as ordinary Markdown files under **Nix**. For a native Google Doc or Sheet, write an index note with its title, summary and link, and keep the original in Google Drive. Keep raw customer data and bulk transcript imports out of shared notes. Reviewed policy stays in the read-only Git KB snapshot at `/knowledge/company`. Propose evidence-linked policy changes by PR against the KB.
+Keep shared notes, templates and links as ordinary Markdown files under **Nix**. For a native Google Doc, Sheet or Slides file, write a sibling `<title>.index.md` index note with YAML frontmatter, a one-line summary and its `webViewLink`, and keep the original in Google Drive. Keep raw customer data and bulk transcript imports out of shared notes. Reviewed policy stays in the read-only Git KB snapshot at `/knowledge/company`. Propose evidence-linked policy changes by PR against the KB.
+
+## Obsidian vault structure
+
+**My Drive → Nix** is structured so the founder can open it directly as an Obsidian vault (through the Google Drive desktop sync app or an Obsidian-compatible Drive sync tool on Android) while keeping every note readable in plain Markdown:
+
+- `Nix/START-HERE.md` — vault home explaining what lives where, with relative links to `CONVENTIONS.md`, `Company/`, and `Ventures/`.
+- `Nix/CONVENTIONS.md` — required YAML frontmatter keys (`title`, `type`, `venture`, `status`, `updated`, `source`), relative links (no absolute Drive URLs for local notes), per-area `_attachments/` folders, and the `<title>.index.md` rule for native Google Docs, Sheets, and Slides.
+- `Nix/.obsidian/app.json` — minimal vault config (`useMarkdownLinks: true`, `newLinkFormat: "relative"`, `attachmentFolderPath: "./_attachments"`).
+- `Nix/Ventures/<id>/` — per-venture working folder with a `README.md` index note linking to `PRD.md` and `GTM.md`.
+
+Deterministic maintenance runs through `skills/google-drive/scripts/vault.py` (deployed inside Hermes at `/opt/data/skills/nix-os/google-drive/scripts/vault.py`). It resolves the single owned top-level **Nix** folder, never overwrites existing files, never shares or deletes, and never prints or stores raw Drive IDs in logs or receipts:
+
+```sh
+docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/google-drive/scripts/vault.py bootstrap --dry-run
+docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/google-drive/scripts/vault.py bootstrap
+docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/google-drive/scripts/vault.py ensure-venture <id>
+docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/google-drive/scripts/vault.py index-native Ventures/<id>
+docker exec -u 10000 nixos-hermes python3 /opt/data/skills/nix-os/google-drive/scripts/vault.py lint
+```
+
+Venture Factory (`skills/venture-factory/scripts/venture.py create`) calls `vault.py ensure-venture` automatically, persists a local redacted receipt (`$HERMES_HOME/ventures/<id>/knowledge-vault.json`, storing only SHA-256 digests of Drive IDs), reuses that receipt on retry, and records `pending` without failing venture creation when `gws` is unavailable or unauthenticated.
 
 ## Founder sign-in
 
