@@ -326,6 +326,9 @@ class DeploymentTests(unittest.TestCase):
                                  (skills / 'nix-os/google-drive/SKILL.md').read_text())
                 self.assertEqual([], [p.name for p in skills.iterdir() if p.name.startswith('.nix-os')])
             self.assertFalse((hermes / 'profiles/engineer/skills/nix-os').exists())
+            for name in ('health.py', 'digest.py'):
+                installed = hermes / 'scripts/nix-os' / name
+                self.assertEqual((ROOT / 'skills/company-ops/scripts' / name).read_bytes(), installed.read_bytes())
             self.assertEqual('kit-owned', (hermes / 'skills/brainstorming/SKILL.md').read_text())
 
     def test_deploy_retires_the_drive_bridge_and_removes_the_empty_vault_once(self):
