@@ -68,6 +68,22 @@ def action_lock(path):
         yield
 
 
+@contextmanager
+def admission_lock(venture):
+    directory = venture_dir(venture)
+    # Share the factory's lock so request admission cannot race a lifecycle transition.
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / '.lock').open('a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_SH)
+        try:
+            manifest = json.loads((directory / 'manifest.json').read_text())
+        except FileNotFoundError:
+            manifest = {}  # Existing non-registry approval callers.
+        if manifest.get('lifecycle') in {'paused', 'retired'}:
+            raise SystemExit('Venture is not accepting external approval requests')
+        yield
+
+
 def read_preview(venture, name):
     drafts = venture_dir(venture) / 'drafts'
     if '/' in name or name in ('', '.', '..'):
@@ -135,7 +151,7 @@ def refresh(path, receipt):
 
 def request(args):
     path = receipt_path(args.venture, args.action_id)
-    with action_lock(path):
+    with admission_lock(args.venture), action_lock(path):
         if path.exists():
             receipt = refresh(path, json.loads(path.read_text()))
             if receipt['status'] != 'queued-local' or receipt.get('outcome') or receipt.get('queue_status'):

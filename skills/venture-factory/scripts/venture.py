@@ -3,12 +3,14 @@
 
 Runs inside the Hermes container (HERMES_HOME). The registry is native runtime state at
 $HERMES_HOME/ventures/<id>/; Git holds only this tool and its templates. Every native
-change goes through the `hermes` CLI; profile cron stores are only read back.
+cron mutation goes through the `hermes` CLI. Board admission uses the pinned Kanban store.
 
   venture.py create  --id ID --name NAME --mission TEXT --approval-ref REF [--prd F] [--gtm F]
                      [--pack P ...] [--crm] [--repo OWNER/NAME] [--timezone TZ] [--dry-run]
   venture.py pause|resume|retire --id ID [--reason TEXT]
   venture.py stage   --id ID --to operating|scaling|pivoting
+  venture.py reconcile --id ID
+  venture.py release --id ID TASK_ID [TASK_ID ...]
   venture.py status  [--id ID]
 
 No venture name is built in. A pre-existing profile that this registry did not create is
@@ -18,12 +20,14 @@ never adopted, so historical/legacy profiles cannot be reactivated by a new vent
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import string
 import subprocess
 import sys
@@ -42,6 +46,13 @@ DEFAULT_PACKS = ['core', 'product', 'research', 'growth', 'sales']
 PACKS = {'core', 'engineering', 'product', 'growth', 'sales', 'content', 'design', 'research',
          'operations', 'data-ai'}
 MARKER = 'nix-venture.json'
+BUDGETS = {
+    'max_cards_per_window': 3, 'max_attempt_minutes': 5, 'failure_limit': 2,
+    'max_work_minutes_per_window': 30, 'max_concurrent_workers': 1, 'spend_limit': 0,
+}
+FACTORY = '/opt/data/skills/nix-os/venture-factory/scripts/venture.py'
+CONSTRAINT = re.compile(r'^#{1,6} Current constraint\s*$', re.MULTILINE)
+RETIRED_KEYS = re.compile(r'^\s*(?:export\s+)?(?:MCP_T3_API_KEY|TWENTY_API_KEY)\s*=')
 
 
 class Refusal(ValueError):
@@ -73,7 +84,7 @@ class Hermes:
     """Thin CLI wrapper; tests substitute HERMES_BIN with a fake."""
 
     def __init__(self, home, binary=None, dry_run=False):
-        self.home = Path(home)
+        self.home = Path(home).expanduser().absolute()
         self.binary = binary or os.environ.get('HERMES_BIN', 'hermes')
         self.dry_run = dry_run
         self.planned = []
@@ -113,10 +124,10 @@ class Hermes:
     def cron_jobs(self, profile):
         store = self.profile_dir(profile) / 'cron' / 'jobs.json'
         if not store.exists():
-            return {}
+            return []
         data = json.loads(store.read_text())
         jobs = data.get('jobs', []) if isinstance(data, dict) else data
-        return {j.get('name'): j for j in jobs if j.get('name')}
+        return jobs
 
 
 class Registry:
@@ -132,6 +143,9 @@ class Registry:
         return json.loads(manifest.read_text()) if manifest.exists() else None
 
     def save(self, manifest):
+        current = self.load(manifest['id'])
+        if current == manifest:
+            return
         manifest['updated_at'] = now()
         atomic_write(self.path(manifest['id']) / 'manifest.json', json.dumps(manifest, indent=2) + '\n')
 
@@ -145,20 +159,28 @@ def render(name, values):
     return string.Template((TEMPLATES / name).read_text()).substitute(values)
 
 
-def loops(vid, tz):
+def loops(manifest):
     """Logical loop templates as native cron jobs owned by the lead profile."""
+    vid = manifest['id']
+    budget = manifest['budgets']
+    guard = (f'Read /opt/data/ventures/{vid}/manifest.json first. Stop unless its lifecycle is '
+             'incubating, operating, scaling or pivoting.')
     return [
         {'name': f'{vid}-outcome', 'schedule': '0 7 * * *',
-         'skills': ['venture-lead'],
-         'prompt': (f'Venture outcome loop for {vid}. Read your CHARTER and the venture board. '
-                    'Observe source-system evidence, pick the single highest-value next task toward the '
-                    'mission metric, execute or delegate it (Kanban card; T3 for code), verify on evidence, '
-                    'record the result and any blocker. Queue privileged external actions; never perform them.')},
+         'prompt': (f'Venture outcome loop for {vid}. {guard} Read CHARTER.md, measure its outcome metrics '
+                    'at their sources, and rank eligible Kanban cards with the Current constraint first. '
+                    f'Release up to {budget["max_cards_per_window"]} via python3 {FACTORY} release '
+                    f'--id {vid} TASK_ID [TASK_ID ...], in rank and dependency order. '
+                    f'Reserve {budget["max_attempt_minutes"]} minutes per attempt with failure limit '
+                    f'{budget["failure_limit"]}, up to {budget["max_work_minutes_per_window"]} work minutes '
+                    f'per window, {budget["max_concurrent_workers"]} worker per lead and zero spend. '
+                    'Leave unselected cards unassigned. Let native Kanban run the batch and advance dependencies. '
+                    'Review the previous results and blockers on evidence. Queue founder-gated actions.')},
         {'name': f'{vid}-distill', 'schedule': '0 6 * * 1',
-         'skills': ['venture-lead'],
-         'prompt': (f'Weekly workflow-distillation review for {vid}. Find a procedure that succeeded at least '
-                    'twice. If a deterministic script, skill or workflow would remove repeated reasoning, open '
-                    'a Kanban card to distill it through a PR with tests. Do not change the metric that judges it.')},
+         'prompt': (f'Weekly workflow-distillation review for {vid}. {guard} Find a procedure that succeeded '
+                    'at least twice. If a deterministic script, skill or workflow would remove repeated reasoning, '
+                    'open an unassigned Kanban card for the outcome loop to rank. Do not change the metric '
+                    'that judges it.')},
     ]
 
 
@@ -273,36 +295,252 @@ def ensure_board(hermes, registry, manifest):
         registry.save(manifest)
 
 
+def reconcile_budgets(manifest):
+    budget = manifest.setdefault('budgets', {})
+    for key, value in BUDGETS.items():
+        budget.setdefault(key, value)
+        if type(budget[key]) is not int or not (0 < budget[key] <= value or budget[key] == value == 0):
+            raise Refusal(f'Invalid venture budget: {key}')
+    return budget
+
+
+def cron_enabled(job):
+    return job.get('enabled', True) and job.get('state') != 'paused' and not job.get('paused_at')
+
+
 def ensure_loops(hermes, registry, manifest, activate):
-    """Create missing loops PAUSED (recorded immediately); resume them only when `activate`."""
+    """Reconcile factory jobs by name in place and record the verified spec for each job ID."""
     vid = manifest['id']
-    want = loops(vid, manifest.get('timezone'))
-    manifest['loops'] = [l['name'] for l in want]
-    jobs = hermes.cron_jobs(vid)
+    reconcile_budgets(manifest)
+    want = loops(manifest)
+    manifest['loops'] = [loop['name'] for loop in want]
     for loop in want:
-        if loop['name'] in jobs:
-            continue
-        argv = ['cron', 'create', loop['schedule'], loop['prompt'], '--name', loop['name'], '--catch-up', 'off',
-                '--paused', '--paused-reason', 'venture provisioning']
-        for skill in loop['skills']:
-            argv += ['--skill', skill]
-        if manifest.get('timezone'):
-            argv += ['--timezone', manifest['timezone']]
-        hermes.run(*argv, profile=vid)
-        if not hermes.dry_run:
-            registry.save(manifest)
-    jobs = hermes.cron_jobs(vid)
-    for loop in want:
-        job = jobs.get(loop['name'])
+        name, schedule, prompt = (loop[key] for key in ('name', 'schedule', 'prompt'))
+        tz = manifest.get('timezone')
+        spec = (schedule, prompt, ['venture-lead'], tz, False)
+        jobs = [job for job in hermes.cron_jobs(vid) if job.get('name') == name]
+        if len(jobs) > 1:
+            raise Refusal(f'Ambiguous venture cron job: {name}')
+        job = jobs[0] if jobs else None
+        flags = ['--skill', 'venture-lead', '--catch-up', 'off']
+        changed = job is None or cron_spec(job) != spec
         if job is None:
-            if hermes.dry_run:
-                continue
-            raise Refusal(f'Cron job {loop["name"]} did not read back after creation')
-        is_paused = job.get('paused_at') is not None or job.get('state') == 'paused' or not job.get('enabled', True)
-        if activate and is_paused:
-            hermes.run('cron', 'resume', job['id'], profile=vid)
-        elif not activate and not is_paused:
+            hermes.run('cron', 'create', schedule, prompt, '--name', name, *flags,
+                       '--paused', '--paused-reason', 'venture provisioning',
+                       *(['--timezone', tz] if tz else []), profile=vid)
+        elif changed:
+            hermes.run('cron', 'edit', job['id'], '--schedule', schedule, '--prompt', prompt,
+                       *flags, '--timezone', tz or '', profile=vid)
+        if hermes.dry_run:
+            continue
+        actual = next((j for j in hermes.cron_jobs(vid) if j.get('name') == name), None)
+        if actual is None or cron_spec(actual) != spec:
+            raise Refusal(f'Cron job {name} did not read back with the expected spec')
+        receipt = {'job_id': actual['id'], 'spec_sha256': sha256(json.dumps(spec))}
+        receipts = manifest.setdefault('loop_reconciliation', {})
+        previous = receipts.get(name, {})
+        if changed or any(previous.get(key) != value for key, value in receipt.items()):
+            receipts[name] = dict(receipt, reconciled_at=now())
+            registry.save(manifest)
+        if activate and not cron_enabled(actual):
+            hermes.run('cron', 'resume', actual['id'], profile=vid)
+        elif not activate and cron_enabled(actual):
+            hermes.run('cron', 'pause', actual['id'], profile=vid)
+
+
+def cron_spec(job):
+    return ((job.get('schedule') or {}).get('expr'), job.get('prompt'), job.get('skills'),
+            job.get('timezone'), job.get('catch_up'))
+
+
+def board_paths(hermes, manifest):
+    slug = manifest['board']
+    if slug != manifest['id'] or not manifest.get('provisioning', {}).get('board_created'):
+        raise Refusal('Venture board ownership is required')
+    root = hermes.home / 'kanban' / 'boards'
+    return root / slug, root / '_archived' / f'nix-hold-{slug}'
+
+
+def hold_board(hermes, registry, manifest):
+    board, held = board_paths(hermes, manifest)
+    if board.exists():
+        if held.exists() or board.is_symlink() or not (board / 'kanban.db').is_file():
+            raise Refusal('Venture board hold conflicts with existing board state')
+        metadata = json.loads((board / 'board.json').read_text())
+        if metadata.get('archived') and metadata.get('nix_venture_hold') != manifest['id']:
+            raise Refusal('Venture board is already archived outside the factory')
+        held.parent.mkdir(exist_ok=True)
+        # Match Hermes' archive directory layout and serialize against its native dispatch tick.
+        with (board / 'kanban.db.dispatch.lock').open('ab') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            # Stop new dispatcher scans before reclaiming existing claims.
+            metadata['archived'] = True
+            metadata['nix_venture_hold'] = manifest['id']
+            atomic_write(board / 'board.json', json.dumps(metadata) + '\n')
+            reclaim_running(hermes, manifest)
+            board.rename(held)
+    if not (held / 'kanban.db').is_file():
+        raise Refusal('Venture board database is missing')
+    # The archived directory is enough to exclude the board; no live metadata remains.
+    receipt = str(held.relative_to(hermes.home))
+    if manifest.get('held_board') != receipt:
+        manifest['held_board'] = receipt
+        registry.save(manifest)
+
+
+def reclaim_running(hermes, manifest):
+    def running():
+        return json.loads(hermes.run('list', '--status', 'running', '--json',
+                                     board=manifest['board'], mutate=False))
+
+    for task in running():
+        try:
+            hermes.run('reclaim', task['id'], '--reason', 'venture lifecycle hold', board=manifest['board'])
+        except Refusal:
+            if task['id'] in {current['id'] for current in running()}:
+                raise
+
+
+def restore_board(hermes, manifest):
+    board, held = board_paths(hermes, manifest)
+    if held.exists():
+        if board.exists() or held.is_symlink():
+            raise Refusal('Venture board restore conflicts with existing board state')
+        metadata = json.loads((held / 'board.json').read_text())
+        if metadata.get('nix_venture_hold') != manifest['id']:
+            raise Refusal('Venture board hold ownership is required')
+        held.rename(board)
+    path = board / 'board.json'
+    metadata = json.loads(path.read_text())
+    if metadata.get('nix_venture_hold') == manifest['id']:
+        metadata.pop('nix_venture_hold')
+        metadata['archived'] = False
+        atomic_write(path, json.dumps(metadata) + '\n')
+    manifest.pop('held_board', None)
+
+
+def suspend_cron(hermes, registry, manifest):
+    vid = manifest['id']
+    jobs = hermes.cron_jobs(vid)
+    custom = set(manifest.get('suspended_cron', []))
+    managed = {loop['name'] for loop in loops(manifest)}
+    custom.update(job['id'] for job in jobs if job.get('name') not in managed and cron_enabled(job))
+    if custom:
+        manifest['suspended_cron'] = sorted(custom)
+        registry.save(manifest)
+    for job in jobs:
+        if cron_enabled(job):
             hermes.run('cron', 'pause', job['id'], profile=vid)
+        hermes.run('cron', 'cancel', job['id'], '--reason', 'venture lifecycle hold', profile=vid)
+
+
+def retire_profile(hermes, manifest):
+    profile = hermes.profile_dir(manifest['lead_profile'])
+    parked = profile / 'gateway.parked'
+    if not parked.exists():
+        # Hermes' multiplexer and ingress routes honor the marker on rescan and restart.
+        atomic_write(parked, '')
+    env = profile / '.env'
+    if env.is_symlink():
+        raise Refusal('Retired profile .env is a symlink')
+    if env.exists():
+        with env.open(newline='') as handle:
+            current = handle.read()
+        kept = ''.join(line for line in current.splitlines(keepends=True) if not RETIRED_KEYS.match(line))
+        if kept != current:
+            atomic_write(env, kept)
+
+
+def reconcile_lifecycle(hermes, registry, manifest):
+    state = manifest['lifecycle']
+    reconcile_budgets(manifest)
+    if state in {'paused', 'retired'}:
+        hold_board(hermes, registry, manifest)
+        if state == 'retired':
+            retire_profile(hermes, manifest)
+        suspend_cron(hermes, registry, manifest)
+    elif state in ACTIVE:
+        ensure_loops(hermes, registry, manifest, activate=True)
+        for job in hermes.cron_jobs(manifest['id']):
+            if job['id'] in manifest.get('suspended_cron', []) and not cron_enabled(job):
+                hermes.run('cron', 'resume', job['id'], profile=manifest['id'])
+        manifest.pop('suspended_cron', None)
+        restore_board(hermes, manifest)
+    else:
+        raise Refusal('Venture provisioning is incomplete; retry create')
+
+
+def release(hermes, registry, vid, ranked):
+    """Admit a ranked batch, reserving its worst-case minutes in native task events."""
+    with venture_lock(registry, vid):
+        manifest = registry.load(vid)
+        if not manifest or manifest['lifecycle'] not in ACTIVE or manifest.get('held_board'):
+            raise Refusal('Venture is not admitting work')
+        require_owned(hermes, manifest)
+        budget = reconcile_budgets(manifest)
+        config = json.loads(hermes.run('config', 'get', 'kanban', '--json', profile='default', mutate=False))
+        if (config.get('max_in_progress_per_profile') != budget['max_concurrent_workers']
+                or config.get('max_in_progress') not in (1, 2) or config.get('default_assignee')):
+            raise Refusal('Set a shared Kanban cap of 1 or 2, one worker per profile and no default assignee, '
+                          'then reload the gateway before releasing work')
+        zone = ZoneInfo(manifest.get('timezone') or 'UTC')
+        window = datetime.now(zone).date().isoformat()
+        # Use read/write mode so a missing or held board can never become an empty live board.
+        board, _ = board_paths(hermes, manifest)
+        db = sqlite3.connect((board / 'kanban.db').as_uri() + '?mode=rw', uri=True)
+        try:
+            db.row_factory = sqlite3.Row
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                return release_batch(db, manifest['lead_profile'], window, budget, ranked)
+        finally:
+            db.close()
+
+
+def release_batch(db, lead, window, budget, ranked):
+    cards = {row['id']: row for row in db.execute(
+        'SELECT id, body, status, assignee, priority FROM tasks')}
+    open_states = {'ready', 'todo', 'running', 'review'}
+    reservations = {}
+    for event in db.execute("SELECT task_id, payload FROM task_events WHERE kind = 'venture_released'"):
+        reservations[event['task_id']] = json.loads(event['payload'])
+    charged = [record for tid, record in reservations.items()
+               if record['window'] == window or (tid in cards and cards[tid]['status'] in open_states)]
+    minutes = budget['max_attempt_minutes'] * budget['failure_limit']
+    remaining = min(budget['max_cards_per_window'] - len(charged),
+                    (budget['max_work_minutes_per_window'] - sum(r['minutes'] for r in charged)) // minutes)
+    # Existing assignments can drain before this window reserves new work.
+    if any(card['assignee'] and card['status'] in open_states and tid not in reservations
+           for tid, card in cards.items()):
+        return {'window': window, 'released': [], 'reason': 'existing assigned work'}
+
+    candidates = {tid for tid, card in cards.items()
+                  if card['status'] in {'ready', 'todo'} and not card['assignee'] and tid not in reservations}
+    constraints = sorted((tid for tid in candidates if CONSTRAINT.search(cards[tid]['body'] or '')),
+                         key=lambda tid: (-cards[tid]['priority'], tid))
+    parents = {}
+    for link in db.execute('SELECT parent_id, child_id FROM task_links'):
+        parents.setdefault(link['child_id'], []).append(link['parent_id'])
+    viable = {tid for tid, card in cards.items()
+              if card['status'] in {'done', 'archived'} or (tid in reservations and card['status'] in open_states)}
+    released = []
+    priority = max((card['priority'] for card in cards.values()), default=0) + max(remaining, 0)
+    for tid in dict.fromkeys([*constraints, *ranked]):
+        if len(released) >= remaining:
+            break
+        if tid not in candidates or not all(parent in viable for parent in parents.get(tid, [])):
+            continue
+        # The pinned CLI has no edit flags for attempt limits on existing cards. Commit the
+        # native assignment, limits and reservation together before the dispatcher can claim.
+        db.execute('UPDATE tasks SET assignee=?, max_runtime_seconds=?, max_retries=?, priority=? WHERE id=?',
+                   (lead, 60 * budget['max_attempt_minutes'], budget['failure_limit'], priority, tid))
+        db.execute("INSERT INTO task_events(task_id, kind, payload, created_at) VALUES (?, 'venture_released', ?, ?)",
+                   (tid, json.dumps({'window': window, 'minutes': minutes, 'assignee': lead}),
+                    int(datetime.now(timezone.utc).timestamp())))
+        released.append(tid)
+        viable.add(tid)
+        priority -= 1
+    return {'window': window, 'released': released}
 
 
 def ensure_mission(hermes, registry, manifest):
@@ -311,7 +549,7 @@ def ensure_mission(hermes, registry, manifest):
     vid = manifest['id']
     body = render('MISSION.md', {'id': vid, 'name': manifest['name'], 'mission': manifest['mission'],
                                  'registry': f'/opt/data/ventures/{vid}'})
-    out = hermes.run('create', f'Mission 1: {manifest["mission"][:80]}', '--body', body, '--assignee', vid,
+    out = hermes.run('create', f'Mission 1: {manifest["mission"][:80]}', '--body', body,
                      '--idempotency-key', f'venture:{vid}:mission:1', '--created-by', 'venture-factory',
                      '--json', board=manifest['board'])
     if hermes.dry_run:
@@ -361,7 +599,12 @@ def create(args, hermes, registry):
         own_profile(hermes, registry, manifest)
         ensure_soul(hermes, manifest)
         registry.save(manifest)
-        ensure_board(hermes, registry, manifest)
+        if manifest['lifecycle'] == 'paused':
+            reconcile_lifecycle(hermes, registry, manifest)
+            registry.save(manifest)
+            return manifest
+        if not manifest.get('held_board'):
+            ensure_board(hermes, registry, manifest)
         if manifest['lifecycle'] == 'approved':
             ensure_loops(hermes, registry, manifest, activate=False)  # pre-commit: created paused
         ensure_mission(hermes, registry, manifest)
@@ -370,7 +613,7 @@ def create(args, hermes, registry):
             manifest['history'].append({'at': now(), 'to': 'incubating', 'by': 'venture-factory'})
             manifest.pop('provisioning_incomplete', None)
             registry.save(manifest)  # commit point: routines start only after this
-        ensure_loops(hermes, registry, manifest, activate=manifest['lifecycle'] in ACTIVE)
+        reconcile_lifecycle(hermes, registry, manifest)
         registry.save(manifest)
         return manifest
 
@@ -398,7 +641,7 @@ def new_manifest(args, packs):
         'memory': {'provider': 'hindsight', 'bank': f'venture-{args.id}', 'status': 'pending'},
         'integrations': {'crm': {'enabled': bool(args.crm), 'workspace': None},
                          'github_repo': args.repo, 'knowledge_folder': f'Ventures/{args.id}'},
-        'timezone': args.timezone, 'created_at': now(), 'history': [], 'provisioning': {},
+        'budgets': dict(BUDGETS), 'timezone': args.timezone, 'created_at': now(), 'history': [], 'provisioning': {},
     }
 
 
@@ -427,9 +670,8 @@ def transition(args, hermes, registry, target):
             raise Refusal('Unknown venture')
         require_owned(hermes, manifest)
         state = manifest['lifecycle']
-        if target == state or (target == 'resume' and state in ACTIVE):
-            # Retry of a decision already recorded (e.g. a cron call failed): reconcile routines only.
-            ensure_loops(hermes, registry, manifest, activate=state in ACTIVE)
+        if target is None or target == state or (target == 'resume' and state in ACTIVE):
+            reconcile_lifecycle(hermes, registry, manifest)
             registry.save(manifest)
             return manifest
         if state == 'retired':
@@ -447,7 +689,7 @@ def transition(args, hermes, registry, target):
         manifest['lifecycle'] = target
         manifest['history'].append({'at': now(), 'to': target, 'reason': getattr(args, 'reason', None)})
         registry.save(manifest)  # the decision is durable first; a failed cron call is retried
-        ensure_loops(hermes, registry, manifest, activate=target in ACTIVE)
+        reconcile_lifecycle(hermes, registry, manifest)
         registry.save(manifest)
         return manifest
 
@@ -478,6 +720,11 @@ def main(argv=None):
     s.add_argument('--id', required=True)
     s.add_argument('--to', required=True, choices=['operating', 'scaling', 'pivoting'])
     s.add_argument('--reason')
+    rec = sub.add_parser('reconcile')
+    rec.add_argument('--id', required=True)
+    rel = sub.add_parser('release')
+    rel.add_argument('--id', required=True)
+    rel.add_argument('tasks', nargs='+')
     st = sub.add_parser('status')
     st.add_argument('--id')
     args = parser.parse_args(argv)
@@ -489,10 +736,14 @@ def main(argv=None):
         elif args.command == 'status':
             result = registry.load(args.id) if args.id else [
                 {k: v[k] for k in ('id', 'name', 'lifecycle', 'board')} for v in registry.all()]
+        elif args.command == 'release':
+            validate_id(args.id)
+            result = release(hermes, registry, args.id, args.tasks)
         else:
-            target = {'pause': 'paused', 'resume': 'resume', 'retire': 'retired', 'stage': None}[args.command]
-            result = transition(args, hermes, registry, target or args.to)
-    except (Refusal, OSError, json.JSONDecodeError, KeyError) as exc:
+            validate_id(args.id)
+            target = {'reconcile': None, 'pause': 'paused', 'resume': 'resume', 'retire': 'retired', 'stage': None}[args.command]
+            result = transition(args, hermes, registry, target if args.command != 'stage' else args.to)
+    except (Refusal, OSError, json.JSONDecodeError, KeyError, sqlite3.Error) as exc:
         print(f'venture: {exc}', file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2))

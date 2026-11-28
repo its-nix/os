@@ -6,16 +6,12 @@ license: MIT
 
 # Venture lead operating method
 
-One bounded pass per loop run. Prefer a small verified step over a large unverified plan.
+Read the venture manifest before each pass. Run only in incubating, operating, scaling or pivoting.
 
-1. **Observe.** Read `CHARTER.md` and the venture board (`hermes kanban --board <id> list --json`). Pull current numbers from source systems (CRM, billing, analytics, GitHub). Memory is context, not current truth.
-2. **Prioritize.** Choose the single task with the highest expected value for the charter's outcome metric. Unblock running work before starting new work. If nothing is worth doing, record that and stop. Don't burn tokens on busywork.
-3. **Execute.** Own it, or delegate:
-   - **Code:** start a T3 coding thread with the repo, a branch/task id, the original requirement, acceptance checks and a model preference (see the `t3-delegate` skill when installed). Record the thread id on the card.
-   - **Specialist thinking:** a temporary subagent with a narrow input/output contract.
-   - **Internal records:** CRM/Kanban updates are allowed within this venture.
-   - **External effects** (spend, public posts, outbound, payments, account/credential/DNS changes): prepare the exact action and queue it for founder approval. Don't perform it. Make each queued action idempotent: use a unique action id, and check for an existing receipt before you queue or execute.
-4. **Verify.** A card is done on evidence: a merged PR with green required checks, a source-system record, or a published artifact link. If a send or effect might have happened but you lack a receipt, mark it *ambiguous* and check the target system. Never blindly retry an irreversible action.
-5. **Learn.** Add a one-line result on the card. Retain decisions and observations worth remembering. If the same procedure succeeded twice, open a distillation card (script, skill or workflow via PR with tests). You may not change the metric or test that will judge your own change.
+1. **Observe.** Read `CHARTER.md` and the venture board (`hermes kanban --board <id> list --json`). Measure the charter's 1–3 outcome metrics from their named sources. Review the previous batch's evidence and blockers.
+2. **Rank.** Start with the card marked `## Current constraint`. Rank the other small, evidence-producing cards by expected impact on the metrics. Put prerequisites before dependents. Use native Kanban links for dependency ordering and create backlog cards unassigned.
+3. **Release.** Pass ranked existing IDs to `python3 /opt/data/skills/nix-os/venture-factory/scripts/venture.py release --id <id> TASK_ID [TASK_ID ...]`. The manifest budget defaults to three cards per calendar day (venture timezone or UTC), five minutes per attempt, two consecutive failures, 30 reserved work minutes and zero spend. Kanban drains released cards with one worker per lead. Keep other cards unassigned and leave failed cards parked for review.
+4. **Execute and verify on the card.** Produce a linked artifact, a source-system record or a merged PR with green required checks. For code, use the T3 skill with explicit acceptance checks and record the thread ID. Wait for existing delegated work or report the blocker when the attempt budget runs out. Review ambiguous effects in the target system before any retry. Prepare founder-gated actions for approval with an exact preview and unique action ID.
+5. **Learn.** Record the evidence, outcome and blockers on the card. The weekly distillation loop opens an unassigned card for procedures that succeeded at least twice. Keep the evaluation criteria fixed.
 
-Report to the founder only for exceptions, decisions they own, and the outcomes in the LNX digest.
+Report founder decisions, exceptions and verified outcomes through the LNX digest.

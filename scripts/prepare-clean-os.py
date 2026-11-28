@@ -90,6 +90,8 @@ No current result means no approved evidence found. Curation reports issues and 
             'platforms': {'discord': {'enabled': profile == pilot['discord']['profile']}},
             'discord': {'require_mention': pilot['discord']['require_mention']},
         }
+        if profile == 'default':
+            config['kanban'] = {'max_in_progress': 2, 'max_in_progress_per_profile': 1, 'failure_limit': 2}
         write(target / 'config.yaml', json.dumps(config, indent=2) + '\n')
         write(target / 'SOUL.md', boundaries + knowledge + '\n## Agency role reference\n\n' + roles[agent['id']])
         write(target / '.env', 'API_SERVER_KEY=' + secrets.token_hex(32) + '\n')
