@@ -37,6 +37,16 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+def timestamp(value):
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected an ISO 8601 timestamp with timezone') from None
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError('expected an ISO 8601 timestamp with timezone')
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def home():
     path = Path(os.environ.get('HERMES_HOME', '/opt/data'))
     return path.parent.parent if path.parent.name == 'profiles' else path
@@ -145,6 +155,15 @@ def request(args):
                        'effect': args.effect, 'preview': read_preview(args.venture, args.preview),
                        'cost': args.cost or 'none stated', 'expires': args.expires or 'none stated',
                        'executor': args.executor, 'requested_at': now(), 'status': 'queued-local', 'outcome': None}
+            received, ready = getattr(args, 'lead_received_at', None), getattr(args, 'draft_ready_at', None)
+            if received and ready and datetime.fromisoformat(received) > datetime.fromisoformat(ready):
+                raise SystemExit('Draft-ready time must follow lead receipt')
+            if received:
+                receipt['lead_received_at'] = received
+            if ready:
+                receipt['draft_ready_at'] = ready
+            if getattr(args, 'revenue_blocking', False):
+                receipt['revenue_blocking'] = True
         if 'status_key' not in receipt:
             if receipt['expires'] == 'none stated':
                 receipt['expires'] = (date.fromisoformat(receipt['requested_at'][:10]) + timedelta(days=7)).isoformat()
@@ -180,13 +199,22 @@ def record(args):
         if args.outcome != 'expired' and not receipt.get('todoist_task'):
             raise SystemExit('Only an action the founder actually received can be executed or declined; '
                              'an undelivered request can only expire')
+        sent = getattr(args, 'founder_sent_at', None)
+        if sent:
+            if args.outcome != 'executed':
+                raise SystemExit('Founder-sent time requires an executed outcome')
+            ready = receipt.get('draft_ready_at')
+            if ready and datetime.fromisoformat(sent) < datetime.fromisoformat(ready):
+                raise SystemExit('Founder-sent time must follow draft readiness')
+            receipt['founder_sent_at'] = sent
         receipt.update(outcome=args.outcome, evidence=args.evidence, recorded_at=now(), status='closed')
         write(path, receipt, receipt=True)
         return receipt
 
 
 SAFE_FIELDS = ('action_id', 'venture', 'status', 'queue_status', 'queue_reason', 'outcome',
-               'todoist_task', 'requested_at', 'recorded_at')
+               'todoist_task', 'requested_at', 'recorded_at', 'revenue_blocking', 'lead_received_at',
+               'draft_ready_at', 'founder_sent_at')
 
 
 def main(argv=None):
@@ -199,6 +227,9 @@ def main(argv=None):
     r.add_argument('--cost')
     r.add_argument('--expires')
     r.add_argument('--executor', default='founder')
+    r.add_argument('--revenue-blocking', action='store_true')
+    r.add_argument('--lead-received-at', type=timestamp)
+    r.add_argument('--draft-ready-at', type=timestamp)
     s = sub.add_parser('status')
     s.add_argument('--venture', required=True)
     s.add_argument('--action-id', required=True)
@@ -207,6 +238,7 @@ def main(argv=None):
     c.add_argument('--action-id', required=True)
     c.add_argument('--outcome', required=True, choices=['executed', 'declined', 'expired'])
     c.add_argument('--evidence', required=True)
+    c.add_argument('--founder-sent-at', type=timestamp)
     args = parser.parse_args(argv)
     if args.command == 'request':
         result = request(args)

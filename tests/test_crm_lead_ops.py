@@ -7,6 +7,7 @@ import tempfile
 import types
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +109,50 @@ class CrmTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'TWENTY_API_KEY'):
                 self.crm_mod.Twenty()
 
+    def summary_manifest(self, enabled):
+        d = Path(self.td.name) / 'ventures/demo'
+        d.mkdir(parents=True)
+        (d / 'manifest.json').write_text(json.dumps({'id': 'demo', 'lead_profile': 'demo',
+                                                     'integrations': {'crm': {'enabled': enabled}}}))
+
+    def test_summary_skips_disabled_crm(self):
+        self.summary_manifest(False)
+        self.assertEqual({'status': 'disabled'}, self.run_cli('summary', '--venture', 'demo'))
+        self.assertEqual([], self.fake.calls)
+
+    def test_summary_reads_all_pages_and_only_prints_aggregates(self):
+        self.summary_manifest(True)
+        calls = []
+        def pages(method, path):
+            calls.append((method, path))
+            if '/opportunities?' in path:
+                older = {'id': 'older', 'stage': 'NEW', 'pointOfContactId': 'lead-1',
+                         'createdAt': '2026-11-21T00:00:00Z'}
+                if 'starting_after=next-page' not in path:
+                    return {'data': {'opportunities': [older]},
+                            'pageInfo': {'hasNextPage': True, 'endCursor': 'next-page'}}
+                rows = [{'id': 'qualified', 'stage': 'SCREENING', 'pointOfContactId': 'lead-1',
+                         'createdAt': '2026-11-23T00:00:00Z'},
+                        {'id': 'newer', 'stage': 'NEW', 'pointOfContactId': 'lead-2',
+                         'createdAt': '2026-11-23T01:00:00Z'}]
+                return {'data': {'opportunities': rows}, 'pageInfo': {'hasNextPage': False}}
+            if '/notes?' in path:
+                return {'data': {'notes': [{'id': 'note-1', 'title': 'Qualified SCREENING: private',
+                                           'createdAt': '2026-11-23T00:30:00Z'}]}}
+            return {'data': {'noteTargets': [{'noteId': 'note-1', 'targetOpportunityId': 'qualified'}]}}
+
+        self.crm = self.crm_mod.Twenty(key='fixture-credential', opener=pages)
+        result = self.run_cli('summary', '--venture', 'demo', '--since', '2026-11-23T00:00:00Z',
+                              '--until', '2026-11-24T00:00:00Z')
+        self.assertEqual(1, result['stages']['SCREENING'])
+        self.assertEqual(1, result['stages']['NEW'])
+        self.assertEqual(1, result['new_leads'])
+        self.assertEqual(1, result['qualified_leads'])
+        self.assertEqual({'samples': 1, 'median_minutes': 30}, result['stage_timings']['SCREENING'])
+        self.assertTrue(all(method == 'GET' for method, _ in calls))
+        for private in ('fixture-credential', 'private', 'lead-1', 'note-1'):
+            self.assertNotIn(private, json.dumps(result))
+
 
 class ApprovalTests(unittest.TestCase):
     def setUp(self):
@@ -160,6 +205,26 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual('awaiting-founder', completed['status'])
         self.assertEqual('completed-by-founder', completed['queue_status'])
         self.assertIsNone(completed['outcome'])
+
+    def test_approval_cli_records_optional_revenue_and_speed_evidence(self):
+        now = datetime.now(timezone.utc)
+        base = ['--venture', 'demo', '--action-id', 'demo-dana-1']
+        def at(minutes):
+            return (now - timedelta(minutes=minutes)).isoformat()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.m.main(['request', *base, '--target', 'fixture', '--effect', 'fixture',
+                         '--preview', self.preview.name, '--revenue-blocking',
+                         '--lead-received-at', at(60), '--draft-ready-at', at(40)])
+        receipt = self.m.request(self.args())
+        self.assertTrue(receipt['revenue_blocking'])
+        self.assertEqual(at(60), receipt['lead_received_at'])
+        self.assertEqual(at(40), receipt['draft_ready_at'])
+        self.deliver(receipt)
+        with redirect_stdout(io.StringIO()):
+            self.m.main(['record', *base, '--outcome', 'executed', '--evidence', 'fixture',
+                         '--founder-sent-at', now.isoformat()])
+        self.assertEqual(now.isoformat(), self.m.status(self.args())['founder_sent_at'])
 
     def test_without_queue_mount_it_stays_local_and_can_resume(self):
         with patch.dict(os.environ, {'TODOIST_API_TOKEN': 'unused-test-value'}):

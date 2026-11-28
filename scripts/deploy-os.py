@@ -908,8 +908,8 @@ def publish_health(state, receipt, recovery=Path('/var/lib/nixos-recovery')):
         print('Health status publication failed; deployment outcome unchanged.', file=sys.stderr)
 
 
-def install_health_script(source, state):
-    """Deployment-owned copy of the health check for Hermes' no-agent cron (scripts/nix-os/)."""
+def install_company_scripts(source, state):
+    """Deployment-owned copies for Hermes' no-agent crons (scripts/nix-os/)."""
     hermes = state / 'hermes'
     scripts = hermes / 'scripts'
     owner = hermes.stat()
@@ -922,7 +922,8 @@ def install_health_script(source, state):
     if target.is_symlink():
         raise ValueError('Hermes scripts/nix-os must not be a symlink')
     target.mkdir(mode=0o755, exist_ok=True)
-    _root_write(target, 'health.py', (source / 'skills/company-ops/scripts/health.py').read_text(), 0o755)
+    for name in ('health.py', 'digest.py'):
+        _root_write(target, name, (source / 'skills/company-ops/scripts' / name).read_text(), 0o755)
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,
@@ -1037,7 +1038,7 @@ def apply(revision, source, state, current, run=run, t3_credential=renew_t3_cred
         login(source)
         retire_drive(state, run)
         sync_os_skills(source, state)
-        install_health_script(source, state)
+        install_company_scripts(source, state)
         link = current.with_name(current.name + '.next')
         if link.is_symlink():
             link.unlink()  # Recover a temporary pointer left by an interrupted deployment.
