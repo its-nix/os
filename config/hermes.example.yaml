@@ -25,5 +25,3 @@ terminal:
   cwd: "."
 # Provider, model, messaging, identity, and credential settings are
 # intentionally omitted. Configure them interactively per profile.
-# Venture Factory manages gateway.profile_routes in the private default profile.
-# See docs/runbooks/VENTURE-DISCORD.md to bind a channel to its venture lead.
