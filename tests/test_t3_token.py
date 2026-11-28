@@ -71,6 +71,18 @@ class TokenTests(unittest.TestCase):
         self.assertIsNone(token.current_token(self.home / 'profiles/engineer'))
         self.assertFalse(token.share_with_leads(self.home))  # already current: no restart
 
+    def test_retired_profile_does_not_receive_renewed_credentials(self):
+        token.ensure(self.home, NOW, self.minter(), prober=lambda t: True)
+        profile = self.home / 'profiles/acme'
+        profile.mkdir(parents=True)
+        (profile / 'nix-venture.json').write_text(json.dumps({'venture': 'acme'}))
+        registry = self.home / 'ventures/acme'
+        registry.mkdir(parents=True)
+        (registry / '.lock').touch()
+        (registry / 'manifest.json').write_text(json.dumps({'lifecycle': 'retired'}))
+        self.assertFalse(token.share_with_leads(self.home))
+        self.assertIsNone(token.current_token(profile))
+
     def test_injected_newline_or_malformed_token_refused(self):
         with self.assertRaises(token.Refusal):
             token.ensure(self.home, NOW, self.minter(GOOD + '\nHERMES_EVIL=1'), prober=lambda t: True)

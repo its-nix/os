@@ -12,6 +12,7 @@ refresh, so the daily deployment renews it when fewer than RENEW_DAYS remain.
 
 import base64
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -186,9 +187,26 @@ def share_with_leads(hermes_home):
     token = current_token(hermes_home)
     changed = False
     for profile in venture_profiles(hermes_home):
-        if current_token(profile) != token:
-            write_env(profile / '.env', {KEYS[0]: token})
-            changed = True
+        directory = hermes_home / 'ventures' / profile.name
+        if not directory.is_dir():
+            # Legacy markers may predate the registry.
+            if current_token(profile) != token and not (profile / 'gateway.parked').exists():
+                write_env(profile / '.env', {KEYS[0]: token})
+                changed = True
+            continue
+        # The factory holds this lock while retiring and stripping credentials.
+        lock = directory / '.lock'
+        if not lock.is_file():
+            continue
+        with lock.open('r+') as handle:
+            fcntl.flock(handle, fcntl.LOCK_SH)
+            manifest = directory / 'manifest.json'
+            if (profile / 'gateway.parked').exists() or (
+                    manifest.exists() and json.loads(manifest.read_text()).get('lifecycle') == 'retired'):
+                continue
+            if current_token(profile) != token:
+                write_env(profile / '.env', {KEYS[0]: token})
+                changed = True
     return changed
 
 

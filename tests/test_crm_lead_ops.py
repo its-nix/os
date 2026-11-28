@@ -140,6 +140,21 @@ class ApprovalTests(unittest.TestCase):
             'status': status, 'todoist_task': 'example-task',
         }))
 
+    def test_inactive_venture_refuses_new_requests_and_retries(self):
+        previous = self.m.request(self.args())
+        manifest = self.preview.parent.parent / 'manifest.json'
+        self.m.OUTBOX.mkdir()
+        for lifecycle in ('paused', 'retired'):
+            manifest.write_text(json.dumps({'lifecycle': lifecycle}))
+            with self.subTest(lifecycle=lifecycle):
+                with self.assertRaisesRegex(SystemExit, 'not accepting'):
+                    self.m.request(self.args(action_id='another-action'))
+                with self.assertRaisesRegex(SystemExit, 'not accepting'):
+                    self.m.request(self.args())
+                self.assertEqual(previous, self.m.status(self.args()))
+                self.assertEqual([], list(self.m.OUTBOX.iterdir()))
+                self.assertFalse(self.m.receipt_path('demo', 'another-action').exists())
+
     def test_request_never_executes_and_is_idempotent(self):
         self.m.OUTBOX.mkdir()
         receipt = self.m.request(self.args())

@@ -164,6 +164,8 @@ def register_t3_for_leads(state, run):
     endpoint = 'http://127.0.0.1:3773/mcp'
     pending = state / '.t3-registration-reload'
     for profile in _token_module().venture_profiles(state / 'hermes'):
+        if (profile / 'gateway.parked').exists():
+            continue
         cli = ['docker', 'exec', '-u', '10000', 'nixos-hermes', 'hermes', '-p', profile.name]
         key = 'mcp_servers.t3'
         try:

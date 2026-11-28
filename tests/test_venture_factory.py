@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ TOOL = ROOT / 'skills/venture-factory/scripts/venture.py'
 
 # Stateful fake of the Hermes 0.23.0 CLI surface used by the scaffolder (formats observed live).
 FAKE = r'''#!/usr/bin/env python3
-import json, os, sys, uuid
+import json, os, sqlite3, sys, uuid
 from pathlib import Path
 home = Path(os.environ['HERMES_HOME']); a = sys.argv[1:]
 log = home / 'calls.log'; log.parent.mkdir(parents=True, exist_ok=True)
@@ -25,16 +26,44 @@ if a[:2] == ['profile', 'create']:
     d = home / 'profiles' / a[2]
     if d.exists(): print('exists', file=sys.stderr); sys.exit(1)
     d.mkdir(parents=True); (d / 'SOUL.md').write_text('stock soul'); sys.exit(0)
+if a == ['config', 'get', 'kanban', '--json']:
+    print(json.dumps(load(home / 'kanban-config.json', {
+        'max_in_progress': 2, 'max_in_progress_per_profile': 1, 'default_assignee': '',
+    }))); sys.exit(0)
+root = home / 'kanban' / 'boards'
 if a[:3] == ['kanban', 'boards', 'list']:
-    print(json.dumps(load(boards, [{'slug': 'default', 'archived': False}]))); sys.exit(0)
+    entries = load(boards, [{'slug': 'default', 'archived': False}])
+    entries += [json.loads(p.read_text()) for p in root.glob('*/board.json')]
+    print(json.dumps([b for b in entries if '--all' in a or not b['archived']])); sys.exit(0)
 if a[:3] == ['kanban', 'boards', 'create']:
-    b = load(boards, [{'slug': 'default', 'archived': False}]); b.append({'slug': a[3], 'archived': False})
-    boards.write_text(json.dumps(b)); sys.exit(0)
-if a[:2] == ['kanban', '--board'] and a[3] == 'create':
-    t = load(home / 'tasks.json', {}); key = a[a.index('--idempotency-key') + 1]
-    t.setdefault(key, {'id': 't_' + uuid.uuid4().hex[:8], 'title': a[4], 'board': a[2],
-                       'assignee': a[a.index('--assignee') + 1]})
-    (home / 'tasks.json').write_text(json.dumps(t)); print(json.dumps(t[key])); sys.exit(0)
+    board = root / a[3]
+    board.mkdir(parents=True)
+    (board / 'board.json').write_text(json.dumps({'slug': a[3], 'archived': False}))
+    with sqlite3.connect(board / 'kanban.db') as db:
+        db.executescript("""
+            CREATE TABLE tasks(id TEXT PRIMARY KEY, title TEXT, body TEXT, assignee TEXT, status TEXT,
+                               priority INTEGER DEFAULT 0, max_runtime_seconds INTEGER, max_retries INTEGER,
+                               key TEXT UNIQUE);
+            CREATE TABLE task_events(task_id TEXT, kind TEXT, payload TEXT, created_at INTEGER);
+            CREATE TABLE task_links(parent_id TEXT, child_id TEXT);
+        """)
+    sys.exit(0)
+if a[:2] == ['kanban', '--board']:
+    board = root / a[2]
+    with sqlite3.connect((board / 'kanban.db').as_uri() + '?mode=rw', uri=True) as db:
+        db.row_factory = sqlite3.Row
+        if a[3] == 'list':
+            print(json.dumps([dict(t) for t in db.execute('SELECT * FROM tasks WHERE status=?', (a[5],))]))
+        elif a[3] == 'reclaim':
+            db.execute("UPDATE tasks SET status='ready' WHERE id=? AND status='running'", (a[4],))
+        elif a[3] == 'create':
+            key = a[a.index('--idempotency-key') + 1]
+            db.execute("INSERT OR IGNORE INTO tasks(id,title,body,status,key) VALUES (?,?,?,'ready',?)",
+                       ('t_' + uuid.uuid4().hex[:8], a[4], a[a.index('--body')+1], key))
+            print(json.dumps(dict(db.execute('SELECT * FROM tasks WHERE key=?', (key,)).fetchone())))
+        else:
+            sys.exit(2)
+    sys.exit(0)
 if a[:1] == ['cron']:
     store = pdir / 'cron' / 'jobs.json'; store.parent.mkdir(parents=True, exist_ok=True)
     data = load(store, {'jobs': []})
@@ -42,10 +71,17 @@ if a[:1] == ['cron']:
         paused = '--paused' in a
         data['jobs'].append({'id': uuid.uuid4().hex[:12], 'name': a[a.index('--name') + 1], 'enabled': True,
                              'state': 'paused' if paused else 'scheduled', 'paused_at': 'x' if paused else None,
-                             'skills': [a[i + 1] for i, v in enumerate(a) if v == '--skill']})
+                             'skills': [a[i + 1] for i, v in enumerate(a) if v == '--skill'],
+                             'schedule': {'expr': a[2]}, 'prompt': a[3], 'catch_up': False,
+                             'timezone': a[a.index('--timezone')+1] if '--timezone' in a else None})
+    elif a[1] == 'edit':
+        j = next(j for j in data['jobs'] if j['id'] == a[2])
+        j.update(schedule={'expr': a[a.index('--schedule')+1]}, prompt=a[a.index('--prompt')+1],
+                 skills=[a[a.index('--skill')+1]], catch_up=False, timezone=a[a.index('--timezone')+1] or None)
     elif a[1] in ('pause', 'resume'):
         for j in data['jobs']:
             if j['id'] == a[2]:
+                j['enabled'] = a[1] == 'resume'
                 j['state'] = 'paused' if a[1] == 'pause' else 'scheduled'
                 j['paused_at'] = 'x' if a[1] == 'pause' else None
     store.write_text(json.dumps(data)); sys.exit(0)
@@ -151,6 +187,110 @@ class VentureFactoryTests(unittest.TestCase):
         self.assertTrue((self.home / 'profiles/acme').is_dir())
         self.assertEqual(['incubating', 'operating', 'paused', 'operating', 'retired'],
                          [h['to'] for h in self.manifest()['history']])
+
+    def board_db(self):
+        return self.home / 'kanban/boards/acme/kanban.db'
+
+    def test_board_hold_reclaims_running_work_and_preserves_native_ids(self):
+        self.assertEqual(0, self.create())
+        first = self.manifest()['first_task']
+        with sqlite3.connect(self.board_db()) as db:
+            db.execute("UPDATE tasks SET status='running', assignee='acme'")
+            db.execute("INSERT INTO tasks(id,status,assignee) VALUES ('second','ready','acme')")
+        self.assertEqual(0, self.call('pause', '--id', 'acme'))
+        self.assertNotIn('acme', self.v.Hermes(self.home).boards())
+        self.assertFalse(self.board_db().exists())
+        self.assertEqual(1, self.call('release', '--id', 'acme', first))
+        held_db = self.home / self.manifest()['held_board'] / 'kanban.db'
+        with sqlite3.connect(held_db) as db:
+            self.assertEqual([(first, 'ready'), ('second', 'ready')],
+                             db.execute('SELECT id,status FROM tasks ORDER BY rowid').fetchall())
+        for _ in range(2):
+            self.assertEqual(0, self.call('resume', '--id', 'acme'))
+        with sqlite3.connect(self.board_db()) as db:
+            self.assertEqual([(first,), ('second',)], db.execute('SELECT id FROM tasks ORDER BY rowid').fetchall())
+        self.assertFalse(held_db.exists())
+
+    def test_retire_parks_gateway_and_strips_only_venture_credentials(self):
+        self.assertEqual(0, self.create())
+        profile = self.home / 'profiles/acme'
+        env = profile / '.env'
+        env.write_text('# keep me\nMCP_T3_API_KEY=fixture\n export TWENTY_API_KEY = fixture\nOTHER=keep\n')
+        (profile / 'memory.md').write_text('retained')
+        for _ in range(2):
+            self.assertEqual(0, self.call('retire', '--id', 'acme'))
+        self.assertEqual('# keep me\nOTHER=keep\n', env.read_text())
+        self.assertTrue((profile / 'gateway.parked').is_file())
+        self.assertEqual('retained', (profile / 'memory.md').read_text())
+        self.assertFalse(self.board_db().exists())
+
+    def test_release_prioritizes_constraint_keeps_dependencies_and_reserves_work(self):
+        self.assertEqual(0, self.create())
+        first = self.manifest()['first_task']
+        with sqlite3.connect(self.board_db()) as db:
+            db.execute("INSERT INTO tasks(id,status) VALUES ('dependent','todo'),('sibling','ready'),('extra','ready')")
+            db.execute('INSERT INTO task_links VALUES (?,?)', (first, 'dependent'))
+        self.assertEqual(0, self.call('release', '--id', 'acme', 'dependent', 'sibling', 'extra'))
+        with sqlite3.connect(self.board_db()) as db:
+            self.assertEqual([(first, 'ready'), ('dependent', 'todo'), ('sibling', 'ready')], db.execute(
+                "SELECT id,status FROM tasks WHERE assignee='acme' AND max_runtime_seconds=300 "
+                "AND max_retries=2 ORDER BY priority DESC").fetchall())
+            self.assertEqual(30, sum(json.loads(row[0])['minutes'] for row in db.execute(
+                "SELECT payload FROM task_events WHERE kind='venture_released'")))
+            db.execute("UPDATE tasks SET status='done' WHERE assignee='acme'")
+        self.assertEqual(0, self.call('release', '--id', 'acme', 'extra'))
+        with sqlite3.connect(self.board_db()) as db:
+            self.assertIsNone(db.execute("SELECT assignee FROM tasks WHERE id='extra'").fetchone()[0])
+
+    def test_work_minutes_can_limit_releases_before_card_count(self):
+        self.assertEqual(0, self.create())
+        manifest = self.manifest()
+        manifest['budgets']['max_work_minutes_per_window'] = 10
+        self.v.Registry(self.home).save(manifest)
+        first = manifest['first_task']
+        with sqlite3.connect(self.board_db()) as db:
+            db.execute("INSERT INTO tasks(id,status) VALUES ('extra','ready')")
+        self.assertEqual(0, self.call('release', '--id', 'acme', first, 'extra'))
+        with sqlite3.connect(self.board_db()) as db:
+            self.assertEqual([(first,)], db.execute("SELECT id FROM tasks WHERE assignee='acme'").fetchall())
+
+    def test_release_refuses_unsafe_dispatch_settings(self):
+        self.assertEqual(0, self.create())
+        first = self.manifest()['first_task']
+        (self.home / 'kanban-config.json').write_text(json.dumps({
+            'max_in_progress': 2, 'max_in_progress_per_profile': 1, 'default_assignee': 'default',
+        }))
+        self.assertEqual(1, self.call('release', '--id', 'acme', first))
+        with sqlite3.connect(self.board_db()) as db:
+            self.assertIsNone(db.execute('SELECT assignee FROM tasks WHERE id=?', (first,)).fetchone()[0])
+
+    def test_resume_restores_enabled_custom_cron_jobs_only(self):
+        self.assertEqual(0, self.create())
+        store = self.home / 'profiles/acme/cron/jobs.json'
+        custom = [{'id': 'enabled', 'enabled': True}, {'id': 'disabled', 'enabled': False, 'state': 'paused'}]
+        store.write_text(json.dumps({'jobs': self.jobs() + custom}))
+        self.assertEqual(0, self.call('pause', '--id', 'acme'))
+        self.assertTrue(all(not job['enabled'] for job in self.jobs()))
+        self.assertEqual(0, self.call('resume', '--id', 'acme'))
+        self.assertEqual([True, False], [job['enabled'] for job in self.jobs()[-2:]])
+
+    def test_reconcile_edits_drift_in_place_with_idempotent_receipts(self):
+        self.assertEqual(0, self.create('acme', '--timezone', 'UTC'))
+        existing = self.jobs()
+        store = self.home / 'profiles/acme/cron/jobs.json'
+        drifted = self.jobs()
+        drifted[0].update(prompt='one card', schedule={'expr': '0 1 * * *'}, timezone='Etc/GMT', catch_up=True)
+        store.write_text(json.dumps({'jobs': drifted}))
+        self.assertEqual(0, self.call('reconcile', '--id', 'acme'))
+        self.assertEqual(existing, self.jobs())
+        receipts = self.manifest()['loop_reconciliation']
+        self.assertEqual(existing[0]['id'], receipts[existing[0]['name']]['job_id'])
+        self.assertIn('up to 3', existing[0]['prompt'])
+        self.assertIn('Current constraint', existing[0]['prompt'])
+        before = self.calls()
+        self.assertEqual(0, self.call('reconcile', '--id', 'acme'))
+        self.assertEqual(before, self.calls())
+        self.assertEqual(receipts, self.manifest()['loop_reconciliation'])
 
     def test_locally_modified_soul_is_preserved(self):
         self.create()

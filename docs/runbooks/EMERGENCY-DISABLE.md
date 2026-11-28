@@ -10,7 +10,7 @@ SSH access is the `nixos` operator alias used by the other guides. GitHub steps 
 | --- | --- | --- | --- |
 | 1 | [Hold PR auto-merge](#1-hold-pr-auto-merge) | merges of the held PRs (per-PR; a sustained freeze needs more) | remove label / mark ready |
 | 2 | [Stop the approval worker timer](#2-stop-the-founder-approval-worker-timer) | new Todoist approval tasks | start the timer |
-| 3 | [Pause each venture](#3-pause-each-venture) | venture lead cron loops | `venture.py resume` |
+| 3 | [Pause each venture](#3-pause-each-venture) | venture Cron, Kanban and new external approval requests | `venture.py resume` |
 | 4 | [Pause remaining Hermes cron](#4-pause-remaining-hermes-cron-jobs) | LNX/ops loops per profile | `cron resume` |
 | 5 | [Disable Twenty CRM](#5-disable-twenty-crm) | CRM intake and worker | restore marker, deploy |
 | 6 | [Stop containers](#6-stop-containers) | everything, including the gateway | `docker start`, re-enable timers, lift the deploy pause |
@@ -61,7 +61,7 @@ sudo systemctl disable --now nixos-approval.timer      # also keep it off across
 
 ## 3. Pause each venture
 
-The Venture Factory pauses the venture's cron loops (daily outcome, weekly distillation) and records `paused` in the registry. Nothing is deleted; the lead profile, board and documents stay.
+The Venture Factory pauses the profile's Cron jobs, requests cancellation of in-flight jobs, reclaims active Kanban workers and holds the board outside native dispatch. The registry records `paused` and the board's hold location. The approval CLI refuses new requests while inactive. Pending founder requests stay in the approval queue.
 
 ```bash
 docker exec -u 10000 nixos-hermes python3 \
@@ -70,8 +70,8 @@ docker exec -u 10000 nixos-hermes python3 \
   /opt/data/skills/nix-os/venture-factory/scripts/venture.py pause --id <id> --reason "emergency stop"
 ```
 
-- **Verify**: `venture.py status` lists every venture as `paused`; `docker exec -u 10000 nixos-hermes hermes -p <id> cron list` shows the lead's loops paused.
-- **Resume**: `venture.py resume --id <id>`. It refuses anything that is not paused, so re-running it is safe.
+- **Verify**: `venture.py status` lists every venture as `paused`; `docker exec -u 10000 nixos-hermes hermes -p <id> cron list --all` shows paused jobs and `hermes kanban boards list --json` omits each held board.
+- **Resume**: `venture.py resume --id <id>`. It restores the original board and resumes the venture’s schedules. Re-running it is safe.
 
 ## 4. Pause remaining Hermes cron jobs
 
