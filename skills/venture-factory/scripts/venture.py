@@ -42,6 +42,9 @@ DEFAULT_PACKS = ['core', 'product', 'research', 'growth', 'sales']
 PACKS = {'core', 'engineering', 'product', 'growth', 'sales', 'content', 'design', 'research',
          'operations', 'data-ai'}
 MARKER = 'nix-venture.json'
+VAULT_SCRIPT = HERE.parent.parent / 'google-drive' / 'scripts' / 'vault.py'
+VAULT_RECEIPT = 'knowledge-vault.json'
+SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
 
 
 class Refusal(ValueError):
@@ -326,6 +329,78 @@ def ensure_mission(hermes, registry, manifest):
     registry.save(manifest)
 
 
+def vault_receipt_ok(registry, vid):
+    path = registry.path(vid) / VAULT_RECEIPT
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (isinstance(data, dict)
+            and data.get('status') == 'provisioned'
+            and data.get('venture') == vid
+            and data.get('path') == f'Nix/Ventures/{vid}'
+            and isinstance(data.get('folder_id_sha256'), str)
+            and SHA256_RE.fullmatch(data['folder_id_sha256'])):
+        return data
+    return None
+
+
+def _vault_summary(data):
+    return {
+        'status': 'provisioned', 'path': data['path'], 'folder_id_sha256': data['folder_id_sha256'],
+        'index_note': data.get('index_note', 'README.md'), 'receipt': VAULT_RECEIPT,
+        'recorded_at': data.get('recorded_at'),
+    }
+
+
+def ensure_knowledge_vault(hermes, registry, manifest):
+    """Idempotently provision Nix/Ventures/<id>/ via vault.py; tolerate gws unavailable."""
+    vid = manifest['id']
+    receipt_path = registry.path(vid) / VAULT_RECEIPT
+    if (reused := vault_receipt_ok(registry, vid)) is not None:
+        manifest.setdefault('provisioning', {})['knowledge_vault'] = _vault_summary(reused)
+        if not hermes.dry_run:
+            registry.save(manifest)
+        return
+    if hermes.dry_run:
+        hermes.planned.append(['vault', 'ensure-venture', vid])
+        return
+    if receipt_path.is_symlink():
+        raise Refusal('Knowledge vault receipt path is a symlink; refusing to write through it')
+
+    script = Path(os.environ.get('VAULT_SCRIPT', str(VAULT_SCRIPT)))
+    pending_reason = 'vault helper script not installed'
+    if script.is_file():
+        cmd = [sys.executable, str(script), 'ensure-venture', vid,
+               '--name', manifest['name'], '--mission', manifest['mission'], '--receipt', str(receipt_path)]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            pending_reason = 'gws unavailable'
+        else:
+            if result.returncode == 0 and (recorded := vault_receipt_ok(registry, vid)) is not None:
+                manifest.setdefault('provisioning', {})['knowledge_vault'] = _vault_summary(recorded)
+                registry.save(manifest)
+                return
+            pending_reason = (
+                'vault provisioning did not write a valid receipt' if result.returncode == 0 else
+                'gws unavailable or unauthenticated' if result.returncode == 2 else
+                f'vault provisioning failed (exit {result.returncode})'
+            )
+
+    pending = {'schema_version': SCHEMA_VERSION, 'venture': vid, 'path': f'Nix/Ventures/{vid}',
+               'status': 'pending', 'reason': pending_reason, 'recorded_at': now()}
+    atomic_write(receipt_path, json.dumps(pending, indent=2) + '\n')
+    manifest.setdefault('provisioning', {})['knowledge_vault'] = {
+        'status': 'pending', 'path': pending['path'], 'reason': pending_reason,
+        'receipt': VAULT_RECEIPT, 'recorded_at': pending['recorded_at'],
+    }
+    registry.save(manifest)
+    print(f'venture: knowledge vault {pending["path"]} pending ({pending_reason})', file=sys.stderr)
+
+
 def create(args, hermes, registry):
     validate_id(args.id)
     packs = sorted(set(CORE_PACKS) | set(args.pack or DEFAULT_PACKS))
@@ -362,6 +437,7 @@ def create(args, hermes, registry):
         ensure_soul(hermes, manifest)
         registry.save(manifest)
         ensure_board(hermes, registry, manifest)
+        ensure_knowledge_vault(hermes, registry, manifest)
         if manifest['lifecycle'] == 'approved':
             ensure_loops(hermes, registry, manifest, activate=False)  # pre-commit: created paused
         ensure_mission(hermes, registry, manifest)
@@ -415,6 +491,7 @@ def plan(args, hermes, registry, packs):
         hermes.run('profile', 'create', args.id)
     ensure_soul(hermes, manifest)
     ensure_board(hermes, registry, manifest)
+    ensure_knowledge_vault(hermes, registry, manifest)
     ensure_loops(hermes, registry, manifest, activate=False)
     ensure_mission(hermes, registry, manifest)
     return {'dry_run': True, 'planned': [' '.join(c[1:6]) for c in hermes.planned]}

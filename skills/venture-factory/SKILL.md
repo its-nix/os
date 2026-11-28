@@ -34,6 +34,7 @@ python3 /opt/data/skills/nix-os/venture-factory/scripts/venture.py create --dry-
 - creates the registry entry (`$HERMES_HOME/ventures/<id>/`) with the manifest, CHARTER, PRD and GTM
 - creates the lead profile `<id>` and its SOUL
 - creates the named Kanban board `<id>`
+- provisions `Nix/Ventures/<id>/` and its `README.md` index note via `google-drive/scripts/vault.py ensure-venture`, saving a local redacted receipt (`knowledge-vault.json`) and reusing it on retry (or recording `pending` if `gws` is unavailable)
 - creates the daily outcome and weekly distillation loops as native cron jobs, plus the first mission card assigned to the lead
 
 It refuses to adopt any pre-existing profile it did not create, so historical or legacy profiles are never reactivated. The new profile is served after the gateway reloads; the LNX/ops runbook covers this.
