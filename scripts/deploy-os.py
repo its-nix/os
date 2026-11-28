@@ -908,21 +908,31 @@ def publish_health(state, receipt, recovery=Path('/var/lib/nixos-recovery')):
         print('Health status publication failed; deployment outcome unchanged.', file=sys.stderr)
 
 
+GATE_LOOPS = ('outcome', 'distill', 'improvement')
+
+
 def install_health_script(source, state):
-    """Deployment-owned copy of the health check for Hermes' no-agent cron (scripts/nix-os/)."""
+    """Deployment-owned scripts for Hermes cron (scripts/nix-os/): the health check (LNX) and the idle-gate
+    entry points of the evidence collector. Cron scripts resolve only inside the owning profile's own
+    scripts/ directory, so the gates go to LNX and to every registered venture profile."""
     hermes = state / 'hermes'
-    scripts = hermes / 'scripts'
     owner = hermes.stat()
-    if scripts.is_symlink():
-        raise ValueError('Hermes scripts path must not be a symlink')
-    if not scripts.exists():
-        scripts.mkdir(mode=0o755)
-        os.chown(scripts, owner.st_uid, owner.st_gid)
-    target = scripts / 'nix-os'
-    if target.is_symlink():
-        raise ValueError('Hermes scripts/nix-os must not be a symlink')
-    target.mkdir(mode=0o755, exist_ok=True)
-    _root_write(target, 'health.py', (source / 'skills/company-ops/scripts/health.py').read_text(), 0o755)
+    collector = (source / 'skills/company-ops/scripts/collect_evidence.py').read_text()
+    for base in [hermes] + [t.parent for t in os_skill_targets(state) if t.parent != hermes]:
+        scripts = base / 'scripts'
+        if scripts.is_symlink():
+            raise ValueError('Hermes scripts path must not be a symlink')
+        if not scripts.exists():
+            scripts.mkdir(mode=0o755)
+            os.chown(scripts, owner.st_uid, owner.st_gid)
+        target = scripts / 'nix-os'
+        if target.is_symlink():
+            raise ValueError('Hermes scripts/nix-os must not be a symlink')
+        target.mkdir(mode=0o755, exist_ok=True)
+        if base == hermes:
+            _root_write(target, 'health.py', (source / 'skills/company-ops/scripts/health.py').read_text(), 0o755)
+        for loop in GATE_LOOPS:
+            _root_write(target, f'gate-{loop}.py', collector, 0o755)
 
 
 def apply(revision, source, state, current, run=run, t3_credential=renew_t3_credential,

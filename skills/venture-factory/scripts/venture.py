@@ -31,6 +31,7 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 TEMPLATES = HERE.parent / 'templates'
+GATE_SOURCE = HERE.parent.parent / 'company-ops' / 'scripts' / 'collect_evidence.py'
 SCHEMA_VERSION = 1
 ID_RE = re.compile(r'[a-z][a-z0-9]{1,23}')
 # Names that already mean something in Hermes or in the company runtime.
@@ -146,19 +147,28 @@ def render(name, values):
 
 
 def loops(vid, tz):
-    """Logical loop templates as native cron jobs owned by the lead profile."""
+    """Logical loop templates as native cron jobs owned by the lead profile.
+
+    Each carries a pre-run idle gate (`script`, a copy of the evidence collector in the profile's own
+    scripts/nix-os/): Hermes skips the agent, and its tokens, when the gate prints {"wakeAgent": false}.
+    """
     return [
-        {'name': f'{vid}-outcome', 'schedule': '0 7 * * *',
+        {'name': f'{vid}-outcome', 'schedule': '0 7 * * *', 'script': 'nix-os/gate-outcome.py',
          'skills': ['venture-lead'],
          'prompt': (f'Venture outcome loop for {vid}. Read your CHARTER and the venture board. '
                     'Observe source-system evidence, pick the single highest-value next task toward the '
                     'mission metric, execute or delegate it (Kanban card; T3 for code), verify on evidence, '
-                    'record the result and any blocker. Queue privileged external actions; never perform them.')},
-        {'name': f'{vid}-distill', 'schedule': '0 6 * * 1',
+                    'record the result and any blocker. Queue privileged external actions; never perform them. '
+                    'Work the open cards or approvals in the evidence bundle above; on a "charter review due" wake, '
+                    'plan one next card or record that nothing is worth doing.')},
+        {'name': f'{vid}-distill', 'schedule': '0 6 * * 1', 'script': 'nix-os/gate-distill.py',
          'skills': ['venture-lead'],
          'prompt': (f'Weekly workflow-distillation review for {vid}. Find a procedure that succeeded at least '
                     'twice. If a deterministic script, skill or workflow would remove repeated reasoning, open '
-                    'a Kanban card to distill it through a PR with tests. Do not change the metric that judges it.')},
+                    'a Kanban card to distill it through a PR with tests. Deterministic-first: a correction that '
+                    'recurs (>=2 sanitized examples in the evidence bundle above) gets a script, CI check, lint or '
+                    'API constraint before any skill prose. Never auto-apply; never edit the tests or metric that '
+                    'judge your own change in the same PR.')},
     ]
 
 
@@ -273,10 +283,29 @@ def ensure_board(hermes, registry, manifest):
         registry.save(manifest)
 
 
+def install_gates(hermes, vid, want):
+    """Place the idle-gate scripts in the lead profile's own scripts/nix-os/ (cron resolves scripts only there
+    and refuses to create or edit a job whose script file does not exist). The deployment refreshes these
+    copies. Returns False, leaving the loops ungated, when the collector or a safe target is unavailable."""
+    if not GATE_SOURCE.is_file():
+        return False
+    target = hermes.profile_dir(vid) / 'scripts' / 'nix-os'
+    if any(p.is_symlink() for p in (target.parent, target)):
+        return False
+    if not hermes.dry_run:
+        text = GATE_SOURCE.read_text()
+        for loop in want:
+            path = target / Path(loop['script']).name
+            if not path.is_file() or path.read_text() != text:
+                atomic_write(path, text, 0o755)
+    return True
+
+
 def ensure_loops(hermes, registry, manifest, activate):
     """Create missing loops PAUSED (recorded immediately); resume them only when `activate`."""
     vid = manifest['id']
     want = loops(vid, manifest.get('timezone'))
+    gated = install_gates(hermes, vid, want)
     manifest['loops'] = [l['name'] for l in want]
     jobs = hermes.cron_jobs(vid)
     for loop in want:
@@ -286,6 +315,8 @@ def ensure_loops(hermes, registry, manifest, activate):
                 '--paused', '--paused-reason', 'venture provisioning']
         for skill in loop['skills']:
             argv += ['--skill', skill]
+        if gated:
+            argv += ['--script', loop['script']]
         if manifest.get('timezone'):
             argv += ['--timezone', manifest['timezone']]
         hermes.run(*argv, profile=vid)
@@ -298,6 +329,8 @@ def ensure_loops(hermes, registry, manifest, activate):
             if hermes.dry_run:
                 continue
             raise Refusal(f'Cron job {loop["name"]} did not read back after creation')
+        if gated and job.get('script') != loop['script']:
+            hermes.run('cron', 'edit', job['id'], '--script', loop['script'], profile=vid)  # idle gate only
         is_paused = job.get('paused_at') is not None or job.get('state') == 'paused' or not job.get('enabled', True)
         if activate and is_paused:
             hermes.run('cron', 'resume', job['id'], profile=vid)
