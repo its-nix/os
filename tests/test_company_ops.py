@@ -2,8 +2,10 @@ from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('health', ROOT / 'skills/company-ops/scripts/health.py')
@@ -76,6 +78,95 @@ class HealthTests(unittest.TestCase):
         venture.mkdir(parents=True)
         (venture / 'manifest.json').write_text(json.dumps({'id': 'old', 'lifecycle': 'paused', 'board': 'old'}))
         self.assertEqual([], self.run_check(kanban=lambda b: self.fail('paused boards are not read')))
+
+    def write(self, relative, data):
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+
+    def host_status(self, **updates):
+        self.status()
+        path = self.home / 'nix/health.json'
+        self.write('nix/health.json', dict(json.loads(path.read_text()), **updates))
+
+    def test_container_health_and_each_missing_auth_are_reported(self):
+        self.host_status(containers={'hermes': 'healthy', 'reviewer': 'running', 't3': 'exited',
+                                     'twenty-server': 'disabled'},
+                         t3_provider_auth={'codex': True, **dict.fromkeys(
+                             ('claude', 'opencode', 'grok', 'antigravity'), False)})
+        self.assertCountEqual(
+            ['Container t3 degraded (exited)'] +
+            [f'T3 provider {p}: missing auth state' for p in ('claude', 'opencode', 'grok', 'antigravity')],
+            self.run_check(),
+        )
+
+    def test_reviewer_alerts_only_when_the_configured_pool_is_exhausted(self):
+        future = (NOW + timedelta(hours=1)).isoformat()
+        past = (NOW - timedelta(minutes=1)).isoformat()
+        self.host_status(reviewer_pool=['claude', 'codex'], reviewer_cooldowns={'claude': future, 'codex': past})
+        self.assertEqual([], self.run_check())
+        self.host_status(reviewer_pool=['claude'], reviewer_cooldowns={'claude': future})
+        self.assertEqual([f'Reviewer cooldowns exhausted the pool: claude until {future}'], self.run_check())
+
+    def test_healthy_freshness_and_pat_reminders(self):
+        self.host_status(observed_at=NOW.isoformat(), approval_worker_last_success=NOW.isoformat(),
+                         pack_sync={'generation': 'a' * 64, 'synced_at': NOW.isoformat()},
+                         builder_pat_expires_on='2026-12-20')
+        self.assertEqual([], self.run_check())
+        self.host_status(observed_at=(NOW - timedelta(hours=3)).isoformat(), approval_worker_last_success=None,
+                         pack_sync=None, builder_pat_expires_on='2026-11-30')
+        self.assertEqual(['Host health snapshot stale or unavailable',
+                          'Approval worker stale: last success unknown',
+                          'NixKit pack sync stale or unavailable',
+                          'Builder PAT expires on 2026-11-30'], self.run_check())
+
+    def test_cron_failure_streak_on_active_profiles(self):
+        self.status()
+        self.write('ventures/acme/manifest.json', {'id': 'acme', 'lifecycle': 'operating',
+                                                   'board': 'acme', 'lead_profile': 'lead'})
+        self.write('ventures/old/manifest.json', {'id': 'old', 'lifecycle': 'paused', 'board': 'old'})
+        self.write('cron/jobs.json', {'jobs': [{'name': 'paused', 'enabled': False, 'failure_streak': 9},
+                                             {'name': 'healthy', 'failure_streak': 0}]})
+        self.write('profiles/old/cron/jobs.json', [{'name': 'historical', 'failure_streak': 1}])
+        self.write('profiles/lead/cron/jobs.json', [{'name': 'venture-cron', 'failure_streak': 2}])
+        self.assertEqual(['lead: cron venture-cron failing (streak 2)'], self.run_check())
+
+    def test_stuck_card_is_measured_from_latest_claim(self):
+        self.status()
+        (self.home / 'kanban.db').touch()
+        old = (NOW - timedelta(hours=25)).timestamp()
+        boundary = (NOW - timedelta(hours=24)).timestamp()
+        tasks = [{'id': 't_recent', 'status': 'running', 'created_at': old, 'started_at': old},
+                 {'id': 't_stuck', 'status': 'running', 'started_at': old}]
+        details = [{'task': task, 'events': [{'kind': 'claimed', 'created_at': old}]} for task in tasks]
+        details[0]['events'].append({'kind': 'claimed', 'created_at': boundary})
+        outputs = [type('Result', (), {'returncode': 0, 'stdout': json.dumps(data)})
+                   for data in (tasks, *details)]
+        with patch.object(health.subprocess, 'run', side_effect=outputs):
+            self.assertEqual(['default: card t_stuck in_progress >24h'],
+                             self.run_check(kanban=health.board_tasks))
+
+    def test_usage_spikes_require_a_positive_baseline(self):
+        self.status()
+        audit = self.home / 'cron/usage_audit.jsonl'
+        audit.parent.mkdir()
+        current = (NOW - timedelta(days=1)).isoformat()
+        baseline = (NOW - timedelta(days=8)).isoformat()
+        latest = json.dumps({'ts': current, 'total_tokens': 250_000})
+        audit.write_text(latest + '\n')
+        self.assertEqual([], self.run_check())
+        audit.write_text(latest + '\nmalformed\n' + json.dumps({'ts': baseline, 'total_tokens': 100_000}) + '\n')
+        self.assertEqual(['Weekly token spike: 250,000 vs 100,000 in the previous week'], self.run_check())
+
+        with sqlite3.connect(self.home / 'state.db') as db:
+            db.execute('CREATE TABLE session_model_usage (first_seen REAL, last_seen REAL, '
+                       'actual_cost_usd REAL, estimated_cost_usd REAL)')
+            before = (NOW - timedelta(days=8)).timestamp()
+            after = (NOW - timedelta(days=1)).timestamp()
+            db.executemany('INSERT INTO session_model_usage VALUES (?, ?, ?, ?)',
+                           [(before, before, 3, 30), (after, after, 0, 9), (before, after, 100, 100)])
+        self.assertEqual(['Weekly token spike: 250,000 vs 100,000 in the previous week',
+                          'Weekly cost spike: $9.00 vs $3.00 in the previous week'], self.run_check())
 
 
 if __name__ == '__main__':

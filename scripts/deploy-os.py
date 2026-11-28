@@ -3,7 +3,7 @@
 
 from contextlib import ExitStack
 import ctypes
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import errno
 import hashlib
 import importlib.util
@@ -888,23 +888,141 @@ def _root_write(directory, name, text, mode):
         raise
 
 
-def publish_health(state, receipt, recovery=Path('/var/lib/nixos-recovery')):
+HEALTH_SERVICES = ('hermes', 't3', 'hindsight', 'reviewer',
+                   'twenty-db', 'twenty-redis', 'twenty-server', 'twenty-worker')
+AUTH_FILES = {
+    'claude': '.claude/.credentials.json',
+    'codex': '.codex/auth.json',
+    'opencode': '.local/share/opencode/auth.json',
+    'grok': '.grok/auth.json',
+    'antigravity': '.gemini/antigravity-cli/antigravity-oauth-token',
+}
+
+
+def health_metadata(path, limit):
+    """Read a small metadata file without following links or opening a blocking stream."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                contents = handle.read(limit + 1)
+                if len(contents) <= limit:
+                    return contents.decode('utf-8')
+    except (OSError, ValueError):
+        pass
+    return ''
+
+
+def health_record(path):
+    try:
+        record = json.loads(health_metadata(path, 65536))
+        return record if isinstance(record, dict) else {}
+    except (ValueError, RecursionError):
+        return {}
+
+
+def container_health(crm):
+    # Only fixed container names and Docker state/health enums cross this boundary.
+    services = {name: 'disabled' if name.startswith('twenty-') and not crm else 'unavailable'
+                for name in HEALTH_SERVICES}
+    names = ['nixos-' + name for name, status in services.items() if status != 'disabled']
+    try:
+        result = subprocess.run(
+            ['docker', 'inspect', '--type=container', '--format',
+             '{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}', *names],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return services
+    # Docker still returns rows for the existing containers if one is missing.
+    allowed = {'running', 'created', 'restarting', 'removing', 'paused', 'exited', 'dead',
+               'healthy', 'starting', 'unhealthy'}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) in (2, 3) and fields[0].removeprefix('/') in names:
+            status = fields[-1] if fields[1] == 'running' else fields[1]
+            if status in allowed:
+                services[fields[0].removeprefix('/nixos-')] = status
+    return services
+
+
+def t3_auth_presence(home):
+    def present(path):
+        try:
+            return stat.S_ISREG(path.lstat().st_mode)
+        except OSError:
+            return False
+
+    auth = {provider: present(home / path) for provider, path in AUTH_FILES.items()}
+    instances = home / '.t3/userdata/providers/antigravity'
+    auth['antigravity'] |= any(present(path) for path in instances.glob('*/antigravity-acp/acp_token.json'))
+    return auth
+
+
+def reviewer_health(state, now):
+    reviewer = state / 'reviewer'
+    env = health_metadata(reviewer / 'reviewer.env', 65536)
+    match = re.search(r'^\s*REVIEW_POOL\s*=\s*([^\n#]*)', env, re.M)
+    pool = match[1].strip().strip('"\'') if match else ''
+    pool = {part.strip() for part in pool.split(',')} if pool else set(AUTH_FILES)
+    if 'gemini' in pool:
+        pool.add('antigravity')
+    pool = sorted(pool.intersection(AUTH_FILES))
+    entries = health_record(reviewer / 'state/cooldowns.json')
+    cooldowns = {}
+    for provider in AUTH_FILES:
+        entry = entries.get(provider)
+        if not isinstance(entry, dict) or entry.get('reason') != 'usage-limit':
+            continue
+        reset = entry.get('untilEpochMs')
+        if type(reset) is int and now.timestamp() * 1000 < reset <= (now + timedelta(days=7)).timestamp() * 1000:
+            cooldowns[provider] = datetime.fromtimestamp(reset / 1000, timezone.utc).isoformat()
+    return pool, cooldowns
+
+
+def pack_health(state):
+    override = state / 'packs.compose.json'
+    try:
+        mounts = health_record(override)['services']['t3']['volumes']
+        mount = next(row for row in mounts if row['target'] == '/opt/nixkit')
+        core = Path(mount['source'])
+        if (core.parent == state / 'pack-releases' and re.fullmatch(r'[a-f0-9]{64}', core.name)
+                and core.is_dir() and not core.is_symlink()):
+            return {'generation': core.name, 'synced_at': datetime.fromtimestamp(
+                override.stat().st_mtime, timezone.utc).isoformat()}
+    except (KeyError, TypeError, StopIteration, OSError, ValueError):
+        pass
+    return None
+
+
+def publish_health(state, receipt=None, recovery=Path('/var/lib/nixos-recovery'),
+                   pat_expiry=Path('/etc/nixos/builder-pat-expiry')):
     """Non-secret status for the no-agent company health loop (Hermes cannot read root receipts).
     Best effort: a failure here never changes the deployment outcome."""
-    def read(path):
-        try:
-            return json.loads(path.read_text())
-        except (OSError, ValueError):
-            return {}
     try:
-        previous = read(state / 'deployment.json')
-        success, attempt = read(recovery / 'last-success.json'), read(recovery / 'last-attempt.json')
+        now = datetime.now(timezone.utc)
+        previous = health_record(state / 'deployment.json')
+        receipt = receipt if receipt is not None else health_record(state / 'deployment-attempt.json')
+        success = health_record(recovery / 'last-success.json')
+        attempt = health_record(recovery / 'last-attempt.json')
+        pool, cooldowns = reviewer_health(state, now)
         status = {'deployed_revision': previous.get('revision'), 'deployed_at': previous.get('completed_at'),
-                  'deploy_attempt_status': receipt['status'], 'deploy_attempt_revision': receipt['revision'],
+                  'deploy_attempt_status': receipt.get('status'), 'deploy_attempt_revision': receipt.get('revision'),
                   'backup_last_success': success.get('completed_at'),
-                  'backup_last_attempt_status': attempt.get('status')}
-        _root_write(state / 'hermes' / 'nix', 'health.json', json.dumps(status, indent=2) + '\n', 0o644)
-    except (OSError, ValueError, KeyError):
+                  'backup_last_attempt_status': attempt.get('status'),
+                  'observed_at': now.isoformat(), 'containers': container_health(crm_enabled(state)),
+                  'approval_worker_last_success': health_record(
+                      state / 'approvals/state/last-success.json').get('completed_at'),
+                  'reviewer_pool': pool, 'reviewer_cooldowns': cooldowns,
+                  'pack_sync': pack_health(state), 't3_provider_auth': t3_auth_presence(state / 't3/home')}
+        expiry = health_metadata(pat_expiry, 11).strip()
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', expiry):
+            try:
+                status['builder_pat_expires_on'] = date.fromisoformat(expiry).isoformat()
+            except ValueError:
+                pass
+        _write_in_hermes(state / 'hermes', ['nix'], 'health.json', json.dumps(status, indent=2) + '\n', 0o644)
+    except (OSError, ValueError):
         print('Health status publication failed; deployment outcome unchanged.', file=sys.stderr)
 
 
@@ -1117,6 +1235,9 @@ def prepare_packs(release, state, image):
 
 
 def main():
+    if sys.argv[1:] == ['--refresh-health']:
+        publish_health(Path('/srv/nix-clean'))
+        return
     pack_build = sys.argv[1:2] == ['--prepare-packs']
     if pack_build:
         del sys.argv[1]

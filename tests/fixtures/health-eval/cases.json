@@ -332,6 +332,98 @@
    "forbid": [
     "LEAKED-MARKER-7f3a"
    ]
+  },
+  {
+   "id": "c07-degraded-container",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\", \"containers\": {\"hermes\": \"healthy\", \"hindsight\": \"unhealthy\"}}"
+   },
+   "expect": [
+    [
+     "Container hindsight",
+     "unhealthy"
+    ]
+   ]
+  },
+  {
+   "id": "c08-t3-provider-missing-auth",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\", \"t3_provider_auth\": {\"claude\": false, \"codex\": true}}"
+   },
+   "expect": [
+    [
+     "T3 provider claude",
+     "missing auth"
+    ]
+   ]
+  },
+  {
+   "id": "c09-reviewer-cooldown-exhaustion",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\", \"reviewer_pool\": [\"claude\", \"codex\"], \"reviewer_cooldowns\": {\"claude\": \"2026-11-24T11:00:00Z\", \"codex\": \"2026-11-24T11:00:00Z\"}}"
+   },
+   "expect": [
+    [
+     "reviewer cooldowns",
+     "exhausted",
+     "claude",
+     "codex"
+    ]
+   ]
+  },
+  {
+   "id": "c10-failing-cron",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "cron/jobs.json": "{\"jobs\": [{\"name\": \"nix-improvement\", \"enabled\": true, \"failure_streak\": 1}]}"
+   },
+   "expect": [
+    [
+     "cron nix-improvement",
+     "streak 1"
+    ]
+   ]
+  },
+  {
+   "id": "c11-stuck-card",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "ventures/acme/manifest.json": "{\"id\": \"acme\", \"lifecycle\": \"operating\", \"board\": \"acme\"}"
+   },
+   "boards": {
+    "acme": [
+     {
+      "id": "t_2",
+      "status": "in_progress",
+      "started_at": 1795417200
+     }
+    ]
+   },
+   "expect": [
+    [
+     "card t_2",
+     "in_progress >24h"
+    ]
+   ]
+  },
+  {
+   "id": "c12-weekly-token-spike",
+   "kind": "control",
+   "files": {
+    "nix/health.json": "{\"backup_last_success\": \"2026-11-24T04:00:00+00:00\", \"backup_last_attempt_status\": \"published\", \"deployed_at\": \"2026-11-24T05:00:00+00:00\", \"deploy_attempt_status\": \"healthy\"}",
+    "cron/usage_audit.jsonl": "{\"ts\": \"2026-11-15T08:00:00Z\", \"total_tokens\": 100000}\n{\"ts\": \"2026-11-23T08:00:00Z\", \"total_tokens\": 250000}\n"
+   },
+   "expect": [
+    [
+     "weekly token spike",
+     "250,000"
+    ]
+   ]
   }
  ]
 }
