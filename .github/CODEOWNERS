@@ -17,3 +17,13 @@
 /deploy/reviewer/               @Lior-Nis
 /deploy/t3/Dockerfile           @Lior-Nis
 /docs/AUTHORITY.md              @Lior-Nis
+/deploy/hermes/Dockerfile       @Lior-Nis
+/deploy/versions.json           @Lior-Nis
+/deploy/hindsight/active_provider.py @Lior-Nis
+/deploy/hindsight/codex-login.sh @Lior-Nis
+/deploy/hindsight/plugin-files.json @Lior-Nis
+/deploy/hindsight/redaction_probe.py @Lior-Nis
+/deploy/packs/build.py          @Lior-Nis
+/deploy/packs/mounts.py         @Lior-Nis
+/deploy/packs/worktree.py       @Lior-Nis
+/skills/crm-lead-ops/scripts/approval.py @Lior-Nis
